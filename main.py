@@ -648,7 +648,7 @@ class MainWindow(QMainWindow):
     def update_patient_menu(self, patients):
         menu = QMenu()
         print("patients entrée", patients)
-        for patient in patients["list"]:
+        for patient in patients:
             action_text = f"{patient['call_number']} - {patient['activity']}"
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
