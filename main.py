@@ -4,6 +4,7 @@ import time
 import json
 import requests
 import threading
+import socketio
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy
@@ -13,7 +14,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent
 from datetime import datetime
 
-from ShortcutEdit import ShortcutEdit
+from websocket_client import WebSocketClient
 
 
 class SSEClient(QThread):
@@ -34,7 +35,7 @@ class SSEClient(QThread):
                 client = response.iter_lines()
                 for line in client:
                     if line:
-                        print("LINE", line)
+                        #print("LINE", line)
                         decoded_line = line.decode('utf-8')
                         if decoded_line.startswith('data:'):
                             json_data = decoded_line[5:].strip()
@@ -378,11 +379,12 @@ class MainWindow(QMainWindow):
         # Définir l'icône pour la fenêtre principale
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
-        self.resize(800, 600) 
-        
+        self.resize(800, 600)         
+
         self.create_menu()
 
-        self.start_sse_client(self.web_url)
+        #self.start_sse_client(self.web_url)
+        self.start_socket_io_client(self.web_url)
 
         # Première icône de tray
         icon_path = resource_path("assets/images/pause.ico")
@@ -447,6 +449,15 @@ class MainWindow(QMainWindow):
         self.sse_client.new_notification.connect(self.show_notification)
         self.sse_client.my_patient.connect(self.update_my_patient)
         self.sse_client.start()
+        
+    def start_socket_io_client(self, url):
+        print(f"Starting Socket.IO client with URL: {url}")
+        self.socket_io_client = WebSocketClient(url)
+        self.socket_io_client.new_patient.connect(self.update_patient_menu)
+        #self.socket_io_client.new_notification.connect(self.show_notification)
+        #self.socket_io_client.my_patient.connect(self.update_my_patient)
+        self.socket_io_client.start()       
+
         
     def create_menu(self):
         self.menu = self.menuBar().addMenu("Fichier")
@@ -636,9 +647,8 @@ class MainWindow(QMainWindow):
 
     def update_patient_menu(self, patients):
         menu = QMenu()
-        print("patients", patients)
-        print(type(patients))
-        for patient in patients:
+        print("patients entrée", patients)
+        for patient in patients["list"]:
             action_text = f"{patient['call_number']} - {patient['activity']}"
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
