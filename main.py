@@ -20,7 +20,7 @@ from websocket_client import WebSocketClient
 class SSEClient(QThread):
     new_patient = Signal(object)
     new_notification = Signal(str)
-    my_patient = Signal(object)
+    #my_patient = Signal(object)
 
     def __init__(self, web_url):
         super().__init__()
@@ -44,9 +44,9 @@ class SSEClient(QThread):
                                 self.new_notification.emit(data['message'])
                             elif data['type'] == 'patient':
                                 self.new_patient.emit(data["list"])
-                            elif data['type'] == 'my_patient':
-                                print("my_patient", data["data"])
-                                self.my_patient.emit(data["data"])
+                            #elif data['type'] == 'my_patient':
+                            #    print("my_patient", data["data"])
+                            #    self.my_patient.emit(data["data"])
             except RequestException as e:
                 print(f"Connection lost: {e}")
                 time.sleep(5)  # Wait for 5 seconds before attempting to reconnect
@@ -108,6 +108,13 @@ class ShortcutLineEdit(QLineEdit):
         event.accept()
 
 
+from PySide6.QtCore import Qt, QSettings, QTimer, Signal, Slot
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget,
+                               QVBoxLayout, QCheckBox, QLabel, QLineEdit, QPushButton, QComboBox, QTextEdit, QMessageBox)
+
+import requests
+
+
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
 
@@ -136,7 +143,6 @@ class PreferencesDialog(QDialog):
         
         # Stacked Widget
         self.stacked_widget = QStackedWidget()
-
 
         # Parametres généraux Page
         self.general_page = QWidget()
@@ -189,19 +195,19 @@ class PreferencesDialog(QDialog):
         self.next_patient_shortcut_label = QLabel("Raccourci - Patient suivant:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.next_patient_shortcut_label)
         
-        self.next_patient_shortcut_input = QLineEdit(self.raccourcis_page)
+        self.next_patient_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.next_patient_shortcut_input)
         
         self.validate_patient_shortcut_label = QLabel("Raccourci - Valider patient:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_label)
         
-        self.validate_patient_shortcut_input = QLineEdit(self.raccourcis_page)
+        self.validate_patient_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_input)
         
         self.pause_shortcut_label = QLabel("Raccourci - Pause:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.pause_shortcut_label)
         
-        self.pause_shortcut_input = QLineEdit(self.raccourcis_page)
+        self.pause_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.pause_shortcut_input)
         
         self.stacked_widget.addWidget(self.raccourcis_page)
@@ -234,7 +240,31 @@ class PreferencesDialog(QDialog):
         self.counters_loaded.connect(self.update_counters)
         
         QTimer.singleShot(0, self.test_url)
+
+    def create_shortcut_input(self):
+        widget = QWidget()
+        layout = QHBoxLayout()
+        widget.setLayout(layout)
         
+        self.ctrl_button = QCheckBox("Ctrl")
+        self.ctrl_button.setObjectName("Ctrl")
+        self.alt_button = QCheckBox("Alt")
+        self.alt_button.setObjectName("Alt")
+        self.shift_button = QCheckBox("Maj")
+        self.shift_button.setObjectName("Maj")
+        self.win_button = QCheckBox("Win")
+        self.win_button.setObjectName("Win")
+        self.key_input = QLineEdit()
+        self.key_input.setObjectName("Key")
+        
+        layout.addWidget(self.ctrl_button)
+        layout.addWidget(self.alt_button)
+        layout.addWidget(self.shift_button)
+        layout.addWidget(self.win_button)
+        layout.addWidget(self.key_input)
+        
+        return widget
+
     def change_page(self, item):
         if item == self.general_item:
             self.stacked_widget.setCurrentIndex(0)
@@ -251,9 +281,10 @@ class PreferencesDialog(QDialog):
         self.counter_id = settings.value("counter_id", None)
         # chargement du comptoir par défaut avant chargement de tous les comptoirs. Permet d'avoir quelque chose par défaut
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
-        self.next_patient_shortcut_input.setText(settings.value("next_patient_shortcut", "shift+s"))
-        self.validate_patient_shortcut_input.setText(settings.value("validate_patient_shortcut", "shift+v"))
-        self.pause_shortcut_input.setText(settings.value("pause_shortcut", "shift+p"))
+        
+        self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
+        self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
+        self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
 
         # Notifications preferences
         self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
@@ -262,13 +293,21 @@ class PreferencesDialog(QDialog):
         # General
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
 
-                
+    def load_shortcut(self, settings, name, widget, default_shortcut):
+        shortcut = settings.value(name, default_shortcut)
+        keys = shortcut.split("+")
+        widget.findChild(QCheckBox, "Ctrl").setChecked("Ctrl" in keys)
+        widget.findChild(QCheckBox, "Alt").setChecked("Alt" in keys)
+        widget.findChild(QCheckBox, "Maj").setChecked("Maj" in keys)
+        widget.findChild(QCheckBox, "Win").setChecked("Win" in keys)
+        widget.findChild(QLineEdit).setText(keys[-1] if keys and keys[-1] not in ["Ctrl", "Alt", "Maj", "Win"] else "")
+
     def save_preferences(self):
         url = self.url_input.text()
         counter_id = self.counter_combobox.currentData()
-        next_patient_shortcut = self.next_patient_shortcut_input.text()
-        validate_patient_shortcut = self.validate_patient_shortcut_input.text()
-        pause_shortcut = self.pause_shortcut_input.text()
+        next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
+        validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
+        pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
         
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
@@ -301,6 +340,21 @@ class PreferencesDialog(QDialog):
             self.parent().start_sse_client(url)
         
         self.accept()
+
+    def get_shortcut_text(self, widget):
+        keys = []
+        if widget.findChild(QCheckBox, "Ctrl").isChecked():
+            keys.append("Ctrl")
+        if widget.findChild(QCheckBox, "Alt").isChecked():
+            keys.append("Alt")
+        if widget.findChild(QCheckBox, "Maj").isChecked():
+            keys.append("Maj")
+        if widget.findChild(QCheckBox, "Win").isChecked():
+            keys.append("Win")
+        key_input = widget.findChild(QLineEdit).text()
+        if key_input:
+            keys.append(key_input)
+        return "+".join(keys)
 
     def test_url(self):
         self.status_label.setText("Test de connexion en cours...")
@@ -343,6 +397,7 @@ class PreferencesDialog(QDialog):
             index = self.counter_combobox.findData(int(self.counter_id))
             if index != -1:
                 self.counter_combobox.setCurrentIndex(index)
+
 
 
 class MainWindow(QMainWindow):
@@ -447,14 +502,14 @@ class MainWindow(QMainWindow):
         self.sse_client = SSEClient(url)
         self.sse_client.new_patient.connect(self.update_patient_menu)
         self.sse_client.new_notification.connect(self.show_notification)
-        self.sse_client.my_patient.connect(self.update_my_patient)
+        #self.sse_client.my_patient.connect(self.update_my_patient)
         self.sse_client.start()
         
     def start_socket_io_client(self, url):
         print(f"Starting Socket.IO client with URL: {url}")
         self.socket_io_client = WebSocketClient(url)
-        self.socket_io_client.new_patient.connect(self.update_patient_menu)
-        #self.socket_io_client.new_notification.connect(self.show_notification)
+        self.socket_io_client.new_patient.connect(self.new_patient)
+        self.socket_io_client.new_notification.connect(self.show_notification)
         #self.socket_io_client.my_patient.connect(self.update_my_patient)
         self.socket_io_client.start()       
 
@@ -487,7 +542,7 @@ class MainWindow(QMainWindow):
         self.btn_next = QPushButton("Suivant\n" + self.next_patient_shortcut)
         self.btn_validate = QPushButton("Valider\n" + self.validate_patient_shortcut)
         self.btn_pause = QPushButton("Pause\n" + self.pause_shortcut)
-        self.toggle_button = QPushButton("Toggle")
+        self.toggle_button = QPushButton("Agrandir")
 
         # Connect the toggle button to switch modes
         self.btn_next.clicked.connect(self.call_web_function_validate_and_call_next)
@@ -616,6 +671,7 @@ class MainWindow(QMainWindow):
 
     def update_my_patient(self, patient):
         # mise à jour de l'id du patient pour être utilisé par les url
+        print("Update My Patient", patient)
         if patient["counter_id"] == self.counter_id:
             next_patient = patient["next_patient"]
             if next_patient is None:
@@ -645,6 +701,10 @@ class MainWindow(QMainWindow):
         keyboard.add_hotkey(self.validate_patient_shortcut, self.call_web_function_validate)
         keyboard.add_hotkey(self.pause_shortcut, self.call_web_function_pause)
 
+    def new_patient(self, patient):
+        self.init_patient()
+        self.update_patient_menu(patient)
+
     def update_patient_menu(self, patients):
         menu = QMenu()
         print("patients entrée", patients)
@@ -656,9 +716,9 @@ class MainWindow(QMainWindow):
 
     def show_notification(self, data):
         """Show a system tray notification with patient data."""
+        print("show_notification", data)
         if self.notification_specific_acts:
-            message = data
-            self.trayIcon1.showMessage("Patient Update", message, QSystemTrayIcon.Information, 5000)
+            self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
 
     @Slot()
     def pyqt_call_preferences(self):
