@@ -8,7 +8,7 @@ import socketio
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent
@@ -20,7 +20,6 @@ from websocket_client import WebSocketClient
 class SSEClient(QThread):
     new_patient = Signal(object)
     new_notification = Signal(str)
-    #my_patient = Signal(object)
 
     def __init__(self, web_url):
         super().__init__()
@@ -30,12 +29,11 @@ class SSEClient(QThread):
     def run(self):
         while True:
             try:
-                url=f'{self.web_url}/events/update_patient_pyside'
+                url = f'{self.web_url}/events/update_patient_pyside'
                 response = requests.get(url, stream=True)
                 client = response.iter_lines()
                 for line in client:
                     if line:
-                        #print("LINE", line)
                         decoded_line = line.decode('utf-8')
                         if decoded_line.startswith('data:'):
                             json_data = decoded_line[5:].strip()
@@ -44,23 +42,18 @@ class SSEClient(QThread):
                                 self.new_notification.emit(data['message'])
                             elif data['type'] == 'patient':
                                 self.new_patient.emit(data["list"])
-                            #elif data['type'] == 'my_patient':
-                            #    print("my_patient", data["data"])
-                            #    self.my_patient.emit(data["data"])
             except RequestException as e:
                 print(f"Connection lost: {e}")
-                time.sleep(5)  # Wait for 5 seconds before attempting to reconnect
+                time.sleep(5)
                 print("Attempting to reconnect...")
-    
+
     def stop(self):
         self._running = False
         self.wait()
 
 
 def resource_path(relative_path):
-    """ Obtenez le chemin d'accès absolu aux ressources pour le mode PyInstaller. """
     try:
-        # PyInstaller crée un dossier temporaire et y stocke le chemin dans _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -69,7 +62,6 @@ def resource_path(relative_path):
 
 
 class TestConnectionWorker(QThread):
-    """ Worker pour tester la connexion au serveur. Dans un thread pour ne pas bloquer l'app pendant le test"""
     connection_tested = Signal(bool, str)
 
     def __init__(self, url):
@@ -87,36 +79,10 @@ class TestConnectionWorker(QThread):
         except requests.exceptions.RequestException as e:
             self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
 
-# Ne fonctionne pas !!!! :(
-class ShortcutLineEdit(QLineEdit):
-    def __init__(self, parent=None):
-        super(ShortcutLineEdit, self).__init__(parent)
-        self.setReadOnly(True)  # Pour empêcher l'édition manuelle
-
-    def keyPressEvent(self, event: QKeyEvent):
-        key = event.key()
-        modifiers = event.modifiers()
-
-        # Création d'une séquence de touches basée sur les modificateurs et la touche
-        if key != Qt.Key_unknown:
-            if modifiers != Qt.NoModifier:
-                key_sequence = QKeySequence(modifiers | key)
-            else:
-                key_sequence = QKeySequence(key)
-                
-            self.setText(key_sequence.toString(QKeySequence.NativeText))
-        event.accept()
-
-
-from PySide6.QtCore import Qt, QSettings, QTimer, Signal, Slot
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget,
-                               QVBoxLayout, QCheckBox, QLabel, QLineEdit, QPushButton, QComboBox, QTextEdit, QMessageBox)
-
-import requests
-
 
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
+    preferences_updated = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -124,12 +90,10 @@ class PreferencesDialog(QDialog):
         
         self.main_layout = QHBoxLayout(self)
         
-        # Navigation List
         self.navigation_list = QListWidget()
         self.navigation_list.setFixedWidth(150)
         self.navigation_list.itemClicked.connect(self.change_page)
         
-        # Add navigation items
         self.general_item = QListWidgetItem("Général")
         self.connexion_item = QListWidgetItem("Connexion")
         self.raccourcis_item = QListWidgetItem("Raccourcis")
@@ -141,10 +105,8 @@ class PreferencesDialog(QDialog):
         
         self.main_layout.addWidget(self.navigation_list)
         
-        # Stacked Widget
         self.stacked_widget = QStackedWidget()
 
-        # Parametres généraux Page
         self.general_page = QWidget()
         self.general_layout = QVBoxLayout()
         self.general_page.setLayout(self.general_layout)
@@ -152,11 +114,16 @@ class PreferencesDialog(QDialog):
         self.always_on_top_checkbox = QCheckBox("Always on top", self.general_page)
         self.general_layout.addWidget(self.always_on_top_checkbox)
         
+        self.start_with_reduce_mode = QCheckBox("Démarrer en mode réduit", self.general_page)
+        self.general_layout.addWidget(self.start_with_reduce_mode)
+        
+        self.vertical_mode = QCheckBox("Orientation verticale", self.general_page)
+        self.general_layout.addWidget(self.vertical_mode)
+        
         self.stacked_widget.addWidget(self.general_page)
         
         self.main_layout.addWidget(self.stacked_widget)
         
-        # Connexion Page
         self.connexion_page = QWidget()
         self.connexion_layout = QVBoxLayout()
         self.connexion_page.setLayout(self.connexion_layout)
@@ -187,7 +154,6 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget.addWidget(self.connexion_page)
         
-        # Raccourcis Page
         self.raccourcis_page = QWidget()
         self.raccourcis_layout = QVBoxLayout()
         self.raccourcis_page.setLayout(self.raccourcis_layout)
@@ -214,8 +180,6 @@ class PreferencesDialog(QDialog):
         
         self.main_layout.addWidget(self.stacked_widget)
 
-
-        # Notifications Page
         self.notifications_page = QWidget()
         self.notifications_layout = QVBoxLayout()
         self.notifications_page.setLayout(self.notifications_layout)
@@ -230,7 +194,6 @@ class PreferencesDialog(QDialog):
         
         self.main_layout.addWidget(self.stacked_widget)
         
-        # Bouton Enregistrer
         self.save_button = QPushButton("Enregistrer", self)
         self.save_button.clicked.connect(self.save_preferences)
         self.main_layout.addWidget(self.save_button)
@@ -279,19 +242,18 @@ class PreferencesDialog(QDialog):
         settings = QSettings()
         self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
         self.counter_id = settings.value("counter_id", None)
-        # chargement du comptoir par défaut avant chargement de tous les comptoirs. Permet d'avoir quelque chose par défaut
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
         
         self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
         self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
         self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
 
-        # Notifications preferences
         self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
 
-        # General
+        self.start_with_reduce_mode.setChecked(settings.value("start_with_reduce_mode", False, type=bool))
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
+        self.vertical_mode.setChecked(settings.value("vertical_mode", False, type=bool))
 
     def load_shortcut(self, settings, name, widget, default_shortcut):
         shortcut = settings.value(name, default_shortcut)
@@ -324,22 +286,22 @@ class PreferencesDialog(QDialog):
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
         settings.setValue("pause_shortcut", pause_shortcut)
         
-        # Save notifications preferences
         settings.setValue("show_current_patient", self.show_current_patient_checkbox.isChecked())
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
 
-        # General
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
-        # on applique tout de suite le changement
+        settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
+        settings.setValue("vertical_mode", self.vertical_mode.isChecked())
         self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
         self.parent().show() 
 
-        # si l'url a change on redémarre le client SSE
         if url != old_url:
-            print("Redémarage du client SSE")
+            print("Redémarrage du client SSE")
             self.parent().start_sse_client(url)
         
         self.accept()
+        self.parent().load_preferences()
+        self.preferences_updated.emit()
 
     def get_shortcut_text(self, widget):
         keys = []
@@ -392,16 +354,14 @@ class PreferencesDialog(QDialog):
         for counter in counters:
             self.counter_combobox.addItem(counter['name'], counter['id'])
         
-        # Sélectionner le comptoir par défaut si défini dans les préférences
         if self.counter_id:
             index = self.counter_combobox.findData(int(self.counter_id))
             if index != -1:
                 self.counter_combobox.setCurrentIndex(index)
 
 
-
 class MainWindow(QMainWindow):
-    patient_data_received = Signal(object)  # Signal passant les données des patients
+    patient_data_received = Signal(object)
     patient_id = None
     
     def __init__(self):
@@ -409,9 +369,8 @@ class MainWindow(QMainWindow):
         self.load_preferences()
         self.setup_ui()
         
-        self.is_reduced_mode = False  # Track if the window is in reduced mode
+        self.is_reduced_mode = False
 
-        # Make window always on top
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show() 
 
@@ -425,23 +384,19 @@ class MainWindow(QMainWindow):
         self.pause_shortcut = settings.value("pause_shortcut", "Ctrl+P")
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
+        self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
+        self.vertical_mode = settings.value("vertical_mode", False, type=bool)
     
         
     def setup_ui(self):
-        # Chemin relatif à l'icône
         icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
-        
-        # Définir l'icône pour la fenêtre principale
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
         self.resize(800, 600)         
 
         self.create_menu()
-
-        #self.start_sse_client(self.web_url)
         self.start_socket_io_client(self.web_url)
 
-        # Première icône de tray
         icon_path = resource_path("assets/images/pause.ico")
         self.trayIcon1 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon1.setToolTip("Pause")
@@ -449,10 +404,9 @@ class MainWindow(QMainWindow):
         open_action1 = tray_menu1.addAction("Open Main Window")
         open_action1.triggered.connect(self.call_web_function_pause)
         self.trayIcon1.setContextMenu(tray_menu1)
-        self.trayIcon1.activated.connect(self.on_tray_icon_pause_activated)  # Connecter le signal activated
+        self.trayIcon1.activated.connect(self.on_tray_icon_pause_activated)
         self.trayIcon1.show()
 
-        # Deuxième icône de tray
         icon_path = resource_path("assets/images/next_orange.ico")
         self.trayIcon2 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon2.setToolTip("Prochain patient")
@@ -460,10 +414,9 @@ class MainWindow(QMainWindow):
         open_action2 = tray_menu2.addAction("Call Web Function")
         open_action2.triggered.connect(self.call_web_function_validate_and_call_next)
         self.trayIcon2.setContextMenu(tray_menu2)
-        self.trayIcon2.activated.connect(self.on_tray_icon_call_next_activated)  # Connecter le signal activated
+        self.trayIcon2.activated.connect(self.on_tray_icon_call_next_activated)
         self.trayIcon2.show()
 
-        # Troisième icône de tray
         icon_path = resource_path("assets/images/check.ico")
         self.trayIcon3 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon3.setToolTip("Valider patient")
@@ -471,10 +424,9 @@ class MainWindow(QMainWindow):
         open_action3 = tray_menu3.addAction("Call Web Function")
         open_action3.triggered.connect(self.call_web_function_validate)
         self.trayIcon3.setContextMenu(tray_menu3)
-        self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)  # Connecter le signal activated
+        self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
         self.trayIcon3.show()
 
-        # Création de la vue du navigateur web
         self.browser = QWebEngineView()
         self.web_channel = QWebChannel()
         self.web_channel.registerObject("pyqt", self)
@@ -482,18 +434,16 @@ class MainWindow(QMainWindow):
         self.browser.loadFinished.connect(self.on_load_finished)
         self.load_url()
 
-        # Création des boutons de contrôle
+        self.stacked_widget = QStackedWidget()
         self.create_control_buttons()
 
-        # Mise à jour des infos d'un potentiel patient au comptoir avant le lancement de l'App (via web p.e)
-        self.init_patient()
-
-        # Utiliser QStackedWidget pour gérer les widgets
-        self.stacked_widget = QStackedWidget()
         self.stacked_widget.addWidget(self.browser)
         self.stacked_widget.addWidget(self.button_widget)
+        
 
-        self.setCentralWidget(self.stacked_widget)
+        self.setCentralWidget(self.stacked_widget)       
+
+        self.init_patient()
 
         self.setup_global_shortcut()
 
@@ -502,7 +452,6 @@ class MainWindow(QMainWindow):
         self.sse_client = SSEClient(url)
         self.sse_client.new_patient.connect(self.update_patient_menu)
         self.sse_client.new_notification.connect(self.show_notification)
-        #self.sse_client.my_patient.connect(self.update_my_patient)
         self.sse_client.start()
         
     def start_socket_io_client(self, url):
@@ -510,7 +459,6 @@ class MainWindow(QMainWindow):
         self.socket_io_client = WebSocketClient(url)
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
-        #self.socket_io_client.my_patient.connect(self.update_my_patient)
         self.socket_io_client.start()       
 
         
@@ -522,71 +470,107 @@ class MainWindow(QMainWindow):
         
         self.toggle_mode_action = QAction("Mode réduit", self)
         self.toggle_mode_action.triggered.connect(self.toggle_mode)
-        self.menu.addAction(self.toggle_mode_action)
-        
-    def create_control_buttons(self):
-        # Create a widget to hold the buttons and the label
-        self.button_widget = QWidget()
-        self.main_layout = QVBoxLayout()  # Use vertical layout to stack label and buttons
+        self.menu.addAction(self.toggle_mode_action)  
 
-        # Create the label bar
+
+    def create_control_buttons(self):
+        if hasattr(self, 'button_widget'):
+            self.button_widget.deleteLater()  # Supprimez l'ancien widget des boutons
+        self.button_widget = QWidget()
+        self.main_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
+
         self.label_bar = QLabel("Status: Ready")
         self.label_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.label_bar.setAlignment(Qt.AlignCenter)  # Center align the label text
+        self.label_bar.setAlignment(Qt.AlignCenter)
 
-        # Create a widget to hold the buttons
         self.button_container = QWidget()
-        self.button_layout = QHBoxLayout()  # Horizontal layout for buttons
+        self.button_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
 
-        # Create the buttons
         self.btn_next = QPushButton("Suivant\n" + self.next_patient_shortcut)
         self.btn_validate = QPushButton("Valider\n" + self.validate_patient_shortcut)
         self.btn_pause = QPushButton("Pause\n" + self.pause_shortcut)
-        self.toggle_button = QPushButton("Agrandir")
-
-        # Connect the toggle button to switch modes
+        
         self.btn_next.clicked.connect(self.call_web_function_validate_and_call_next)
         self.btn_validate.clicked.connect(self.call_web_function_validate)
         self.btn_pause.clicked.connect(self.call_web_function_pause)
-        self.toggle_button.clicked.connect(self.toggle_mode)
 
-        # Set size policies to make the buttons as small as possible
-        for button in [self.btn_next, self.btn_validate, self.btn_pause, self.toggle_button]:
+        for button in [self.btn_next, self.btn_validate, self.btn_pause]:
             button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
             self.button_layout.addWidget(button)
 
+        # Create the dropdown button and its menu
+        self.btn_more = QPushButton("+")
+        self.more_menu = QMenu()
+        self.action_toggle_mode = QAction("Agrandir", self)
+        self.action_toggle_orientation = QAction("Orientation", self)
+
+        self.action_toggle_mode.triggered.connect(self.toggle_mode)
+        self.action_toggle_orientation.triggered.connect(self.toggle_orientation)
+
+        self.more_menu.addAction(self.action_toggle_mode)
+        self.more_menu.addAction(self.action_toggle_orientation)
+        self.btn_more.setMenu(self.more_menu)
+
+        self.btn_more.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+        self.button_layout.addWidget(self.btn_more)
+
         self.button_container.setLayout(self.button_layout)
 
-        # Add the label and buttons to the main layout
         self.main_layout.addWidget(self.label_bar)
         self.main_layout.addWidget(self.button_container)
 
-        # Set the layout on the button widget
         self.button_widget.setLayout(self.main_layout)
-        self.button_widget.hide()  # Hide the buttons initially
-            
+        self.stacked_widget.addWidget(self.button_widget)
+        self.button_widget.hide()
+
+
+    def update_control_buttons_layout(self):
+        self.create_control_buttons()
+        if self.is_reduced_mode:
+            self.stacked_widget.setCurrentWidget(self.button_widget)
             
     def toggle_mode(self):
+        print("Toggle Mode", self.is_reduced_mode)
         if self.is_reduced_mode:
-            # Switch to normal mode
+            self.setMinimumSize(QSize(0, 0))
+            self.setMaximumSize(QSize(16777215, 16777215))
             self.resize(800, 600)
             self.menuBar().show()
             self.stacked_widget.setCurrentWidget(self.browser)
             self.toggle_mode_action.setText("Mode réduit")
         else:
-            # Switch to reduced mode
-            self.resize(100, 50)
+            self.resize_to_fit_buttons()
             self.menuBar().hide()
             self.stacked_widget.setCurrentWidget(self.button_widget)
             self.toggle_mode_action.setText("Mode normal")
         self.is_reduced_mode = not self.is_reduced_mode
         
+    def resize_to_fit_buttons(self):
+        self.button_widget.adjustSize()
+        size_hint = self.button_widget.sizeHint()
+        print(f"Resizing to: {size_hint}")  # Debug print
+        self.setMinimumSize(size_hint)
+        self.setMaximumSize(size_hint)
+        self.resize(size_hint)
+        print(f"Current Size: {self.size()}")  # Debug print
+        
+    def toggle_orientation(self):
+        self.vertical_mode = not self.vertical_mode
+        self.update_control_buttons_layout()
+        self.resize_to_fit_buttons()
+        
     def show_preferences_dialog(self):
         dialog = PreferencesDialog(self)
+        dialog.preferences_updated.connect(self.apply_preferences)
         if dialog.exec():
             self.load_preferences()
             self.load_url()
-            self.setup_global_shortcut()  # Reconfigurer les raccourcis après les avoir modifiés
+            self.setup_global_shortcut()
+            
+    def apply_preferences(self):
+        self.load_preferences()
+        self.setup_global_shortcut()
+        self.update_control_buttons_layout()
             
     def load_url(self):
         counter_web_url = f'{self.web_url}/counter/{self.counter_id}'
@@ -622,7 +606,7 @@ class MainWindow(QMainWindow):
     def init_patient(self):
         print("Init Patient")
         url = f'{self.web_url}/counter/app/is_patient_on_counter/{self.counter_id}'
-        response = requests.get(url)  # Envoie une requête GET à l'URL
+        response = requests.get(url)
         print(response.json())
         if response.status_code == 200:
             print("Success:", response)
@@ -633,7 +617,7 @@ class MainWindow(QMainWindow):
     def call_web_function_validate_and_call_next(self):
         print("Call Web Function NEXT")
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
-        response = requests.get(url)  # Envoie une requête GET à l'URL
+        response = requests.get(url)
         if response.status_code == 200:
             print("Success:", response.text)
         else:
@@ -643,7 +627,7 @@ class MainWindow(QMainWindow):
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
         print("Call Web Function Specifique")
         url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-        response = requests.get(url)  # Envoie une requête GET à l'URL
+        response = requests.get(url)
         print(response)
         if response.status_code == 200:
             print("Success:", response.text)
@@ -654,7 +638,7 @@ class MainWindow(QMainWindow):
     def call_web_function_validate(self):
         print("Call Web Function Validate")
         url =f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
-        response = requests.get(url)  # Envoie une requête GET à l'URL
+        response = requests.get(url)
         if response.status_code == 200:
             print("Success:", response.text)
         else:
@@ -662,7 +646,7 @@ class MainWindow(QMainWindow):
             
     def call_web_function_pause(self):
         url =f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        response = requests.get(url)  # Envoie une requête GET à l'URL
+        response = requests.get(url)
         if response.status_code == 204:
             print("Success!")
         else:
@@ -670,7 +654,6 @@ class MainWindow(QMainWindow):
         
 
     def update_my_patient(self, patient):
-        # mise à jour de l'id du patient pour être utilisé par les url
         print("Update My Patient", patient)
         if patient["counter_id"] == self.counter_id:
             next_patient = patient["next_patient"]
@@ -679,7 +662,6 @@ class MainWindow(QMainWindow):
                 self.label_bar.setText("Pas de patient en cours")
             else:
                 self.patient_id = next_patient["id"]
-                # mise à jour du label (mode réduit)
                 status = next_patient["status"]
                 if status == "calling":
                     status_text = "En appel"
@@ -692,7 +674,6 @@ class MainWindow(QMainWindow):
             
 
     def setup_global_shortcut(self):
-        # Utiliser un thread pour les raccourcis clavier. Permet d'éviter les limitation de Pyside
         self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
         self.shortcut_thread.start()
 
@@ -715,7 +696,6 @@ class MainWindow(QMainWindow):
         self.trayIcon2.setContextMenu(menu)
 
     def show_notification(self, data):
-        """Show a system tray notification with patient data."""
         print("show_notification", data)
         if self.notification_specific_acts:
             self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
@@ -730,22 +710,22 @@ class MainWindow(QMainWindow):
 
 
     def on_tray_icon_validation_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Left click
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.call_web_function_validate()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:  # Right click, handled by Qt automatically
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
             pass
 
 
     def on_tray_icon_call_next_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Left click
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.call_web_function_validate_and_call_next()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:  # Right click, handled by Qt automatically
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
             pass
         
     def on_tray_icon_pause_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Left click
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.call_web_function_pause()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:  # Right click, handled by Qt automatically
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
             pass
 
 
