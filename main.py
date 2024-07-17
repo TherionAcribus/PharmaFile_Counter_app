@@ -444,6 +444,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stacked_widget)       
 
         self.init_patient()
+        
+        list_patients = self.init_list_patients()
+        self.update_patient_menu(list_patients)
 
         self.setup_global_shortcut()
 
@@ -497,6 +500,24 @@ class MainWindow(QMainWindow):
         for button in [self.btn_next, self.btn_validate, self.btn_pause]:
             button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
             self.button_layout.addWidget(button)
+            
+        # Create button for list of patients and and its menu
+        self.btn_choose_patient = QPushButton(">>")
+        self.choose_patient_menu = QMenu()
+
+        self.btn_choose_patient.setMenu(self.choose_patient_menu)
+
+        self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+        self.button_layout.addWidget(self.btn_choose_patient)
+        
+        # on recherche et rafraichit le patient en cours
+        self.init_patient()
+        
+        # on recherche et rafraichit la liste des patient pour le Dropdown
+        list_patients = self.init_list_patients()
+        self.update_list_patient(list_patients)
+        
+            
 
         # Create the dropdown button and its menu
         self.btn_more = QPushButton("+")
@@ -543,6 +564,7 @@ class MainWindow(QMainWindow):
             self.menuBar().hide()
             self.stacked_widget.setCurrentWidget(self.button_widget)
             self.toggle_mode_action.setText("Mode normal")
+
         self.is_reduced_mode = not self.is_reduced_mode
         
     def resize_to_fit_buttons(self):
@@ -611,6 +633,18 @@ class MainWindow(QMainWindow):
         if response.status_code == 200:
             print("Success:", response)
             self.update_my_patient(response.json())
+        else:
+            print("Failed to retrieve data:", response.status_code)
+            
+            
+    def init_list_patients(self):
+        print("Init List Patients")
+        url = f'{self.web_url}/api/patients_list_for_pyside'
+        response = requests.get(url)
+        print(response.json())
+        if response.status_code == 200:
+            print("Success:", response)
+            return response.json()
         else:
             print("Failed to retrieve data:", response.status_code)
             
@@ -683,10 +717,14 @@ class MainWindow(QMainWindow):
         keyboard.add_hotkey(self.pause_shortcut, self.call_web_function_pause)
 
     def new_patient(self, patient):
+        print("new_patient", patient)
         self.init_patient()
         self.update_patient_menu(patient)
+        if self.is_reduced_mode:
+            self.update_list_patient(patient)
 
     def update_patient_menu(self, patients):
+        """ Mise a jour de la liste des patients le trayIcon """
         menu = QMenu()
         print("patients entrée", patients)
         for patient in patients:
@@ -694,6 +732,18 @@ class MainWindow(QMainWindow):
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
         self.trayIcon2.setContextMenu(menu)
+        
+        
+    def update_list_patient(self, patients):
+        """ Mise à jour de la liste des patients pour le bouton 'Choix' """
+        self.choose_patient_menu.clear()  # Clear the menu before updating
+        for patient in patients:
+            print("patient entrée", patient)
+            action_select_patient = QAction(f"{patient['call_number']} - {patient['activity']}", self)
+            action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
+            self.choose_patient_menu.addAction(action_select_patient)
+        self.btn_choose_patient.setMenu(self.choose_patient_menu) 
+        
 
     def show_notification(self, data):
         print("show_notification", data)
