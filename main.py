@@ -146,6 +146,19 @@ class PreferencesDialog(QDialog):
         self.status_label.setFixedWidth(400)
         self.connexion_layout.addWidget(self.status_label)
         
+        self.username_label = QLabel("Nom d'utilisateur:", self.connexion_page)
+        self.connexion_layout.addWidget(self.username_label)
+        
+        self.username_input = QLineEdit()
+        self.connexion_layout.addWidget(self.username_input)
+        
+        self.password_label = QLabel("Mot de passe:", self.connexion_page)
+        self.connexion_layout.addWidget(self.password_label)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.connexion_layout.addWidget(self.password_input)
+        
         self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
         self.connexion_layout.addWidget(self.counter_label)
         
@@ -241,6 +254,8 @@ class PreferencesDialog(QDialog):
     def load_preferences(self):
         settings = QSettings()
         self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
+        self.username_input.setText(settings.value("username", "admin"))
+        self.password_input.setText(settings.value("password", "admin"))
         self.counter_id = settings.value("counter_id", None)
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
         
@@ -266,10 +281,13 @@ class PreferencesDialog(QDialog):
 
     def save_preferences(self):
         url = self.url_input.text()
+        username = self.username_input.text()
+        password = self.password_input.text()
         counter_id = self.counter_combobox.currentData()
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
         validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
         pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
+
         
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
@@ -277,10 +295,15 @@ class PreferencesDialog(QDialog):
         if not counter_id:
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir")
             return
+        if not username or not password:
+            QMessageBox.warning(self, "Erreur", "Le nom d'utilisateur et le mot de passe ne peuvent pas être vides")
+            return
         
         settings = QSettings()
         old_url = settings.value("web_url")
         settings.setValue("web_url", url)
+        settings.setValue("username", username)
+        settings.setValue("password", password)
         settings.setValue("counter_id", counter_id)
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
@@ -378,10 +401,12 @@ class MainWindow(QMainWindow):
     def load_preferences(self):
         settings = QSettings()
         self.web_url = settings.value("web_url", "http://localhost:5000")
+        self.username = settings.value("username", "admin")
+        self.password = settings.value("password", "admin")
         self.counter_id = settings.value("counter_id", "1")
-        self.next_patient_shortcut = settings.value("next_patient_shortcut", "ctrl+shift+a")
-        self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "ctrl+shift+b")
-        self.pause_shortcut = settings.value("pause_shortcut", "Ctrl+P")
+        self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
+        self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
+        self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
@@ -428,6 +453,9 @@ class MainWindow(QMainWindow):
         self.trayIcon3.show()
 
         self.browser = QWebEngineView()
+        # Connect to the URL changed signal. On recherche la page login pour la remplir
+        self.browser.urlChanged.connect(self.on_url_changed)
+        
         self.web_channel = QWebChannel()
         self.web_channel.registerObject("pyqt", self)
         self.browser.page().setWebChannel(self.web_channel)
@@ -440,8 +468,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.browser)
         self.stacked_widget.addWidget(self.button_widget)
         
-
-        self.setCentralWidget(self.stacked_widget)       
+        self.setCentralWidget(self.stacked_widget)        
 
         self.init_patient()
         
@@ -559,6 +586,7 @@ class MainWindow(QMainWindow):
             self.menuBar().show()
             self.stacked_widget.setCurrentWidget(self.browser)
             self.toggle_mode_action.setText("Mode réduit")
+
         else:
             self.resize_to_fit_buttons()
             self.menuBar().hide()
@@ -625,11 +653,41 @@ class MainWindow(QMainWindow):
             """
             self.browser.setHtml(error_html.format(web_url=self.web_url))
             
+    def on_url_changed(self, url):
+        # Check if 'login' appears in the URL
+        if "login" in url.toString():
+            self.inject_login_script()            
+
+    def inject_login_script(self):
+        print("Injection de code JS")
+        print(self.username, self.password)
+        # Inject JavaScript to fill and submit the login form automatically
+        script = f"""
+        document.addEventListener('DOMContentLoaded', function() {{
+        var usernameInput = document.querySelector('input[name="username"]');
+        var passwordInput = document.querySelector('input[name="password"]');
+        var rememberCheckbox = document.querySelector('input[name="remember"]');
+        if (usernameInput && passwordInput) {{
+            usernameInput.value = "{self.username}";
+            passwordInput.value = "{self.password}";
+            if (rememberCheckbox) {{
+                rememberCheckbox.checked = true;
+            }}
+            var form = usernameInput.closest('form');
+            if (form) {{
+                form.submit();
+                    }}
+                }}
+            }})();
+            """
+        self.browser.page().runJavaScript(script)
+            
     def init_patient(self):
         print("Init Patient")
-        url = f'{self.web_url}/counter/app/is_patient_on_counter/{self.counter_id}'
+        url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
+        print(url)
         response = requests.get(url)
-        print(response.json())
+        print(response)
         if response.status_code == 200:
             print("Success:", response)
             self.update_my_patient(response.json())
