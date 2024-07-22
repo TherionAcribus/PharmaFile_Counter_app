@@ -80,6 +80,27 @@ class TestConnectionWorker(QThread):
             self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
 
 
+class RequestThread(QThread):
+    result = Signal(float, str, int)
+
+    def __init__(self, url, session):
+        super().__init__()
+        self.url = url
+        self.session = session
+
+    def run(self):
+        start_time = time.time()
+        try:
+            response = self.session.get(self.url)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            self.result.emit(elapsed_time, response.text, response.status_code)
+        except RequestException as e:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            self.result.emit(elapsed_time, str(e), 0)
+
+
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
     preferences_updated = Signal()
@@ -393,6 +414,7 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         
         self.is_reduced_mode = False
+        self.session = requests.Session()  # Session HTTP persistante
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show() 
@@ -710,40 +732,67 @@ class MainWindow(QMainWindow):
     def call_web_function_validate_and_call_next(self):
         print("Call Web Function NEXT")
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
-        response = requests.get(url)
-        if response.status_code == 200:
-            print("Success:", response.text)
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result)
+        self.thread.start()
+
+    @Slot(float, str, int)
+    def handle_result(self, elapsed_time, response_text, status_code):
+        if status_code == 200:
+            print("Success:", response_text)
         else:
-            print("Failed to retrieve data:", response.status_code)
+            print("Failed to retrieve data:", status_code)
+        print("Elapsed time:", elapsed_time)
 
     
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
-        print("Call Web Function Specifique")
-        url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-        response = requests.get(url)
-        print(response)
-        if response.status_code == 200:
-            print("Success:", response.text)
+            print("Call Web Function Specifique")
+            url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
+            self.thread = RequestThread(url, self.session)
+            self.thread.result.connect(self.handle_result_specifique)
+            self.thread.start()
+
+    @Slot(float, str, int)
+    def handle_result_specifique(self, elapsed_time, response_text, status_code):
+        if status_code == 200:
+            print("Success:", response_text)
         else:
-            print("Failed to retrieve data:", response.status_code)
+            print("Failed to retrieve data:", status_code)
+        print("Elapsed time:", elapsed_time)
+            
 
-
+   # Fonction pour valider un patient
     def call_web_function_validate(self):
         print("Call Web Function Validate")
-        url =f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
-        response = requests.get(url)
-        if response.status_code == 200:
-            print("Success:", response.text)
+        url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result_validate)
+        self.thread.start()
+
+    @Slot(float, str, int)
+    def handle_result_validate(self, elapsed_time, response_text, status_code):
+        if status_code == 200:
+            print("Success:", response_text)
         else:
-            print("Failed to retrieve data:", response.status_code)
+            print("Failed to retrieve data:", status_code)
+        print("Elapsed time:", elapsed_time)
+        
             
+    # Fonction pour mettre en pause un patient
     def call_web_function_pause(self):
-        url =f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        response = requests.get(url)
-        if response.status_code == 204:
+        print("Call Web Function Pause")
+        url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result_pause)
+        self.thread.start()
+
+    @Slot(float, str, int)
+    def handle_result_pause(self, elapsed_time, response_text, status_code):
+        if status_code == 204:
             print("Success!")
         else:
-            print("Failed to retrieve data:", response.status_code)
+            print("Failed to retrieve data:", status_code)
+        print("Elapsed time:", elapsed_time)
         
 
     def update_my_patient(self, patient):
