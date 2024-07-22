@@ -691,6 +691,7 @@ class MainWindow(QMainWindow):
         if response.status_code == 200:
             print("Success:", response)
             self.update_my_patient(response.json())
+            self.update_my_buttons(response.json())
         else:
             print("Failed to retrieve data:", response.status_code)
             
@@ -763,6 +764,20 @@ class MainWindow(QMainWindow):
                     status_text = "????"
                 self.label_bar.setText(f"{next_patient['call_number']} {status_text} ({next_patient['activity']})")
                 
+    def update_my_buttons(self, patient):
+        if patient["counter_id"] == self.counter_id:
+            next_patient = patient["next_patient"]
+            if next_patient is None:
+                self.btn_pause.setEnabled(False)
+                self.btn_validate.setEnabled(False)
+            else:
+                if next_patient["status"] == "calling":
+                    self.btn_pause.setEnabled(False)
+                    self.btn_validate.setEnabled(True)
+                elif next_patient["status"] == "ongoing":
+                    self.btn_pause.setEnabled(True)
+                    self.btn_validate.setEnabled(False)
+
             
 
     def setup_global_shortcut(self):
