@@ -24,7 +24,6 @@ class SSEClient(QThread):
     def __init__(self, web_url):
         super().__init__()
         self.web_url = web_url
-        print(f"Web URL: {self.web_url}")
 
     def run(self):
         while True:
@@ -600,7 +599,6 @@ class MainWindow(QMainWindow):
             self.stacked_widget.setCurrentWidget(self.button_widget)
             
     def toggle_mode(self):
-        print("Toggle Mode", self.is_reduced_mode)
         if self.is_reduced_mode:
             self.setMinimumSize(QSize(0, 0))
             self.setMaximumSize(QSize(16777215, 16777215))
@@ -620,11 +618,9 @@ class MainWindow(QMainWindow):
     def resize_to_fit_buttons(self):
         self.button_widget.adjustSize()
         size_hint = self.button_widget.sizeHint()
-        print(f"Resizing to: {size_hint}")  # Debug print
         self.setMinimumSize(size_hint)
         self.setMaximumSize(size_hint)
         self.resize(size_hint)
-        print(f"Current Size: {self.size()}")  # Debug print
         
     def toggle_orientation(self):
         self.vertical_mode = not self.vertical_mode
@@ -681,8 +677,6 @@ class MainWindow(QMainWindow):
             self.inject_login_script()            
 
     def inject_login_script(self):
-        print("Injection de code JS")
-        print(self.username, self.password)
         # Inject JavaScript to fill and submit the login form automatically
         script = f"""
         document.addEventListener('DOMContentLoaded', function() {{
@@ -705,9 +699,7 @@ class MainWindow(QMainWindow):
         self.browser.page().runJavaScript(script)
             
     def init_patient(self):
-        print("Init Patient")
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
-        print(url)
         response = requests.get(url)
         print(response)
         if response.status_code == 200:
@@ -719,7 +711,6 @@ class MainWindow(QMainWindow):
             
             
     def init_list_patients(self):
-        print("Init List Patients")
         url = f'{self.web_url}/api/patients_list_for_pyside'
         response = requests.get(url)
         print(response.json())
@@ -739,7 +730,14 @@ class MainWindow(QMainWindow):
     @Slot(float, str, int)
     def handle_result(self, elapsed_time, response_text, status_code):
         if status_code == 200:
-            print("Success:", response_text)
+            print("CODE 200!!!!")
+            try:
+                print("Success:", response_text)
+                response_data = json.loads(response_text)
+                self.update_my_patient(response_data)
+                self.update_my_buttons(response_data)
+            except json.JSONDecodeError as e:
+                print("Failed to decode JSON:", e)
         else:
             print("Failed to retrieve data:", status_code)
         print("Elapsed time:", elapsed_time)
@@ -749,16 +747,8 @@ class MainWindow(QMainWindow):
             print("Call Web Function Specifique")
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
             self.thread = RequestThread(url, self.session)
-            self.thread.result.connect(self.handle_result_specifique)
+            self.thread.result.connect(self.handle_result)
             self.thread.start()
-
-    @Slot(float, str, int)
-    def handle_result_specifique(self, elapsed_time, response_text, status_code):
-        if status_code == 200:
-            print("Success:", response_text)
-        else:
-            print("Failed to retrieve data:", status_code)
-        print("Elapsed time:", elapsed_time)
             
 
    # Fonction pour valider un patient
@@ -766,68 +756,51 @@ class MainWindow(QMainWindow):
         print("Call Web Function Validate")
         url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
         self.thread = RequestThread(url, self.session)
-        self.thread.result.connect(self.handle_result_validate)
+        self.thread.result.connect(self.handle_result)
         self.thread.start()
 
-    @Slot(float, str, int)
-    def handle_result_validate(self, elapsed_time, response_text, status_code):
-        if status_code == 200:
-            print("Success:", response_text)
-        else:
-            print("Failed to retrieve data:", status_code)
-        print("Elapsed time:", elapsed_time)
-        
-            
+                    
     # Fonction pour mettre en pause un patient
     def call_web_function_pause(self):
         print("Call Web Function Pause")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
         self.thread = RequestThread(url, self.session)
-        self.thread.result.connect(self.handle_result_pause)
+        self.thread.result.connect(self.handle_result)
         self.thread.start()
 
-    @Slot(float, str, int)
-    def handle_result_pause(self, elapsed_time, response_text, status_code):
-        if status_code == 204:
-            print("Success!")
-        else:
-            print("Failed to retrieve data:", status_code)
-        print("Elapsed time:", elapsed_time)
-        
 
     def update_my_patient(self, patient):
-        print("Update My Patient", patient)
+        print("Update My Patient new", patient, type(patient))
         if patient["counter_id"] == self.counter_id:
-            next_patient = patient["next_patient"]
-            if next_patient is None:
+            print(patient["id"], type(patient["id"]))
+            if patient["id"] is None:
                 self.patient_id = None
                 self.label_bar.setText("Pas de patient en cours")
             else:
-                self.patient_id = next_patient["id"]
-                status = next_patient["status"]
+                self.patient_id = patient["id"]
+                status = patient["status"]
                 if status == "calling":
                     status_text = "En appel"
                 elif status == "ongoing":
                     status_text = "Au comptoir"
                 else:
                     status_text = "????"
-                self.label_bar.setText(f"{next_patient['call_number']} {status_text} ({next_patient['activity']})")
-                
+                self.label_bar.setText(f"{patient['call_number']} {status_text} ({patient['activity']})")
+
     def update_my_buttons(self, patient):
         if patient["counter_id"] == self.counter_id:
-            next_patient = patient["next_patient"]
-            if next_patient is None:
+            if patient["id"] is None:
                 self.btn_pause.setEnabled(False)
                 self.btn_validate.setEnabled(False)
             else:
-                if next_patient["status"] == "calling":
+                if patient["status"] == "calling":
                     self.btn_pause.setEnabled(False)
                     self.btn_validate.setEnabled(True)
-                elif next_patient["status"] == "ongoing":
+                elif patient["status"] == "ongoing":
                     self.btn_pause.setEnabled(True)
                     self.btn_validate.setEnabled(False)
-
-            
+                    
+                               
 
     def setup_global_shortcut(self):
         self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
@@ -840,7 +813,7 @@ class MainWindow(QMainWindow):
 
     def new_patient(self, patient):
         print("new_patient", patient)
-        self.init_patient()
+        #self.init_patient()
         self.update_patient_menu(patient)
         if self.is_reduced_mode:
             self.update_list_patient(patient)
@@ -848,7 +821,6 @@ class MainWindow(QMainWindow):
     def update_patient_menu(self, patients):
         """ Mise a jour de la liste des patients le trayIcon """
         menu = QMenu()
-        print("patients entrée", patients)
         for patient in patients:
             action_text = f"{patient['call_number']} - {patient['activity']}"
             action = menu.addAction(action_text)
@@ -868,7 +840,6 @@ class MainWindow(QMainWindow):
         
 
     def show_notification(self, data):
-        print("show_notification", data)
         if self.notification_specific_acts:
             self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
 
@@ -877,7 +848,6 @@ class MainWindow(QMainWindow):
         self.show_preferences_dialog()
 
     def select_patient(self, patient_select_id):
-        print(f"Patient {patient_select_id} selected")
         self.call_web_function_validate_and_call_specifique(patient_select_id)
 
 
