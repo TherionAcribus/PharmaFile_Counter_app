@@ -7,7 +7,7 @@ import threading
 import socketio
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
@@ -130,7 +130,7 @@ class PreferencesDialog(QDialog):
         self.navigation_list.addItem(self.general_item)
         self.navigation_list.addItem(self.connexion_item)
         self.navigation_list.addItem(self.raccourcis_item)
-        self.navigation_list.addItem(self.notifications_item)
+        self.navigation_list.addItem(self.notifications_item)        
         
         self.main_layout.addWidget(self.navigation_list)
         
@@ -148,6 +148,8 @@ class PreferencesDialog(QDialog):
         
         self.vertical_mode = QCheckBox("Orientation verticale", self.general_page)
         self.general_layout.addWidget(self.vertical_mode)
+        
+        self.general_layout.addStretch()
         
         self.stacked_widget.addWidget(self.general_page)
         
@@ -194,6 +196,8 @@ class PreferencesDialog(QDialog):
         self.counter_combobox = QComboBox(self.connexion_page)
         self.connexion_layout.addWidget(self.counter_combobox)
         
+        self.connexion_layout.addStretch()
+        
         self.stacked_widget.addWidget(self.connexion_page)
         
         self.raccourcis_page = QWidget()
@@ -224,6 +228,8 @@ class PreferencesDialog(QDialog):
         self.deconnect_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.deconnect_input)
         
+        self.raccourcis_layout.addStretch()
+        
         self.stacked_widget.addWidget(self.raccourcis_page)
         
         self.main_layout.addWidget(self.stacked_widget)
@@ -238,6 +244,8 @@ class PreferencesDialog(QDialog):
         self.notification_specific_acts_checkbox = QCheckBox("Afficher les actes spécifiques", self.notifications_page)
         self.notifications_layout.addWidget(self.notification_specific_acts_checkbox)
         
+        self.notifications_layout.addStretch()
+        
         self.stacked_widget.addWidget(self.notifications_page)
         
         self.main_layout.addWidget(self.stacked_widget)
@@ -248,9 +256,8 @@ class PreferencesDialog(QDialog):
         
         self.load_preferences()
         
-        self.counters_loaded.connect(self.update_counters)
-        
-        QTimer.singleShot(0, self.test_url)
+        self.counters_loaded.connect(self.update_counters)        
+
 
     def create_shortcut_input(self):
         widget = QWidget()
