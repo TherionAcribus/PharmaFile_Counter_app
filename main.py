@@ -650,9 +650,7 @@ class MainWindow(QMainWindow):
         
         # on recherche et rafraichit la liste des patient pour le Dropdown
         list_patients = self.init_list_patients()
-        self.update_list_patient(list_patients)
-        
-            
+        self.update_list_patient(list_patients)        
 
         # Create the dropdown button and its menu
         self.btn_more = QPushButton("+")
@@ -931,7 +929,6 @@ class MainWindow(QMainWindow):
     @Slot(float, str, int)
     def handle_result(self, elapsed_time, response_text, status_code):
         if status_code == 200:
-            print("CODE 200!!!!")
             try:
                 print("Success:", response_text)
                 response_data = json.loads(response_text)
@@ -939,13 +936,15 @@ class MainWindow(QMainWindow):
                 self.update_my_buttons(response_data)
             except json.JSONDecodeError as e:
                 print("Failed to decode JSON:", e)
+        # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
+        elif status_code == 204:
+            self.update_my_patient(None)
         else:
             print("Failed to retrieve data:", status_code)
         print("Elapsed time:", elapsed_time)
 
     
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
-            print("Call Web Function Specifique")
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
             self.thread = RequestThread(url, self.session)
             self.thread.result.connect(self.handle_result)
@@ -971,22 +970,27 @@ class MainWindow(QMainWindow):
 
 
     def update_my_patient(self, patient):
-        print("Update My Patient new", patient, type(patient))
-        if patient["counter_id"] == self.counter_id:
-            print(patient["id"], type(patient["id"]))
-            if patient["id"] is None:
-                self.patient_id = None
-                self.label_bar.setText("Pas de patient en cours")
-            else:
-                self.patient_id = patient["id"]
-                status = patient["status"]
-                if status == "calling":
-                    status_text = "En appel"
-                elif status == "ongoing":
-                    status_text = "Au comptoir"
+        if patient is None:
+            self.patient_id = None
+            self.label_bar.setText("Plus de patients")
+        else:
+            print("Update My Patient new", patient, type(patient))
+            if patient["counter_id"] == self.counter_id:
+                print(patient["id"], type(patient["id"]))
+                if patient["id"] is None:
+                    self.patient_id = None
+                    self.label_bar.setText("Pas de patient en cours")
                 else:
-                    status_text = "????"
-                self.label_bar.setText(f"{patient['call_number']} {status_text} ({patient['activity']})")
+                    self.patient_id = patient["id"]
+                    status = patient["status"]
+                    if status == "calling":
+                        status_text = "En appel"
+                    elif status == "ongoing":
+                        status_text = "Au comptoir"
+                    else:
+                        status_text = "????"
+                    self.label_bar.setText(f"{patient['call_number']} {status_text} ({patient['activity']})")
+
 
     def update_my_buttons(self, patient):
         if patient["counter_id"] == self.counter_id:
@@ -1039,10 +1043,19 @@ class MainWindow(QMainWindow):
     def update_patient_menu(self, patients):
         """ Mise a jour de la liste des patients le trayIcon """
         menu = QMenu()
+
+        # Mise à jour du bouton 'Choix' selon qu'il y ait ou non des patients
+        if len(patients) == 0:
+            self.btn_choose_patient.setText("X")
+        else:
+            self.btn_choose_patient.setText(">>")
+
+        # Ajout des patients dans le menu
         for patient in patients:
             action_text = f"{patient['call_number']} - {patient['activity']}"
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
+            
         self.trayIcon2.setContextMenu(menu)
         
         
