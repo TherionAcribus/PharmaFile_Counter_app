@@ -8,7 +8,7 @@ import socketio
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent
@@ -82,15 +82,24 @@ class TestConnectionWorker(QThread):
 class RequestThread(QThread):
     result = Signal(float, str, int)
 
-    def __init__(self, url, session):
+    def __init__(self, url, session, method='GET', data=None, headers=None):
         super().__init__()
         self.url = url
         self.session = session
+        self.method = method
+        self.data = data
+        self.headers = headers
 
     def run(self):
         start_time = time.time()
         try:
-            response = self.session.get(self.url)
+            if self.method == 'GET':
+                response = self.session.get(self.url)
+            elif self.method == 'POST':
+                response = self.session.post(self.url, data=self.data, headers=self.headers)
+            else:
+                raise ValueError(f"Méthode HTTP non supportée: {self.method}")
+            
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.result.emit(elapsed_time, response.text, response.status_code)
@@ -199,7 +208,7 @@ class PreferencesDialog(QDialog):
         
         self.validate_patient_shortcut_label = QLabel("Raccourci - Valider patient:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_label)
-        
+       
         self.validate_patient_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_input)
         
@@ -208,6 +217,12 @@ class PreferencesDialog(QDialog):
         
         self.pause_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.pause_shortcut_input)
+        
+        self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
+        self.raccourcis_layout.addWidget(self.deconnect_label)
+        
+        self.deconnect_input = self.create_shortcut_input()
+        self.raccourcis_layout.addWidget(self.deconnect_input)
         
         self.stacked_widget.addWidget(self.raccourcis_page)
         
@@ -282,6 +297,7 @@ class PreferencesDialog(QDialog):
         self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
         self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
         self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
+        self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input, "Alt+D")
 
         self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
@@ -306,6 +322,7 @@ class PreferencesDialog(QDialog):
         counter_id = self.counter_combobox.currentData()
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
         validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
+        deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
         pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
 
         
@@ -328,6 +345,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
         settings.setValue("pause_shortcut", pause_shortcut)
+        settings.setValue("deconnect_shortcut", deconnect_shortcut)
         
         settings.setValue("show_current_patient", self.show_current_patient_checkbox.isChecked())
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
@@ -406,17 +424,37 @@ class PreferencesDialog(QDialog):
 class MainWindow(QMainWindow):
     patient_data_received = Signal(object)
     patient_id = None
+    staff_id = None
     
     def __init__(self):
         super().__init__()
+        self.session = requests.Session()  # Session HTTP persistante
+        
         self.load_preferences()
+        
+        self.app_token = None
+        self.get_app_token()
+        
         self.setup_ui()
         
+        self.setup_user()
+        
         self.is_reduced_mode = False
-        self.session = requests.Session()  # Session HTTP persistante
+        if self.start_with_reduce_mode:
+            self.toggle_mode()     
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show() 
+        
+    def get_app_token(self):
+        url = f'{self.web_url}/api/get_app_token'
+        data = {'app_secret': 'votre_secret_app'}
+        response = self.session.post(url, data=data)
+        if response.status_code == 200:
+            self.app_token = response.json()['token']
+            print("Token obtenu :", self.app_token)
+        else:
+            print("Échec de l'obtention du token")
 
         
     def load_preferences(self):
@@ -428,6 +466,7 @@ class MainWindow(QMainWindow):
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
         self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")
+        self.deconnect_shortcut = settings.value("deconnect_shortcut", "Alt+D")
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
@@ -497,6 +536,47 @@ class MainWindow(QMainWindow):
         self.update_patient_menu(list_patients)
 
         self.setup_global_shortcut()
+        
+    def setup_user(self):
+        """ Va chercher le staff sur le comptoir """
+        url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
+        self.user_thread = RequestThread(url, self.session, method='GET')
+        self.user_thread.result.connect(self.handle_user_result)
+        self.user_thread.start()
+        
+    @Slot(float, str, int)
+    def handle_user_result(self, elapsed_time, response_text, status_code):
+        # si staff au comptoir 
+        if status_code == 200:
+            try:
+                print("Success:", response_text)
+                response_data = json.loads(response_text)
+                self.staff_id = response_data["staff"]['id']
+                staff_name = response_data["staff"]['name']
+                # on modifie le titre
+                self.update_window_title(staff_name)              
+                
+            except json.JSONDecodeError as e:
+                print("Failed to decode JSON:", e)
+        # si personne au comptoir
+        elif status_code == 204:
+            print("Success:", response_text)
+            print("No staff on counter")
+            self.staff_id = False
+            # on modifie le titre
+            self.update_window_title("Connectez-vous !")
+            # on affiche l'interface de connexion
+            self.deconnexion_interface()
+        else:
+            print("Failed to retrieve data:", status_code)
+        print("Elapsed time:", elapsed_time)
+        
+        
+    def update_window_title(self, staff_name):
+        """ Met a jour le titre de la fenetre """
+        print(f"Staff name: {staff_name}")
+        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")
+        
 
     def start_sse_client(self, url):
         print(f"Starting SSE client with URL: {url}")
@@ -571,12 +651,15 @@ class MainWindow(QMainWindow):
         self.btn_more = QPushButton("+")
         self.more_menu = QMenu()
         self.action_toggle_mode = QAction("Agrandir", self)
+        self.action_deconnexion = QAction(f"Deconnexion {self.deconnect_shortcut}", self)
         self.action_toggle_orientation = QAction("Orientation", self)
 
         self.action_toggle_mode.triggered.connect(self.toggle_mode)
+        self.action_deconnexion.triggered.connect(self.deconnexion_interface)
         self.action_toggle_orientation.triggered.connect(self.toggle_orientation)
 
         self.more_menu.addAction(self.action_toggle_mode)
+        self.more_menu.addAction(self.action_deconnexion)
         self.more_menu.addAction(self.action_toggle_orientation)
         self.btn_more.setMenu(self.more_menu)
 
@@ -634,7 +717,118 @@ class MainWindow(QMainWindow):
             self.load_preferences()
             self.load_url()
             self.setup_global_shortcut()
+    
+    def deconnexion_interface(self):
+        print("deconnexion_interface")
+        # Créer un nouveau widget pour l'interface de connexion
+        login_widget = QWidget()
+        login_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
+
+        # Ajouter un label
+        self.label_connexion = QLabel("Connectez-vous")
+        login_layout.addWidget(self.label_connexion)
+
+        # Ajouter un champ pour les initiales
+        self.initials_input = QLineEdit()
+        self.initials_input.setPlaceholderText("Entrez vos initiales")
+        login_layout.addWidget(self.initials_input)
+        # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
+        self.initials_input.setDisabled(True)
+        # réactivation après 100ms
+        QTimer.singleShot(100, self.enable_initials_input)
+        
+        # Checkbox pour la deconnexion sur tous les autres postes
+        self.checkbox_on_all = QCheckBox("Deconnexion sur tous les autres postes")
+        login_layout.addWidget(self.checkbox_on_all)
+
+        # Ajouter un bouton de validation
+        validate_button = QPushButton("Valider")
+        validate_button.clicked.connect(self.validate_login)
+        login_layout.addWidget(validate_button)
+
+        login_widget.setLayout(login_layout)
+
+        # Remplacer le widget actuel par le widget de connexion
+        self.stacked_widget.addWidget(login_widget)
+        self.stacked_widget.setCurrentWidget(login_widget)
+
+        # Connecter la touche Enter à la fonction de validation
+        self.initials_input.returnPressed.connect(self.validate_login)
+        
+        print("deconnexion_interface 2")
+        
+        # Deconnexion sur le serveur
+        url = f'{self.web_url}/app/counter/remove_staff'
+        data = {'counter_id': self.counter_id}     
+        headers = {'X-App-Token': self.app_token}
+        self.disconnect_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        self.disconnect_thread.result.connect(self.handle_disconnect_result)
+        self.disconnect_thread.start()
+        
+    def enable_initials_input(self):
+        """ Permet d'activer le champ des initiales lors de l'initialisation + focus
+        Obligé de le désactiver pour éviter entrée du raccourci clavier dans le champ """
+        self.initials_input.setDisabled(False)
+        # Donner le focus au champ des initiales
+        self.initials_input.setFocus()
+        
+    @Slot(float, str, int)
+    def handle_disconnect_result(self, elapsed_time, response_text, status_code):
+        print("OK")
+        print(status_code)
+        print(response_text)
+        if status_code == 200:
+            # Remise à jour de la barre de titre
+            self.update_window_title("Déconnecté")
+            # Mise à jour de l'id staff
+            self.staff_id = None
+        else:
+            # Afficher un message d'erreur
+            QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
             
+
+    def validate_login(self):
+        if not self.app_token:
+            print("Pas de token valide")
+            return
+        
+        initials = self.initials_input.text()
+        cb_deconnexion_on_all = self.checkbox_on_all.isChecked()
+        if initials:
+            url = f'{self.web_url}/app/counter/update_staff'
+            data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": True, "app": True}
+            headers = {'X-App-Token': self.app_token}
+            
+            self.login_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+            self.login_thread.result.connect(self.handle_login_result)
+            self.login_thread.start()
+
+    @Slot(float, str, int)
+    def handle_login_result(self, elapsed_time, response_text, status_code):
+        print("OK")
+        print(status_code)
+        print(response_text)
+        if status_code == 200:
+            response_data = json.loads(response_text)
+            # Remise à jour de la barre de titre
+            self.update_window_title(response_data["staff"]["name"])
+            # Mise à jour de l'id staff
+            self.staff_id = response_data["staff"]["id"]
+            # Revenir à l'interface d'origine
+            self.stacked_widget.setCurrentWidget(self.button_widget)
+            # Mettre à jour l'interface si nécessaire
+            self.init_patient()
+        elif status_code == 204:
+            print("Success:", response_text)
+            print("Staff unknown")
+            self.staff_id = False
+            # Revenir à l'interface d'origine
+            self.label_connexion.setText("Initiales incorrectes ! ")            
+        else:
+            # Afficher un message d'erreur
+            QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
+            
+    
     def apply_preferences(self):
         self.load_preferences()
         self.setup_global_shortcut()
@@ -799,17 +993,34 @@ class MainWindow(QMainWindow):
                 elif patient["status"] == "ongoing":
                     self.btn_pause.setEnabled(True)
                     self.btn_validate.setEnabled(False)
-                    
-                               
+
 
     def setup_global_shortcut(self):
         self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
         self.shortcut_thread.start()
 
     def setup_shortcuts(self):
-        keyboard.add_hotkey(self.next_patient_shortcut, self.call_web_function_validate_and_call_next)
-        keyboard.add_hotkey(self.validate_patient_shortcut, self.call_web_function_validate)
-        keyboard.add_hotkey(self.pause_shortcut, self.call_web_function_pause)
+        keyboard.add_hotkey(self.next_patient_shortcut, self.handle_next_patient_shortcut)
+        keyboard.add_hotkey(self.validate_patient_shortcut, self.handle_validate_shortcut)
+        keyboard.add_hotkey(self.pause_shortcut, self.handle_pause_shortcut)
+        keyboard.add_hotkey(self.deconnect_shortcut, self.handle_deconnect_shortcut)
+
+    def handle_next_patient_shortcut(self):
+        self.btn_next.animateClick()
+        self.call_web_function_validate_and_call_next()
+
+    def handle_validate_shortcut(self):
+        self.btn_validate.animateClick()
+        self.call_web_function_validate()
+
+    def handle_pause_shortcut(self):
+        self.btn_pause.animateClick()
+        self.call_web_function_pause()
+        
+    def handle_deconnect_shortcut(self):
+        print("handle_deconnect_shortcut")
+        QMetaObject.invokeMethod(self, 'deconnexion_interface', Qt.QueuedConnection)
+        
 
     def new_patient(self, patient):
         print("new_patient", patient)
