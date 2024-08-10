@@ -1,6 +1,5 @@
 build/
 dist/
-assets/
 env/
 __pycache__/
 pysidedeploy.spec

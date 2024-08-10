@@ -109,6 +109,90 @@ class RequestThread(QThread):
             self.result.emit(elapsed_time, str(e), 0)
 
 
+class IconeButton(QPushButton):
+    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, parent=None):
+        super().__init__(parent)
+        
+        self.icon_path = icon_path
+        self.icon_inactive_path = icon_inactive_path
+        self.flask_url = flask_url
+        self.tooltip_text = tooltip_text
+        self.tooltip_inactive_text = tooltip_inactive_text
+        self.app_token = parent.app_token
+        self.session = parent.session
+        self.counter_id = parent.counter_id
+        self.setFixedSize(50, 50)
+        self.setIcon(QIcon(self.icon_path))
+        self.setIconSize(QSize(50, 50))
+        self.setStyleSheet("border: none;")
+        self.state = "waiting"  # inactive, active, waiting
+        
+        self.send_request(action=None)
+        
+        self.clicked.connect(self.toggle_state)
+        self.update_button_icon()
+
+    def toggle_state(self):
+        if self.state == "inactive":
+            self.state = "waiting"
+            self.update_button_icon()
+            self.send_request("activate")
+        elif self.state == "active":
+            self.state = "waiting"
+            self.update_button_icon()
+            self.send_request("deactivate")
+            
+    def change_state(self, state):
+        self.state = state
+        self.update_button_icon()
+            
+    def handle_response(self, elapsed_time, response_text, status_code):
+        print("REPONSE", response_text, status_code)
+        response_data = json.loads(response_text)
+        print(response_data["status"], type(response_data["status"]))
+        if status_code == 200:
+            if response_data["status"] == True:
+                self.state = "active"
+            else:
+                self.state = "inactive"
+            #self.state == "active" if response_data["status"] else "inactive"
+            print(f"Etat mis à jour : {self.state}")
+            self.update_button_icon()
+        else:
+            self.state = "waiting"
+            self.update_button_icon()
+            print(f"Erreur {status_code}: {response_text}")
+
+    def send_request(self, action):
+        print(f"Envoi de la requête {action}", self.flask_url)
+        url = f"{self.flask_url}"
+        data = {'action': action,
+                'counter_id': self.counter_id}
+        headers = {'X-App-Token': self.app_token}
+
+        self.request_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        self.request_thread.result.connect(self.handle_response)
+        self.request_thread.start()
+
+    def update_button_icon(self):
+        print("update_button_icon", self.state)
+        if self.state == "inactive":
+            self.setIcon(QIcon(self.icon_inactive_path))
+            self.setIconSize(QSize(50, 50))
+            self.setEnabled(True)
+            self.setToolTip(self.tooltip_inactive_text)
+        elif self.state == "active":
+            self.setIcon(QIcon(self.icon_path))
+            self.setIconSize(QSize(50, 50))
+            self.setEnabled(True)
+            self.setToolTip(self.tooltip_text)
+        elif self.state == "waiting":
+            self.setIcon(QIcon(self.icon_path))
+            self.setIconSize(QSize(50, 50))
+            self.setEnabled(False)
+            self.setToolTip("En attente d'une connexion")
+
+
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
     preferences_updated = Signal()
@@ -594,9 +678,11 @@ class MainWindow(QMainWindow):
         
     def start_socket_io_client(self, url):
         print(f"Starting Socket.IO client with URL: {url}")
-        self.socket_io_client = WebSocketClient(url)
+        self.socket_io_client = WebSocketClient(self)
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
+        self.socket_io_client.change_paper.connect(self.change_paper)
+        self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.start()       
 
         
@@ -670,6 +756,32 @@ class MainWindow(QMainWindow):
 
         self.btn_more.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_more)
+        
+        autocalling_icon_path = resource_path("assets/images/loop_yes.ico")
+        autocalling_icon_inactive_path = resource_path("assets/images/loop_no.ico")
+        autocalling_url = f'{self.web_url}/app/counter/auto_calling'
+        self.btn_auto_calling = IconeButton(
+            icon_path = autocalling_icon_path,
+            icon_inactive_path = autocalling_icon_inactive_path,
+            flask_url = autocalling_url,
+            tooltip_inactive_text = "Activer l'appel automatique",
+            tooltip_text="Desactiver l'appel automatique",
+            parent = self
+        )
+        self.button_layout.addWidget(self.btn_auto_calling)
+        
+        paper_icon_path = resource_path("assets/images/paper_add.ico")
+        paper_icon_inactive_path = resource_path("assets/images/paper.ico")
+        paper_url = f'{self.web_url}/app/counter/paper_add'
+        self.btn_paper = IconeButton(
+            icon_inactive_path = paper_icon_path,
+            icon_path = paper_icon_inactive_path,
+            flask_url = paper_url,
+            tooltip_text = "Indiquer qu'il faut changer le papier",
+            tooltip_inactive_text = "Indiquer que vous avez changé le papier",
+            parent = self
+        )
+        self.button_layout.addWidget(self.btn_paper)
 
         self.button_container.setLayout(self.button_layout)
 
@@ -692,6 +804,8 @@ class MainWindow(QMainWindow):
             self.setMaximumSize(QSize(16777215, 16777215))
             self.resize(800, 600)
             self.menuBar().show()
+            # refresh browser
+            self.load_url()
             self.stacked_widget.setCurrentWidget(self.browser)
             self.toggle_mode_action.setText("Mode réduit")
 
@@ -1073,6 +1187,12 @@ class MainWindow(QMainWindow):
     def show_notification(self, data):
         if self.notification_specific_acts:
             self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
+
+    def change_paper(self, data):
+        self.btn_paper.send_request(None)
+        
+    def change_auto_calling(self, data):
+        self.btn_auto_calling.send_request(None)
 
     @Slot()
     def pyqt_call_preferences(self):

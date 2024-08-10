@@ -8,20 +8,25 @@ class WebSocketClient(QThread):
     new_patient = Signal(object)
     new_notification = Signal(str)
     my_patient = Signal(object)
+    change_paper = Signal(str)
+    change_auto_calling = Signal(str)
 
-    def __init__(self, web_url):
+    def __init__(self, parent):
         super().__init__()
-        if "https" in web_url:
-            self.web_url = web_url.replace("https", "wss")
+        self.parent = parent
+        if "https" in self.parent.web_url:
+            self.web_url = self.parent.web_url.replace("https", "wss")
         else:
-            self.web_url = web_url.replace("http", "ws")
+            self.web_url = self.parent.web_url.replace("http", "ws")
 
         self.sio = socketio.Client(logger=True, engineio_logger=True)
 
         # Connexion aux événements WebSocket
         self.sio.on('connect', self.on_connect, namespace='/socket_app_counter')
         self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('update', self.on_update, namespace='/socket_app_counter')      
+        self.sio.on('update', self.on_update, namespace='/socket_app_counter')
+        self.sio.on('paper', self.on_paper, namespace='/socket_app_counter')      
+        self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')     
 
 
     def run(self):
@@ -44,7 +49,13 @@ class WebSocketClient(QThread):
 
     def on_disconnect(self):
         print('WebSocket disconnected')
-
+        
+    def on_paper(self, data):
+        self.change_paper.emit(data)
+        
+    def on_change_auto_calling(self, data):
+        if self.parent.counter_id == int(data["data"]['counter_id']):
+            self.change_auto_calling.emit(data)
 
     def on_update(self, data):
         print("Received update:", data)
