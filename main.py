@@ -7,15 +7,15 @@ import threading
 import socketio
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent
+from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent, QTextCursor
 from datetime import datetime
 
 from websocket_client import WebSocketClient
-
+from preferences import PreferencesDialog
 
 class SSEClient(QThread):
     new_patient = Signal(object)
@@ -58,25 +58,6 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
-
-
-class TestConnectionWorker(QThread):
-    connection_tested = Signal(bool, str)
-
-    def __init__(self, url):
-        super().__init__()
-        self.url = url
-
-    def run(self):
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            response = requests.get(self.url)
-            if response.status_code == 200:
-                self.connection_tested.emit(True, f"Connexion réussie à {current_time}")
-            else:
-                self.connection_tested.emit(False, f"Erreur de connexion: {response.status_code} à {current_time}")
-        except requests.exceptions.RequestException as e:
-            self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
 
 
 class RequestThread(QThread):
@@ -193,346 +174,87 @@ class IconeButton(QPushButton):
             self.setToolTip("En attente d'une connexion")
 
 
-class PreferencesDialog(QDialog):
-    counters_loaded = Signal(list)
-    preferences_updated = Signal()
+class LoadingScreen(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Chargement")
+        self.setFixedSize(400, 200)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Préférences")
-        
-        self.main_layout = QHBoxLayout(self)
-        
-        self.navigation_list = QListWidget()
-        self.navigation_list.setFixedWidth(150)
-        self.navigation_list.itemClicked.connect(self.change_page)
-        
-        self.general_item = QListWidgetItem("Général")
-        self.connexion_item = QListWidgetItem("Connexion")
-        self.raccourcis_item = QListWidgetItem("Raccourcis")
-        self.notifications_item = QListWidgetItem("Notifications")
-        self.navigation_list.addItem(self.general_item)
-        self.navigation_list.addItem(self.connexion_item)
-        self.navigation_list.addItem(self.raccourcis_item)
-        self.navigation_list.addItem(self.notifications_item)        
-        
-        self.main_layout.addWidget(self.navigation_list)
-        
-        self.stacked_widget = QStackedWidget()
+        layout = QVBoxLayout()
+        self.label = QLabel("Démarrage de l'application...")
+        self.progress = QTextEdit()
+        self.progress.setReadOnly(True)
 
-        self.general_page = QWidget()
-        self.general_layout = QVBoxLayout()
-        self.general_page.setLayout(self.general_layout)
-        
-        self.always_on_top_checkbox = QCheckBox("Always on top", self.general_page)
-        self.general_layout.addWidget(self.always_on_top_checkbox)
-        
-        self.start_with_reduce_mode = QCheckBox("Démarrer en mode réduit", self.general_page)
-        self.general_layout.addWidget(self.start_with_reduce_mode)
-        
-        self.vertical_mode = QCheckBox("Orientation verticale", self.general_page)
-        self.general_layout.addWidget(self.vertical_mode)
-        
-        self.general_layout.addStretch()
-        
-        self.stacked_widget.addWidget(self.general_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
-        
-        self.connexion_page = QWidget()
-        self.connexion_layout = QVBoxLayout()
-        self.connexion_page.setLayout(self.connexion_layout)
+        layout.addWidget(self.label)
+        layout.addWidget(self.progress)
+        self.setLayout(layout)
 
-        self.url_label = QLabel("Adresse du site web:", self.connexion_page)
-        self.connexion_layout.addWidget(self.url_label)
+    def update_progress(self, message):
+        self.progress.append(message)
+        self.progress.repaint()
+        QCoreApplication.processEvents()
         
-        self.url_layout = QHBoxLayout()
-        self.url_input = QLineEdit(self.connexion_page)
-        self.url_layout.addWidget(self.url_input)
-        
-        self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
-        self.test_button.clicked.connect(self.test_url)
-        self.url_layout.addWidget(self.test_button)
-        
-        self.connexion_layout.addLayout(self.url_layout)
-        
-        self.status_label = QTextEdit(self.connexion_page)
-        self.status_label.setReadOnly(True)
-        self.status_label.setFixedWidth(400)
-        self.connexion_layout.addWidget(self.status_label)
-        
-        self.username_label = QLabel("Nom d'utilisateur:", self.connexion_page)
-        self.connexion_layout.addWidget(self.username_label)
-        
-        self.username_input = QLineEdit()
-        self.connexion_layout.addWidget(self.username_input)
-        
-        self.password_label = QLabel("Mot de passe:", self.connexion_page)
-        self.connexion_layout.addWidget(self.password_label)
-        
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.connexion_layout.addWidget(self.password_input)
-        
-        self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
-        self.connexion_layout.addWidget(self.counter_label)
-        
-        self.counter_combobox = QComboBox(self.connexion_page)
-        self.connexion_layout.addWidget(self.counter_combobox)
-        
-        self.connexion_layout.addStretch()
-        
-        self.stacked_widget.addWidget(self.connexion_page)
-        
-        self.raccourcis_page = QWidget()
-        self.raccourcis_layout = QVBoxLayout()
-        self.raccourcis_page.setLayout(self.raccourcis_layout)
-        
-        self.next_patient_shortcut_label = QLabel("Raccourci - Patient suivant:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.next_patient_shortcut_label)
-        
-        self.next_patient_shortcut_input = self.create_shortcut_input()
-        self.raccourcis_layout.addWidget(self.next_patient_shortcut_input)
-        
-        self.validate_patient_shortcut_label = QLabel("Raccourci - Valider patient:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.validate_patient_shortcut_label)
-       
-        self.validate_patient_shortcut_input = self.create_shortcut_input()
-        self.raccourcis_layout.addWidget(self.validate_patient_shortcut_input)
-        
-        self.pause_shortcut_label = QLabel("Raccourci - Pause:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.pause_shortcut_label)
-        
-        self.pause_shortcut_input = self.create_shortcut_input()
-        self.raccourcis_layout.addWidget(self.pause_shortcut_input)
-        
-        self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.deconnect_label)
-        
-        self.deconnect_input = self.create_shortcut_input()
-        self.raccourcis_layout.addWidget(self.deconnect_input)
-        
-        self.raccourcis_layout.addStretch()
-        
-        self.stacked_widget.addWidget(self.raccourcis_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
+    def validate_last_line(self):
+        self.update_last_line(" - OK !")
 
-        self.notifications_page = QWidget()
-        self.notifications_layout = QVBoxLayout()
-        self.notifications_page.setLayout(self.notifications_layout)
+    def update_last_line(self, additional_info):
+        cursor = self.progress.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+        cursor.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor)
+        last_line = cursor.selectedText()
         
-        self.show_current_patient_checkbox = QCheckBox("Afficher le patient en cours", self.notifications_page)
-        self.notifications_layout.addWidget(self.show_current_patient_checkbox)
+        new_line = f"{last_line} {additional_info}"
+        cursor.removeSelectedText()
+        cursor.insertText(new_line)
         
-        self.notification_specific_acts_checkbox = QCheckBox("Afficher les actes spécifiques", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_specific_acts_checkbox)
+        self.progress.setTextCursor(cursor)
+        self.progress.ensureCursorVisible()
+        self.progress.repaint()
+        QCoreApplication.processEvents()
         
-        self.notifications_layout.addStretch()
-        
-        self.stacked_widget.addWidget(self.notifications_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
-        
-        self.save_button = QPushButton("Enregistrer", self)
-        self.save_button.clicked.connect(self.save_preferences)
-        self.main_layout.addWidget(self.save_button)
-        
-        self.load_preferences()
-        
-        self.counters_loaded.connect(self.update_counters)        
 
-
-    def create_shortcut_input(self):
-        widget = QWidget()
-        layout = QHBoxLayout()
-        widget.setLayout(layout)
-        
-        self.ctrl_button = QCheckBox("Ctrl")
-        self.ctrl_button.setObjectName("Ctrl")
-        self.alt_button = QCheckBox("Alt")
-        self.alt_button.setObjectName("Alt")
-        self.shift_button = QCheckBox("Maj")
-        self.shift_button.setObjectName("Maj")
-        self.win_button = QCheckBox("Win")
-        self.win_button.setObjectName("Win")
-        self.key_input = QLineEdit()
-        self.key_input.setObjectName("Key")
-        
-        layout.addWidget(self.ctrl_button)
-        layout.addWidget(self.alt_button)
-        layout.addWidget(self.shift_button)
-        layout.addWidget(self.win_button)
-        layout.addWidget(self.key_input)
-        
-        return widget
-
-    def change_page(self, item):
-        if item == self.general_item:
-            self.stacked_widget.setCurrentIndex(0)
-        elif item == self.connexion_item:
-            self.stacked_widget.setCurrentIndex(1)
-        elif item == self.raccourcis_item:
-            self.stacked_widget.setCurrentIndex(2)
-        elif item == self.notifications_item:
-            self.stacked_widget.setCurrentIndex(3)            
-        
-    def load_preferences(self):
-        settings = QSettings()
-        self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
-        self.username_input.setText(settings.value("username", "admin"))
-        self.password_input.setText(settings.value("password", "admin"))
-        self.counter_id = settings.value("counter_id", None)
-        self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
-        
-        self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
-        self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
-        self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
-        self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input, "Alt+D")
-
-        self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
-        self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
-
-        self.start_with_reduce_mode.setChecked(settings.value("start_with_reduce_mode", False, type=bool))
-        self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
-        self.vertical_mode.setChecked(settings.value("vertical_mode", False, type=bool))
-
-    def load_shortcut(self, settings, name, widget, default_shortcut):
-        shortcut = settings.value(name, default_shortcut)
-        keys = shortcut.split("+")
-        widget.findChild(QCheckBox, "Ctrl").setChecked("Ctrl" in keys)
-        widget.findChild(QCheckBox, "Alt").setChecked("Alt" in keys)
-        widget.findChild(QCheckBox, "Maj").setChecked("Maj" in keys)
-        widget.findChild(QCheckBox, "Win").setChecked("Win" in keys)
-        widget.findChild(QLineEdit).setText(keys[-1] if keys and keys[-1] not in ["Ctrl", "Alt", "Maj", "Win"] else "")
-
-    def save_preferences(self):
-        url = self.url_input.text()
-        username = self.username_input.text()
-        password = self.password_input.text()
-        counter_id = self.counter_combobox.currentData()
-        next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
-        validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
-        deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
-        pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
-
-        
-        if not url:
-            QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
-            return
-        if not counter_id:
-            QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir")
-            return
-        if not username or not password:
-            QMessageBox.warning(self, "Erreur", "Le nom d'utilisateur et le mot de passe ne peuvent pas être vides")
-            return
-        
-        settings = QSettings()
-        old_url = settings.value("web_url")
-        settings.setValue("web_url", url)
-        settings.setValue("username", username)
-        settings.setValue("password", password)
-        settings.setValue("counter_id", counter_id)
-        settings.setValue("next_patient_shortcut", next_patient_shortcut)
-        settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
-        settings.setValue("pause_shortcut", pause_shortcut)
-        settings.setValue("deconnect_shortcut", deconnect_shortcut)
-        
-        settings.setValue("show_current_patient", self.show_current_patient_checkbox.isChecked())
-        settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
-
-        settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
-        settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
-        settings.setValue("vertical_mode", self.vertical_mode.isChecked())
-        self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
-        self.parent().show() 
-
-        if url != old_url:
-            print("Redémarrage du client SSE")
-            self.parent().start_sse_client(url)
-        
-        self.accept()
-        self.parent().load_preferences()
-        self.preferences_updated.emit()
-
-    def get_shortcut_text(self, widget):
-        keys = []
-        if widget.findChild(QCheckBox, "Ctrl").isChecked():
-            keys.append("Ctrl")
-        if widget.findChild(QCheckBox, "Alt").isChecked():
-            keys.append("Alt")
-        if widget.findChild(QCheckBox, "Maj").isChecked():
-            keys.append("Maj")
-        if widget.findChild(QCheckBox, "Win").isChecked():
-            keys.append("Win")
-        key_input = widget.findChild(QLineEdit).text()
-        if key_input:
-            keys.append(key_input)
-        return "+".join(keys)
-
-    def test_url(self):
-        self.status_label.setText("Test de connexion en cours...")
-        url = self.url_input.text()
-        if not url:
-            QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
-            self.status_label.setText("L'URL ne peut pas être vide")
-            return
-        
-        self.worker = TestConnectionWorker(url)
-        self.worker.connection_tested.connect(self.on_connection_tested)
-        self.worker.start()
-
-    @Slot(bool, str)
-    def on_connection_tested(self, success, message):
-        self.status_label.setText(message)
-        if success:
-            self.load_counters()
-
-    def load_counters(self):
-        url = self.url_input.text() + '/api/counters'
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                counters = response.json()
-                self.counters_loaded.emit(counters)
-            else:
-                self.status_label.setText(f"Erreur de chargement des comptoirs: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            self.status_label.setText(f"Erreur: {e}")
-
-    @Slot(list)
-    def update_counters(self, counters):
-        self.counter_combobox.clear()
-        for counter in counters:
-            self.counter_combobox.addItem(counter['name'], counter['id'])
-        
-        if self.counter_id:
-            index = self.counter_combobox.findData(int(self.counter_id))
-            if index != -1:
-                self.counter_combobox.setCurrentIndex(index)
-
-
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow):   
+    
     patient_data_received = Signal(object)
     patient_id = None
     staff_id = None
+    connected = False  # permet de savoir si on a réussi à se connecter
     
     def __init__(self):
         super().__init__()
+        
+        self.loading_screen = LoadingScreen()
+        self.loading_screen.show()
+        
+        self.loading_screen.update_progress("Initialisation de la session...")
         self.session = requests.Session()  # Session HTTP persistante
-        
+        self.loading_screen.validate_last_line()
+
         self.load_preferences()
-        
+
+        self.loading_screen.update_progress("Test de la connexion...")
         self.app_token = None
-        self.get_app_token()
-        
+        try:
+            self.get_app_token()
+            # si on a un token, on se considère comme connecté
+            self.connected = True
+            self.loading_screen.update_last_line(" - OK ! Token obtenu")
+        except Exception as e:
+            print("Erreur lors de l'obtention du token :", e)
+            self.connected = False
+            self.loading_screen.update_last_line(f"- Erreur : {e}")
+            
         self.setup_ui()
         
         self.setup_user()
         
+        self.start_socket_io_client(self.web_url)
+        
         self.is_reduced_mode = False
         if self.start_with_reduce_mode:
-            self.toggle_mode()     
+            self.toggle_mode()
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show() 
@@ -549,6 +271,8 @@ class MainWindow(QMainWindow):
 
         
     def load_preferences(self):
+        self.loading_screen.update_progress("Initialisation des préférences...")
+        
         settings = QSettings()
         self.web_url = settings.value("web_url", "http://localhost:5000")
         self.username = settings.value("username", "admin")
@@ -562,17 +286,49 @@ class MainWindow(QMainWindow):
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
         self.vertical_mode = settings.value("vertical_mode", False, type=bool)
-    
+        
+        self.loading_screen.validate_last_line()
         
     def setup_ui(self):
+        self.loading_screen.update_progress("Initialisation de l'interface...")
         icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
         self.resize(800, 600)         
 
-        self.create_menu()
-        self.start_socket_io_client(self.web_url)
+        self.create_menu()      
+        
+        self.setup_systray()
 
+        self.loading_screen.update_progress("Création et connexion du navigateur...")
+        self.browser = QWebEngineView()
+        # Connect to the URL changed signal. On recherche la page login pour la remplir
+        self.browser.urlChanged.connect(self.on_url_changed)
+        
+        self.web_channel = QWebChannel()
+        self.web_channel.registerObject("pyqt", self)
+        self.browser.page().setWebChannel(self.web_channel)
+        self.browser.loadFinished.connect(self.on_load_finished)
+        self.load_url()
+
+        self.stacked_widget = QStackedWidget()
+        self.create_control_buttons()
+
+        self.stacked_widget.addWidget(self.browser)
+        self.stacked_widget.addWidget(self.button_widget)
+        
+        self.setCentralWidget(self.stacked_widget)        
+
+        if self.connected:
+            self.init_patient()        
+            list_patients = self.init_list_patients()
+            self.update_patient_menu(list_patients)
+
+        self.setup_global_shortcut()
+        
+    def setup_systray(self):
+        """ Création du Systray"""        
+        self.loading_screen.update_progress("Création du Systray...")
         icon_path = resource_path("assets/images/pause.ico")
         self.trayIcon1 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon1.setToolTip("Pause")
@@ -602,34 +358,10 @@ class MainWindow(QMainWindow):
         self.trayIcon3.setContextMenu(tray_menu3)
         self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
         self.trayIcon3.show()
-
-        self.browser = QWebEngineView()
-        # Connect to the URL changed signal. On recherche la page login pour la remplir
-        self.browser.urlChanged.connect(self.on_url_changed)
-        
-        self.web_channel = QWebChannel()
-        self.web_channel.registerObject("pyqt", self)
-        self.browser.page().setWebChannel(self.web_channel)
-        self.browser.loadFinished.connect(self.on_load_finished)
-        self.load_url()
-
-        self.stacked_widget = QStackedWidget()
-        self.create_control_buttons()
-
-        self.stacked_widget.addWidget(self.browser)
-        self.stacked_widget.addWidget(self.button_widget)
-        
-        self.setCentralWidget(self.stacked_widget)        
-
-        self.init_patient()
-        
-        list_patients = self.init_list_patients()
-        self.update_patient_menu(list_patients)
-
-        self.setup_global_shortcut()
         
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
+        self.loading_screen.update_progress("Paramétrage de l'utilisateur...")
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
         self.user_thread = RequestThread(url, self.session, method='GET')
         self.user_thread.result.connect(self.handle_user_result)
@@ -677,16 +409,20 @@ class MainWindow(QMainWindow):
         self.sse_client.start()
         
     def start_socket_io_client(self, url):
+        self.loading_screen.update_progress("Création de la connexion Socket.IO...")
         print(f"Starting Socket.IO client with URL: {url}")
         self.socket_io_client = WebSocketClient(self)
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
         self.socket_io_client.change_paper.connect(self.change_paper)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
-        self.socket_io_client.start()       
+        self.socket_io_client.start()
+        self.loading_screen.validate_last_line()
 
-        
+
     def create_menu(self):
+        self.loading_screen.update_progress("Création du menu...")
+        
         self.menu = self.menuBar().addMenu("Fichier")
         self.preferences_action = QAction("Préférences", self)
         self.preferences_action.triggered.connect(self.show_preferences_dialog)
@@ -694,10 +430,12 @@ class MainWindow(QMainWindow):
         
         self.toggle_mode_action = QAction("Mode réduit", self)
         self.toggle_mode_action.triggered.connect(self.toggle_mode)
-        self.menu.addAction(self.toggle_mode_action)  
+        self.menu.addAction(self.toggle_mode_action)
 
+        self.loading_screen.validate_last_line()
 
     def create_control_buttons(self):
+        self.loading_screen.update_progress("Création de l'interface réduite...")
         if hasattr(self, 'button_widget'):
             self.button_widget.deleteLater()  # Supprimez l'ancien widget des boutons
         self.button_widget = QWidget()
@@ -958,7 +696,7 @@ class MainWindow(QMainWindow):
         self.browser.setUrl(QUrl(counter_web_url))
 
     def on_load_finished(self, success):
-        if not success:
+        if not success or not self.connected:
             error_html = """
             <html>
             <head>
@@ -1013,25 +751,32 @@ class MainWindow(QMainWindow):
             
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
-        response = requests.get(url)
-        print(response)
-        if response.status_code == 200:
-            print("Success:", response)
-            self.update_my_patient(response.json())
-            self.update_my_buttons(response.json())
-        else:
-            print("Failed to retrieve data:", response.status_code)
+        try:
+            response = requests.get(url)
+            print(response)
+            if response.status_code == 200:
+                print("Success:", response)
+                self.update_my_patient(response.json())
+                self.update_my_buttons(response.json())
+            else:
+                print("Failed to retrieve data:", response.status_code)
+        except RequestException as e:
+            print(f"Connection lost: {e}")
             
             
     def init_list_patients(self):
         url = f'{self.web_url}/api/patients_list_for_pyside'
-        response = requests.get(url)
-        print(response.json())
-        if response.status_code == 200:
-            print("Success:", response)
-            return response.json()
-        else:
-            print("Failed to retrieve data:", response.status_code)
+        try:
+            response = requests.get(url)
+            print(response.json())
+            if response.status_code == 200:
+                print("Success:", response)
+                return response.json()
+            else:
+                print("Failed to retrieve data:", response.status_code)
+        except RequestException as e:
+            print(f"Connection lost: {e}")
+            return []
             
     def call_web_function_validate_and_call_next(self):
         print("Call Web Function NEXT")
@@ -1156,13 +901,16 @@ class MainWindow(QMainWindow):
 
     def update_patient_menu(self, patients):
         """ Mise a jour de la liste des patients le trayIcon """
-        menu = QMenu()
+        menu = QMenu()       
 
         # Mise à jour du bouton 'Choix' selon qu'il y ait ou non des patients
-        if len(patients) == 0:
-            self.btn_choose_patient.setText("X")
+        if patients:
+            if len(patients) == 0:
+                self.btn_choose_patient.setText("X")
+            else:
+                self.btn_choose_patient.setText(">>")
         else:
-            self.btn_choose_patient.setText(">>")
+            self.btn_choose_patient.setText("X")
 
         # Ajout des patients dans le menu
         for patient in patients:
@@ -1176,12 +924,15 @@ class MainWindow(QMainWindow):
     def update_list_patient(self, patients):
         """ Mise à jour de la liste des patients pour le bouton 'Choix' """
         self.choose_patient_menu.clear()  # Clear the menu before updating
-        for patient in patients:
-            print("patient entrée", patient)
-            action_select_patient = QAction(f"{patient['call_number']} - {patient['activity']}", self)
-            action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
-            self.choose_patient_menu.addAction(action_select_patient)
-        self.btn_choose_patient.setMenu(self.choose_patient_menu) 
+        try:
+            for patient in patients:
+                print("patient entrée", patient)
+                action_select_patient = QAction(f"{patient['call_number']} - {patient['activity']}", self)
+                action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
+                self.choose_patient_menu.addAction(action_select_patient)
+            self.btn_choose_patient.setMenu(self.choose_patient_menu) 
+        except TypeError:
+            print("Type error")
         
 
     def show_notification(self, data):
