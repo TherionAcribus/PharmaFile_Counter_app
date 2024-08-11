@@ -359,6 +359,8 @@ class MainWindow(QMainWindow):
         self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
         self.trayIcon3.show()
         
+        self.loading_screen.validate_last_line()
+        
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
         self.loading_screen.update_progress("Paramétrage de l'utilisateur...")
@@ -436,6 +438,8 @@ class MainWindow(QMainWindow):
 
     def create_control_buttons(self):
         self.loading_screen.update_progress("Création de l'interface réduite...")
+        
+        self.loading_screen.update_progress("__ Création des boutons...")
         if hasattr(self, 'button_widget'):
             self.button_widget.deleteLater()  # Supprimez l'ancien widget des boutons
         self.button_widget = QWidget()
@@ -469,12 +473,18 @@ class MainWindow(QMainWindow):
         self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_choose_patient)
         
+        self.loading_screen.validate_last_line()
+        
+        self.loading_screen.update_progress("__ Connexion pour charger le patient en cours...")
         # on recherche et rafraichit le patient en cours
         self.init_patient()
+        self.loading_screen.validate_last_line()
         
+        self.loading_screen.update_progress("__ Connexion pour charger la liste des patients...")
         # on recherche et rafraichit la liste des patient pour le Dropdown
         list_patients = self.init_list_patients()
-        self.update_list_patient(list_patients)        
+        self.update_list_patient(list_patients)
+        self.loading_screen.validate_last_line()        
 
         # Create the dropdown button and its menu
         self.btn_more = QPushButton("+")
@@ -495,6 +505,7 @@ class MainWindow(QMainWindow):
         self.btn_more.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_more)
         
+        self.loading_screen.update_progress("__ Connexion pour charger le bouton d'appel automatique...")
         autocalling_icon_path = resource_path("assets/images/loop_yes.ico")
         autocalling_icon_inactive_path = resource_path("assets/images/loop_no.ico")
         autocalling_url = f'{self.web_url}/app/counter/auto_calling'
@@ -507,7 +518,9 @@ class MainWindow(QMainWindow):
             parent = self
         )
         self.button_layout.addWidget(self.btn_auto_calling)
+        self.loading_screen.validate_last_line()
         
+        self.loading_screen.update_progress("__ Connexion pour charger l'icone de changement de papier'...")
         paper_icon_path = resource_path("assets/images/paper_add.ico")
         paper_icon_inactive_path = resource_path("assets/images/paper.ico")
         paper_url = f'{self.web_url}/app/counter/paper_add'
@@ -520,6 +533,7 @@ class MainWindow(QMainWindow):
             parent = self
         )
         self.button_layout.addWidget(self.btn_paper)
+        self.loading_screen.validate_last_line()
 
         self.button_container.setLayout(self.button_layout)
 
@@ -529,6 +543,7 @@ class MainWindow(QMainWindow):
         self.button_widget.setLayout(self.main_layout)
         self.stacked_widget.addWidget(self.button_widget)
         self.button_widget.hide()
+        
 
 
     def update_control_buttons_layout(self):
@@ -692,61 +707,54 @@ class MainWindow(QMainWindow):
         self.update_control_buttons_layout()
             
     def load_url(self):
-        counter_web_url = f'{self.web_url}/counter/{self.counter_id}'
-        self.browser.setUrl(QUrl(counter_web_url))
+        if self.connected:
+            counter_web_url = f'{self.web_url}/counter/{self.counter_id}'
+            self.browser.setUrl(QUrl(counter_web_url))
+        else:
+            self.show_error_page()
+            
+    def show_error_page(self):
+        error_page_path = os.path.join('templates', 'error_page.html')
+        with open(error_page_path, 'r', encoding='utf-8') as file:
+            error_html = file.read()
+        
+        error_html = error_html.replace('{web_url}', self.web_url)
+        self.browser.setHtml(error_html, QUrl('file://'))
 
     def on_load_finished(self, success):
-        if not success or not self.connected:
-            error_html = """
-            <html>
-            <head>
-                <title>Erreur de connexion</title>
-                <script type="text/javascript" src="qrc:///qtwebchannel/qwebchannel.js"></script>
-                <script type="text/javascript">
-                    function connectToPyQt() {{
-                        new QWebChannel(qt.webChannelTransport, function(channel) {{
-                            window.pyqt = channel.objects.pyqt;
-                        }});
-                    }}
-                    window.onload = connectToPyQt;
-                </script>
-            </head>
-            <body>
-                <h1>Erreur de connexion au serveur</h1>
-                <p>Impossible de se connecter au serveur à l'adresse suivante :</p>
-                <p><strong>{web_url}</strong></p>
-                <p>Veuillez vérifier que le serveur soit actif et que l'adresse du serveur soit bien configurée dans les préférences.</p>
-                <p><button onclick="window.pyqt.pyqt_call_preferences()">Ouvrir les Préférences</button></p>
-            </body>
-            </html>
-            """
-            self.browser.setHtml(error_html.format(web_url=self.web_url))
+        if success and self.connected:
+            current_url = self.browser.url().toString()
+            if "login" in current_url:
+                self.inject_login_script()
+        elif not self.connected:
+            self.show_error_page()
             
     def on_url_changed(self, url):
         # Check if 'login' appears in the URL
+        print('url changed')
         if "login" in url.toString():
             self.inject_login_script()            
 
     def inject_login_script(self):
-        # Inject JavaScript to fill and submit the login form automatically
+        print('injecting login script')
         script = f"""
-        document.addEventListener('DOMContentLoaded', function() {{
-        var usernameInput = document.querySelector('input[name="username"]');
-        var passwordInput = document.querySelector('input[name="password"]');
-        var rememberCheckbox = document.querySelector('input[name="remember"]');
-        if (usernameInput && passwordInput) {{
-            usernameInput.value = "{self.username}";
-            passwordInput.value = "{self.password}";
-            if (rememberCheckbox) {{
-                rememberCheckbox.checked = true;
-            }}
-            var form = usernameInput.closest('form');
-            if (form) {{
-                form.submit();
-                    }}
+        (function() {{
+            var usernameInput = document.querySelector('input[name="username"]');
+            var passwordInput = document.querySelector('input[name="password"]');
+            var rememberCheckbox = document.querySelector('input[name="remember"]');
+            if (usernameInput && passwordInput) {{
+                usernameInput.value = "{self.username}";
+                passwordInput.value = "{self.password}";
+                if (rememberCheckbox) {{
+                    rememberCheckbox.checked = true;
                 }}
-            }})();
-            """
+                var form = usernameInput.closest('form');
+                if (form) {{
+                    form.submit();
+                }}
+            }}
+        }})();
+        """
         self.browser.page().runJavaScript(script)
             
     def init_patient(self):
@@ -810,7 +818,7 @@ class MainWindow(QMainWindow):
             self.thread.start()
             
 
-   # Fonction pour valider un patient
+    # Fonction pour valider un patient
     def call_web_function_validate(self):
         print("Call Web Function Validate")
         url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'

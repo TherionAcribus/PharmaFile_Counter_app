@@ -1,0 +1,21 @@
+<html>
+<head>
+    <title>Erreur de connexion</title>
+    <script type="text/javascript" src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script type="text/javascript">
+        function connectToPyQt() {{
+            new QWebChannel(qt.webChannelTransport, function(channel) {{
+                window.pyqt = channel.objects.pyqt;
+            }});
+        }}
+        window.onload = connectToPyQt;
+    </script>
+</head>
+<body>
+    <h1>Erreur de connexion au serveur</h1>
+    <p>Impossible de se connecter au serveur à l'adresse suivante :</p>
+    <p><strong>{web_url}</strong></p>
+    <p>Veuillez vérifier que le serveur soit actif et que l'adresse du serveur soit bien configurée dans les préférences.</p>
+    <p><button onclick="window.pyqt.pyqt_call_preferences()">Ouvrir les Préférences</button></p>
+</body>
+</html>
