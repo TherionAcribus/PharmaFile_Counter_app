@@ -72,10 +72,12 @@ class RequestThread(QThread):
         self.headers = headers
 
     def run(self):
+        print("Requesting URL:", self.url)
         start_time = time.time()
         try:
             if self.method == 'GET':
                 response = self.session.get(self.url)
+                print(response)
             elif self.method == 'POST':
                 response = self.session.post(self.url, data=self.data, headers=self.headers)
             else:
@@ -281,6 +283,7 @@ class MainWindow(QMainWindow):
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
         self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")
+        self.recall_shortcut = settings.value("recall_shortcut", "Alt+R")
         self.deconnect_shortcut = settings.value("deconnect_shortcut", "Alt+D")
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
@@ -489,14 +492,18 @@ class MainWindow(QMainWindow):
         # Create the dropdown button and its menu
         self.btn_more = QPushButton("+")
         self.more_menu = QMenu()
-        self.action_toggle_mode = QAction("Agrandir", self)
+        self.action_recall = QAction(f"Relancer l'appel{self.recall_shortcut}", self)
+        self.action_toggle_orientation = QAction("Orientation", self)
         self.action_deconnexion = QAction(f"Deconnexion {self.deconnect_shortcut}", self)
         self.action_toggle_orientation = QAction("Orientation", self)
+        self.action_toggle_mode = QAction("Agrandir", self)
 
+        self.action_recall.triggered.connect(self.recall)
         self.action_toggle_mode.triggered.connect(self.toggle_mode)
         self.action_deconnexion.triggered.connect(self.deconnexion_interface)
         self.action_toggle_orientation.triggered.connect(self.toggle_orientation)
 
+        self.more_menu.addAction(self.action_recall)
         self.more_menu.addAction(self.action_toggle_mode)
         self.more_menu.addAction(self.action_deconnexion)
         self.more_menu.addAction(self.action_toggle_orientation)
@@ -545,6 +552,13 @@ class MainWindow(QMainWindow):
         self.button_widget.hide()
         
 
+    def recall(self):
+        url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
+        headers = {'X-App-Token': self.app_token}
+
+        self.request_thread = RequestThread(url, self.session, method='POST', headers=headers)
+        self.request_thread.start()
+        
 
     def update_control_buttons_layout(self):
         self.create_control_buttons()
@@ -881,6 +895,7 @@ class MainWindow(QMainWindow):
         keyboard.add_hotkey(self.next_patient_shortcut, self.handle_next_patient_shortcut)
         keyboard.add_hotkey(self.validate_patient_shortcut, self.handle_validate_shortcut)
         keyboard.add_hotkey(self.pause_shortcut, self.handle_pause_shortcut)
+        keyboard.add_hotkey(self.recall_shortcut, self.recall)
         keyboard.add_hotkey(self.deconnect_shortcut, self.handle_deconnect_shortcut)
 
     def handle_next_patient_shortcut(self):

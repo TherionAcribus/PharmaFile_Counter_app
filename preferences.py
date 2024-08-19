@@ -136,6 +136,12 @@ class PreferencesDialog(QDialog):
         self.pause_shortcut_input = self.create_shortcut_input()
         self.raccourcis_layout.addWidget(self.pause_shortcut_input)
         
+        self.recall_label = QLabel("Raccourci - Rappel patient:", self.raccourcis_page)
+        self.raccourcis_layout.addWidget(self.recall_label)
+        
+        self.recall_input = self.create_shortcut_input()
+        self.raccourcis_layout.addWidget(self.recall_input)
+        
         self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.deconnect_label)
         
@@ -218,6 +224,7 @@ class PreferencesDialog(QDialog):
         self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
         self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
         self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
+        self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input, "Alt+R")
         self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input, "Alt+D")
 
         self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
@@ -243,6 +250,7 @@ class PreferencesDialog(QDialog):
         counter_id = self.counter_combobox.currentData()
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
         validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
+        recall_shortcut = self.get_shortcut_text(self.recall_shortcut_input)
         deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
         pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
 
@@ -266,6 +274,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
         settings.setValue("pause_shortcut", pause_shortcut)
+        settings.setValue('recall_shortcut', recall_shortcut)
         settings.setValue("deconnect_shortcut", deconnect_shortcut)
         
         settings.setValue("show_current_patient", self.show_current_patient_checkbox.isChecked())
