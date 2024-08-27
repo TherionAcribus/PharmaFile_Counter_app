@@ -4,18 +4,26 @@ import time
 import json
 import requests
 import threading
-import socketio
+import logging
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QAction, QKeySequence, QKeyEvent, QTextCursor
-from datetime import datetime
+from PySide6.QtGui import QIcon, QAction, QTextCursor
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
+
+class LogHandler(logging.Handler):
+    def __init__(self, update_callback):
+        super().__init__()
+        self.update_callback = update_callback
+
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.update_callback(log_entry)
 
 class SSEClient(QThread):
     new_patient = Signal(object)
@@ -93,7 +101,7 @@ class RequestThread(QThread):
 
 
 class IconeButton(QPushButton):
-    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, parent=None):
+    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, parent=None):
         super().__init__(parent)
         
         self.icon_path = icon_path
@@ -108,9 +116,7 @@ class IconeButton(QPushButton):
         self.setIcon(QIcon(self.icon_path))
         self.setIconSize(QSize(50, 50))
         self.setStyleSheet("border: none;")
-        self.state = "waiting"  # inactive, active, waiting
-        
-        self.send_request(action=None)
+        self.state = state  # inactive, active, waiting        
         
         self.clicked.connect(self.toggle_state)
         self.update_button_icon()
@@ -130,7 +136,6 @@ class IconeButton(QPushButton):
         self.update_button_icon()
             
     def handle_response(self, elapsed_time, response_text, status_code):
-        print("REPONSE", response_text, status_code)
         response_data = json.loads(response_text)
         print(response_data["status"], type(response_data["status"]))
         if status_code == 200:
@@ -157,7 +162,9 @@ class IconeButton(QPushButton):
         self.request_thread.result.connect(self.handle_response)
         self.request_thread.start()
 
-    def update_button_icon(self):
+    def update_button_icon(self, state=None):
+        if state:
+            self.state = state
         print("update_button_icon", self.state)
         if self.state == "inactive":
             self.setIcon(QIcon(self.icon_inactive_path))
@@ -185,69 +192,68 @@ class LoadingScreen(QWidget):
 
         layout = QVBoxLayout()
         self.label = QLabel("Démarrage de l'application...")
-        self.progress = QTextEdit()
+        self.progress = QPlainTextEdit()
         self.progress.setReadOnly(True)
 
         layout.addWidget(self.label)
         layout.addWidget(self.progress)
         self.setLayout(layout)
 
-    def update_progress(self, message):
-        self.progress.append(message)
-        self.progress.repaint()
-        QCoreApplication.processEvents()
-        
-    def validate_last_line(self):
-        self.update_last_line(" - OK !")
+        # Configurez le logger pour utiliser notre LogHandler
+        self.logger = logging.getLogger("LoadingScreenLogger")
+        self.logger.setLevel(logging.DEBUG)
 
-    def update_last_line(self, additional_info):
-        cursor = self.progress.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
-        cursor.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor)
-        last_line = cursor.selectedText()
-        
-        new_line = f"{last_line} {additional_info}"
-        cursor.removeSelectedText()
-        cursor.insertText(new_line)
-        
-        self.progress.setTextCursor(cursor)
+        log_handler = LogHandler(self.update_progress)
+        log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(log_handler)
+
+        # Vous pouvez également ajouter un handler pour écrire dans un fichier ou la console
+        file_handler = logging.FileHandler("application.log")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(file_handler)
+
+    def update_progress(self, message):
+        self.progress.appendPlainText(message)
         self.progress.ensureCursorVisible()
-        self.progress.repaint()
         QCoreApplication.processEvents()
-        
+
 
 class MainWindow(QMainWindow):   
-    
+
     patient_data_received = Signal(object)
     patient_id = None
     staff_id = None
     connected = False  # permet de savoir si on a réussi à se connecter
+    add_paper = "waiting"
+    autocalling = "waiting"
     
     def __init__(self):
         super().__init__()
-        
+
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
-        
-        self.loading_screen.update_progress("Initialisation de la session...")
+
+        self.loading_screen.logger.info("Initialisation de la session...")
         self.session = requests.Session()  # Session HTTP persistante
-        self.loading_screen.validate_last_line()
+        ##self.loading_screen.validate_last_line()
 
         self.load_preferences()
 
-        self.loading_screen.update_progress("Test de la connexion...")
+        self.loading_screen.logger.info("Test de la connexion...")
         self.app_token = None
         try:
             self.get_app_token()
             # si on a un token, on se considère comme connecté
             self.connected = True
-            self.loading_screen.update_last_line(" - OK ! Token obtenu")
+            #self.loading_screen.update_last_line(" - OK ! Token obtenu")
         except Exception as e:
             print("Erreur lors de l'obtention du token :", e)
             self.connected = False
-            self.loading_screen.update_last_line(f"- Erreur : {e}")
+            #self.loading_screen.update_last_line(f"- Erreur : {e}")
             
+        if self.connected:
+            self.connexion_for_app_init()
+
         self.setup_ui()
         
         self.setup_user()
@@ -261,6 +267,15 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show() 
         
+        if not self.debug_window:
+            self.loading_screen.close()
+
+    def closeEvent(self, event):
+        # Fermeture de la fenêtre secondaire quand la fenêtre principale est fermée
+        if self.loading_screen:
+            self.loading_screen.close()
+        super().closeEvent(event)
+        
     def get_app_token(self):
         url = f'{self.web_url}/api/get_app_token'
         data = {'app_secret': 'votre_secret_app'}
@@ -273,7 +288,7 @@ class MainWindow(QMainWindow):
 
         
     def load_preferences(self):
-        self.loading_screen.update_progress("Initialisation des préférences...")
+        self.loading_screen.logger.info("Initialisation des préférences...")
         
         settings = QSettings()
         self.web_url = settings.value("web_url", "http://localhost:5000")
@@ -289,11 +304,12 @@ class MainWindow(QMainWindow):
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
         self.vertical_mode = settings.value("vertical_mode", False, type=bool)
+        self.debug_window = settings.value("debug_window", False, type=bool)
         
-        self.loading_screen.validate_last_line()
+        #self.loading_screen.validate_last_line()
         
     def setup_ui(self):
-        self.loading_screen.update_progress("Initialisation de l'interface...")
+        self.loading_screen.logger.info("Initialisation de l'interface...")
         icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
@@ -303,7 +319,7 @@ class MainWindow(QMainWindow):
         
         self.setup_systray()
 
-        self.loading_screen.update_progress("Création et connexion du navigateur...")
+        self.loading_screen.logger.info("Création et connexion du navigateur...")
         self.browser = QWebEngineView()
         # Connect to the URL changed signal. On recherche la page login pour la remplir
         self.browser.urlChanged.connect(self.on_url_changed)
@@ -331,7 +347,7 @@ class MainWindow(QMainWindow):
         
     def setup_systray(self):
         """ Création du Systray"""        
-        self.loading_screen.update_progress("Création du Systray...")
+        self.loading_screen.logger.info("Création du Systray...")
         icon_path = resource_path("assets/images/pause.ico")
         self.trayIcon1 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon1.setToolTip("Pause")
@@ -362,11 +378,11 @@ class MainWindow(QMainWindow):
         self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
         self.trayIcon3.show()
         
-        self.loading_screen.validate_last_line()
+        #self.loading_screen.validate_last_line()
         
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
-        self.loading_screen.update_progress("Paramétrage de l'utilisateur...")
+        self.loading_screen.logger.info("Paramétrage de l'utilisateur...")
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
         self.user_thread = RequestThread(url, self.session, method='GET')
         self.user_thread.result.connect(self.handle_user_result)
@@ -414,19 +430,20 @@ class MainWindow(QMainWindow):
         self.sse_client.start()
         
     def start_socket_io_client(self, url):
-        self.loading_screen.update_progress("Création de la connexion Socket.IO...")
+        self.loading_screen.logger.info("Création de la connexion Socket.IO...")
         print(f"Starting Socket.IO client with URL: {url}")
         self.socket_io_client = WebSocketClient(self)
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
+        # refaire les deux fonctions en recupérant directement les valeurs plutôt que de renvoyer une requete
         self.socket_io_client.change_paper.connect(self.change_paper)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.start()
-        self.loading_screen.validate_last_line()
+        #self.loading_screen.validate_last_line()
 
 
     def create_menu(self):
-        self.loading_screen.update_progress("Création du menu...")
+        self.loading_screen.logger.info("Création du menu...")
         
         self.menu = self.menuBar().addMenu("Fichier")
         self.preferences_action = QAction("Préférences", self)
@@ -437,12 +454,12 @@ class MainWindow(QMainWindow):
         self.toggle_mode_action.triggered.connect(self.toggle_mode)
         self.menu.addAction(self.toggle_mode_action)
 
-        self.loading_screen.validate_last_line()
+        #self.loading_screen.validate_last_line()
 
     def create_control_buttons(self):
-        self.loading_screen.update_progress("Création de l'interface réduite...")
+        self.loading_screen.logger.info("Création de l'interface réduite...")
         
-        self.loading_screen.update_progress("__ Création des boutons...")
+        self.loading_screen.logger.info("__ Création des boutons...")
         if hasattr(self, 'button_widget'):
             self.button_widget.deleteLater()  # Supprimez l'ancien widget des boutons
         self.button_widget = QWidget()
@@ -476,18 +493,12 @@ class MainWindow(QMainWindow):
         self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_choose_patient)
         
-        self.loading_screen.validate_last_line()
-        
-        self.loading_screen.update_progress("__ Connexion pour charger le patient en cours...")
-        # on recherche et rafraichit le patient en cours
+        self.loading_screen.logger.info("__ Connexion pour charger le patient en cours...")
         self.init_patient()
-        self.loading_screen.validate_last_line()
         
-        self.loading_screen.update_progress("__ Connexion pour charger la liste des patients...")
-        # on recherche et rafraichit la liste des patient pour le Dropdown
+        self.loading_screen.logger.info("__ Connexion pour charger la liste des patients...")
         list_patients = self.init_list_patients()
         self.update_list_patient(list_patients)
-        self.loading_screen.validate_last_line()        
 
         # Create the dropdown button and its menu
         self.btn_more = QPushButton("+")
@@ -495,7 +506,6 @@ class MainWindow(QMainWindow):
         self.action_recall = QAction(f"Relancer l'appel{self.recall_shortcut}", self)
         self.action_toggle_orientation = QAction("Orientation", self)
         self.action_deconnexion = QAction(f"Deconnexion {self.deconnect_shortcut}", self)
-        self.action_toggle_orientation = QAction("Orientation", self)
         self.action_toggle_mode = QAction("Agrandir", self)
 
         self.action_recall.triggered.connect(self.recall)
@@ -511,46 +521,57 @@ class MainWindow(QMainWindow):
 
         self.btn_more.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_more)
+
+        self.icone_widget = QWidget()
+        self.icone_layout = QHBoxLayout()
         
-        self.loading_screen.update_progress("__ Connexion pour charger le bouton d'appel automatique...")
+        self.loading_screen.logger.info("__ Connexion pour charger le bouton d'appel automatique...")
         autocalling_icon_path = resource_path("assets/images/loop_yes.ico")
         autocalling_icon_inactive_path = resource_path("assets/images/loop_no.ico")
         autocalling_url = f'{self.web_url}/app/counter/auto_calling'
         self.btn_auto_calling = IconeButton(
-            icon_path = autocalling_icon_path,
-            icon_inactive_path = autocalling_icon_inactive_path,
-            flask_url = autocalling_url,
-            tooltip_inactive_text = "Activer l'appel automatique",
+            icon_path=autocalling_icon_path,
+            icon_inactive_path=autocalling_icon_inactive_path,
+            flask_url=autocalling_url,
+            tooltip_inactive_text="Activer l'appel automatique",
             tooltip_text="Desactiver l'appel automatique",
-            parent = self
+            state=self.autocalling,
+            parent=self
         )
-        self.button_layout.addWidget(self.btn_auto_calling)
-        self.loading_screen.validate_last_line()
+        self.icone_layout.addWidget(self.btn_auto_calling)
         
-        self.loading_screen.update_progress("__ Connexion pour charger l'icone de changement de papier'...")
-        paper_icon_path = resource_path("assets/images/paper_add.ico")
-        paper_icon_inactive_path = resource_path("assets/images/paper.ico")
+        self.loading_screen.logger.info("__ Connexion pour charger l'icone de changement de papier'...")
+        paper_icon_path = resource_path("assets/images/paper.ico")
+        paper_icon_inactive_path = resource_path("assets/images/paper_add.ico")
         paper_url = f'{self.web_url}/app/counter/paper_add'
         self.btn_paper = IconeButton(
-            icon_inactive_path = paper_icon_path,
-            icon_path = paper_icon_inactive_path,
-            flask_url = paper_url,
-            tooltip_text = "Indiquer qu'il faut changer le papier",
-            tooltip_inactive_text = "Indiquer que vous avez changé le papier",
-            parent = self
+            icon_inactive_path=paper_icon_path,
+            icon_path=paper_icon_inactive_path,
+            flask_url=paper_url,
+            tooltip_text="Indiquer que vous avez changé le papier",
+            tooltip_inactive_text="Indiquer qu'il faut changer le papier",
+            state=self.add_paper,
+            parent=self
         )
-        self.button_layout.addWidget(self.btn_paper)
-        self.loading_screen.validate_last_line()
+        self.icone_layout.addWidget(self.btn_paper)
+        self.icone_widget.setLayout(self.icone_layout)
 
         self.button_container.setLayout(self.button_layout)
 
+        # Order in main_layout matters for display
         self.main_layout.addWidget(self.label_bar)
         self.main_layout.addWidget(self.button_container)
+        self.main_layout.addWidget(self.icone_widget)
 
         self.button_widget.setLayout(self.main_layout)
+
+        # Add only button_widget to stacked_widget
         self.stacked_widget.addWidget(self.button_widget)
-        self.button_widget.hide()
-        
+
+        # Show button_widget, hide other widgets as needed
+        self.button_widget.show()
+
+
 
     def recall(self):
         url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
@@ -558,7 +579,7 @@ class MainWindow(QMainWindow):
 
         self.request_thread = RequestThread(url, self.session, method='POST', headers=headers)
         self.request_thread.start()
-        
+
 
     def update_control_buttons_layout(self):
         self.create_control_buttons()
@@ -592,6 +613,7 @@ class MainWindow(QMainWindow):
         self.resize(size_hint)
         
     def toggle_orientation(self):
+        self.loading_screen.logger.info("Changement de l'orientation...")
         self.vertical_mode = not self.vertical_mode
         self.update_control_buttons_layout()
         self.resize_to_fit_buttons()
@@ -801,7 +823,6 @@ class MainWindow(QMainWindow):
             return []
             
     def call_web_function_validate_and_call_next(self):
-        print("Call Web Function NEXT")
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
         self.thread = RequestThread(url, self.session)
         self.thread.result.connect(self.handle_result)
@@ -956,17 +977,19 @@ class MainWindow(QMainWindow):
             self.btn_choose_patient.setMenu(self.choose_patient_menu) 
         except TypeError:
             print("Type error")
-        
 
     def show_notification(self, data):
         if self.notification_specific_acts:
             self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
 
     def change_paper(self, data):
-        self.btn_paper.send_request(None)
+        self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
+        self.btn_paper.update_button_icon(self.add_paper)
         
     def change_auto_calling(self, data):
-        self.btn_auto_calling.send_request(None)
+        self.autocalling = "active" if data["data"]["autocalling"] else "inactive"
+        print(self.autocalling)
+        self.btn_auto_calling.update_button_icon(self.autocalling)
 
     @Slot()
     def pyqt_call_preferences(self):
@@ -994,6 +1017,21 @@ class MainWindow(QMainWindow):
             self.call_web_function_pause()
         elif reason == QSystemTrayIcon.ActivationReason.Context:
             pass
+        
+    def connexion_for_app_init(self):
+        self.loading_screen.logger.info("Initialisation du bouton d'appel automatique...")
+        url = f'{self.web_url}/app/counter/init_app'
+        data = {'counter_id': self.counter_id}
+        headers = {'X-App-Token': self.app_token}
+        self.init_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        self.init_thread.result.connect(self.handle_init_app)
+        self.init_thread.start()
+        
+    def handle_init_app(self, elapsed_time, response_text, status_code):
+        response_data = json.loads(response_text)
+        if status_code == 200:
+            self.autocalling = "active" if response_data['autocalling'] else "inactive"
+            self.add_paper = "active" if response_data['add_paper'] else "inactive"
 
 
 if __name__ == "__main__":

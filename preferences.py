@@ -63,6 +63,9 @@ class PreferencesDialog(QDialog):
         self.vertical_mode = QCheckBox("Orientation verticale", self.general_page)
         self.general_layout.addWidget(self.vertical_mode)
         
+        self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
+        self.general_layout.addWidget(self.debug_window)
+        
         self.general_layout.addStretch()
         
         self.stacked_widget.addWidget(self.general_page)
@@ -139,8 +142,8 @@ class PreferencesDialog(QDialog):
         self.recall_label = QLabel("Raccourci - Rappel patient:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.recall_label)
         
-        self.recall_input = self.create_shortcut_input()
-        self.raccourcis_layout.addWidget(self.recall_input)
+        self.recall_shortcut_input = self.create_shortcut_input()
+        self.raccourcis_layout.addWidget(self.recall_shortcut_input)
         
         self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.deconnect_label)
@@ -233,6 +236,7 @@ class PreferencesDialog(QDialog):
         self.start_with_reduce_mode.setChecked(settings.value("start_with_reduce_mode", False, type=bool))
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.vertical_mode.setChecked(settings.value("vertical_mode", False, type=bool))
+        self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
 
     def load_shortcut(self, settings, name, widget, default_shortcut):
         shortcut = settings.value(name, default_shortcut)
@@ -283,6 +287,8 @@ class PreferencesDialog(QDialog):
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
         settings.setValue("vertical_mode", self.vertical_mode.isChecked())
+        settings.setValue("debug_window", self.debug_window.isChecked())
+        
         self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
         self.parent().show() 
 

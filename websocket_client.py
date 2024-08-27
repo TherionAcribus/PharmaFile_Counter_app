@@ -8,8 +8,8 @@ class WebSocketClient(QThread):
     new_patient = Signal(object)
     new_notification = Signal(str)
     my_patient = Signal(object)
-    change_paper = Signal(str)
-    change_auto_calling = Signal(str)
+    change_paper = Signal(object)
+    change_auto_calling = Signal(object)
 
     def __init__(self, parent):
         super().__init__()
@@ -51,6 +51,7 @@ class WebSocketClient(QThread):
         print('WebSocket disconnected')
         
     def on_paper(self, data):
+        print("Received paper:", data)
         self.change_paper.emit(data)
         
     def on_change_auto_calling(self, data):
