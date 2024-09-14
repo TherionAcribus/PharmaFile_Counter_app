@@ -60,8 +60,11 @@ class PreferencesDialog(QDialog):
         self.start_with_reduce_mode = QCheckBox("Démarrer en mode réduit", self.general_page)
         self.general_layout.addWidget(self.start_with_reduce_mode)
         
-        self.vertical_mode = QCheckBox("Orientation verticale", self.general_page)
-        self.general_layout.addWidget(self.vertical_mode)
+        self.horizontal_mode = QCheckBox("Orientation verticale", self.general_page)
+        self.general_layout.addWidget(self.horizontal_mode)
+
+        self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
+        self.general_layout.addWidget(self.display_patient_list)
         
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
@@ -235,7 +238,8 @@ class PreferencesDialog(QDialog):
 
         self.start_with_reduce_mode.setChecked(settings.value("start_with_reduce_mode", False, type=bool))
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
-        self.vertical_mode.setChecked(settings.value("vertical_mode", False, type=bool))
+        self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
+        self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
         self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
 
     def load_shortcut(self, settings, name, widget, default_shortcut):
@@ -286,7 +290,8 @@ class PreferencesDialog(QDialog):
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
-        settings.setValue("vertical_mode", self.vertical_mode.isChecked())
+        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
+        settings.setValue("display_patient_list", self.display_patient_list.isChecked())
         settings.setValue("debug_window", self.debug_window.isChecked())
         
         self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())

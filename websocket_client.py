@@ -66,7 +66,7 @@ class WebSocketClient(QThread):
             print(data)
             if data['flag'] == 'notification':
                 self.new_notification.emit(data['data'])
-            elif data['flag'] == 'update_patient_list':
+            elif data['flag'] == 'update_patient_widget':
                 if isinstance(data["data"], str):
                     data["data"] = json.loads(data["data"])
                 print('liste', data["data"])

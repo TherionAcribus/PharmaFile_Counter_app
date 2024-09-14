@@ -7,7 +7,7 @@ import threading
 import logging
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
@@ -226,7 +226,8 @@ class MainWindow(QMainWindow):
     connected = False  # permet de savoir si on a réussi à se connecter
     add_paper = "waiting"
     autocalling = "waiting"
-    
+    list_patients = []  # liste des patient qui sera chargée au démarrage puis mise à jour via SocketIO
+
     def __init__(self):
         super().__init__()
 
@@ -303,7 +304,8 @@ class MainWindow(QMainWindow):
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
-        self.vertical_mode = settings.value("vertical_mode", False, type=bool)
+        self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
+        self.display_patient_list = settings.value("display_patient_list", False, type=bool)
         self.debug_window = settings.value("debug_window", False, type=bool)
         
         #self.loading_screen.validate_last_line()
@@ -340,8 +342,10 @@ class MainWindow(QMainWindow):
 
         if self.connected:
             self.init_patient()        
-            list_patients = self.init_list_patients()
-            self.update_patient_menu(list_patients)
+            self.list_patients = self.init_list_patients()
+            print(self.list_patients)
+            self.update_patient_widget()
+            self.update_patient_menu(self.list_patients)
 
         self.setup_global_shortcut()
         
@@ -459,118 +463,177 @@ class MainWindow(QMainWindow):
     def create_control_buttons(self):
         self.loading_screen.logger.info("Création de l'interface réduite...")
         
-        self.loading_screen.logger.info("__ Création des boutons...")
-        if hasattr(self, 'button_widget'):
-            self.button_widget.deleteLater()  # Supprimez l'ancien widget des boutons
-        self.button_widget = QWidget()
-        self.main_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
+        self._create_main_widget()
+        self._create_label_bar()
+        self._create_button_container()
+        self._create_icon_widget()
+        self._create_patient_list_widget()
+        self._create_layouts()
+        self._setup_stacked_widget()
 
+    def _create_main_widget(self):
+        if hasattr(self, 'button_widget'):
+            self.button_widget.deleteLater()
+        self.button_widget = QWidget()
+
+    def _create_label_bar(self):
         self.label_bar = QLabel("Status: Ready")
         self.label_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.label_bar.setAlignment(Qt.AlignCenter)
 
+    def _create_button_container(self):
         self.button_container = QWidget()
-        self.button_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
-
-        self.btn_next = QPushButton("Suivant\n" + self.next_patient_shortcut)
-        self.btn_validate = QPushButton("Valider\n" + self.validate_patient_shortcut)
-        self.btn_pause = QPushButton("Pause\n" + self.pause_shortcut)
+        self.button_layout = QVBoxLayout() if self.horizontal_mode else QHBoxLayout()
         
-        self.btn_next.clicked.connect(self.call_web_function_validate_and_call_next)
-        self.btn_validate.clicked.connect(self.call_web_function_validate)
-        self.btn_pause.clicked.connect(self.call_web_function_pause)
+        self._create_main_buttons()
+        self._create_choose_patient_button()
+        self._create_more_button()
 
-        for button in [self.btn_next, self.btn_validate, self.btn_pause]:
+        self.button_container.setLayout(self.button_layout)
+
+    def _create_main_buttons(self):
+        buttons_config = [
+            ("btn_next", "Suivant", self.next_patient_shortcut, self.call_web_function_validate_and_call_next),
+            ("btn_validate", "Valider", self.validate_patient_shortcut, self.call_web_function_validate),
+            ("btn_pause", "Pause", self.pause_shortcut, self.call_web_function_pause)
+        ]
+
+        for attr_name, text, shortcut, callback in buttons_config:
+            button = QPushButton(f"{text}\n{shortcut}")
+            button.clicked.connect(callback)
             button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+            setattr(self, attr_name, button)  # Stocke le bouton comme attribut de la classe
             self.button_layout.addWidget(button)
-            
-        # Create button for list of patients and and its menu
+
+    def _create_choose_patient_button(self):
         self.btn_choose_patient = QPushButton(">>")
         self.choose_patient_menu = QMenu()
-
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
-
         self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_choose_patient)
-        
+
         self.loading_screen.logger.info("__ Connexion pour charger le patient en cours...")
         self.init_patient()
-        
+
         self.loading_screen.logger.info("__ Connexion pour charger la liste des patients...")
         list_patients = self.init_list_patients()
         self.update_list_patient(list_patients)
 
-        # Create the dropdown button and its menu
+    def _create_more_button(self):
         self.btn_more = QPushButton("+")
         self.more_menu = QMenu()
-        self.action_recall = QAction(f"Relancer l'appel{self.recall_shortcut}", self)
-        self.action_toggle_orientation = QAction("Orientation", self)
-        self.action_deconnexion = QAction(f"Deconnexion {self.deconnect_shortcut}", self)
-        self.action_toggle_mode = QAction("Agrandir", self)
 
-        self.action_recall.triggered.connect(self.recall)
-        self.action_toggle_mode.triggered.connect(self.toggle_mode)
-        self.action_deconnexion.triggered.connect(self.deconnexion_interface)
-        self.action_toggle_orientation.triggered.connect(self.toggle_orientation)
+        actions = [
+            ("Relancer l'appel", self.recall_shortcut, self.recall),
+            ("Orientation", None, self.toggle_orientation),
+            ("Deconnexion", self.deconnect_shortcut, self.deconnexion_interface),
+            ("Agrandir", None, self.toggle_mode),
+            ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list)
+        ]
 
-        self.more_menu.addAction(self.action_recall)
-        self.more_menu.addAction(self.action_toggle_mode)
-        self.more_menu.addAction(self.action_deconnexion)
-        self.more_menu.addAction(self.action_toggle_orientation)
+        for text, shortcut, callback in actions:
+            action = QAction(f"{text}{shortcut if shortcut else ''}", self)
+            action.triggered.connect(callback)
+            self.more_menu.addAction(action)
+
         self.btn_more.setMenu(self.more_menu)
-
         self.btn_more.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.button_layout.addWidget(self.btn_more)
 
+    def _create_icon_widget(self):
         self.icone_widget = QWidget()
         self.icone_layout = QHBoxLayout()
         
-        self.loading_screen.logger.info("__ Connexion pour charger le bouton d'appel automatique...")
-        autocalling_icon_path = resource_path("assets/images/loop_yes.ico")
-        autocalling_icon_inactive_path = resource_path("assets/images/loop_no.ico")
-        autocalling_url = f'{self.web_url}/app/counter/auto_calling'
-        self.btn_auto_calling = IconeButton(
-            icon_path=autocalling_icon_path,
-            icon_inactive_path=autocalling_icon_inactive_path,
-            flask_url=autocalling_url,
-            tooltip_inactive_text="Activer l'appel automatique",
-            tooltip_text="Desactiver l'appel automatique",
-            state=self.autocalling,
-            parent=self
-        )
-        self.icone_layout.addWidget(self.btn_auto_calling)
-        
-        self.loading_screen.logger.info("__ Connexion pour charger l'icone de changement de papier'...")
-        paper_icon_path = resource_path("assets/images/paper.ico")
-        paper_icon_inactive_path = resource_path("assets/images/paper_add.ico")
-        paper_url = f'{self.web_url}/app/counter/paper_add'
-        self.btn_paper = IconeButton(
-            icon_inactive_path=paper_icon_path,
-            icon_path=paper_icon_inactive_path,
-            flask_url=paper_url,
-            tooltip_text="Indiquer que vous avez changé le papier",
-            tooltip_inactive_text="Indiquer qu'il faut changer le papier",
-            state=self.add_paper,
-            parent=self
-        )
-        self.icone_layout.addWidget(self.btn_paper)
+        self._create_auto_calling_button()
+        self._create_paper_button()
+
         self.icone_widget.setLayout(self.icone_layout)
 
-        self.button_container.setLayout(self.button_layout)
+    def _create_auto_calling_button(self):
+        self.loading_screen.logger.info("__ Connexion pour charger le bouton d'appel automatique...")
+        self.btn_auto_calling = self._create_icon_button(
+            "assets/images/loop_yes.ico",
+            "assets/images/loop_no.ico",
+            f'{self.web_url}/app/counter/auto_calling',
+            "Desactiver l'appel automatique",
+            "Activer l'appel automatique",
+            self.autocalling
+        )
+        self.icone_layout.addWidget(self.btn_auto_calling)
 
-        # Order in main_layout matters for display
+    def _create_paper_button(self):
+        self.loading_screen.logger.info("__ Connexion pour charger l'icone de changement de papier...")
+        self.btn_paper = self._create_icon_button(
+            "assets/images/paper_add.ico",
+            "assets/images/paper.ico",
+            f'{self.web_url}/app/counter/paper_add',
+            "Indiquer que vous avez changé le papier",
+            "Indiquer qu'il faut changer le papier",
+            self.add_paper
+        )
+        self.icone_layout.addWidget(self.btn_paper)
+
+    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state):
+        return IconeButton(
+            icon_path=resource_path(icon_path),
+            icon_inactive_path=resource_path(icon_inactive_path),
+            flask_url=flask_url,
+            tooltip_text=tooltip_text,
+            tooltip_inactive_text=tooltip_inactive_text,
+            state=state,
+            parent=self
+        )
+    def _create_patient_list_widget(self):
+        self.patient_list_widget = QWidget()
+        self.patient_list_layout = QVBoxLayout()  # Changé en QVBoxLayout pour plus de flexibilité
+        self.patient_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.patient_list_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content) if not self.horizontal_mode else QHBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll_layout.setSpacing(0)
+
+        self.scroll_area.setWidget(self.scroll_content)
+        self.patient_list_layout.addWidget(self.scroll_area)
+
+        self.patient_list_widget.setLayout(self.patient_list_layout)
+        self.patient_list_widget.setStyleSheet("background-color: lightgray;")
+
+        if self.horizontal_mode:
+            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.patient_list_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            self.patient_list_widget.setFixedWidth(70)  # Ajustez cette valeur selon vos besoins      
+
+        else:
+            self.scroll_area.setFixedHeight(50)
+            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.patient_list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.patient_list_widget.setFixedHeight(50)
+
+
+        self.patient_list_widget.setVisible(self.display_patient_list)
+
+    def _create_layouts(self):
+        self.main_layout = QVBoxLayout() if self.horizontal_mode else QHBoxLayout()
         self.main_layout.addWidget(self.label_bar)
         self.main_layout.addWidget(self.button_container)
         self.main_layout.addWidget(self.icone_widget)
 
-        self.button_widget.setLayout(self.main_layout)
+        self.full_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
+        self.full_layout.addLayout(self.main_layout)
+        self.full_layout.addWidget(self.patient_list_widget)
 
-        # Add only button_widget to stacked_widget
+        self.button_widget.setLayout(self.full_layout)
+
+    def _setup_stacked_widget(self):
         self.stacked_widget.addWidget(self.button_widget)
-
-        # Show button_widget, hide other widgets as needed
         self.button_widget.show()
-
 
 
     def recall(self):
@@ -614,9 +677,35 @@ class MainWindow(QMainWindow):
         
     def toggle_orientation(self):
         self.loading_screen.logger.info("Changement de l'orientation...")
-        self.vertical_mode = not self.vertical_mode
+        self.horizontal_mode = not self.horizontal_mode
         self.update_control_buttons_layout()
+        self.update_patient_widget()
         self.resize_to_fit_buttons()
+
+
+    def toggle_patient_list(self):
+        self.display_patient_list = not self.display_patient_list
+        self.patient_list_widget.setVisible(self.display_patient_list)
+        self.resize_to_fit_buttons()
+
+    def _adjust_window_size(self):
+        if self.display_patient_list:
+            # Augmenter la taille pour afficher la liste des patients
+            size_change = 200 if self.horizontal_mode else 100
+            if self.horizontal_mode:
+                new_width = self.width() + size_change
+                self.setFixedWidth(new_width)
+            else:
+                new_height = self.height() + size_change
+                self.setFixedHeight(new_height)
+        else:
+            # Réduire la taille à la plus petite possible
+            self.adjustSize()
+            
+        # Forcer la mise à jour de l'interface
+        self.update()
+        QApplication.processEvents()
+
         
     def show_preferences_dialog(self):
         dialog = PreferencesDialog(self)
@@ -630,7 +719,7 @@ class MainWindow(QMainWindow):
         print("deconnexion_interface")
         # Créer un nouveau widget pour l'interface de connexion
         login_widget = QWidget()
-        login_layout = QVBoxLayout() if self.vertical_mode else QHBoxLayout()
+        login_layout = QVBoxLayout() if self.horizontal_mode else QHBoxLayout()
 
         # Ajouter un label
         self.label_connexion = QLabel("Connectez-vous")
@@ -938,10 +1027,12 @@ class MainWindow(QMainWindow):
 
     def new_patient(self, patient):
         print("new_patient", patient)
-        #self.init_patient()
+        # mise à jour de self.patient
+        self.list_patients = patient
         self.update_patient_menu(patient)
         if self.is_reduced_mode:
             self.update_list_patient(patient)
+            self.update_patient_widget()
 
     def update_patient_menu(self, patients):
         """ Mise a jour de la liste des patients le trayIcon """
@@ -963,7 +1054,60 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
             
         self.trayIcon2.setContextMenu(menu)
+
+
+    def update_patient_widget(self):
+        """ Mise à jour de la liste des patients dans le scrollable layout """
+        self.loading_screen.logger.info("Mise à jour de la liste des patients dans le scrollable layout")
+
+        # Supprimer tous les widgets existants du scroll_content
+        for i in reversed(range(self.scroll_content.layout().count())):
+            widget = self.scroll_content.layout().itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        # Créer un nouveau layout
+        new_layout = QVBoxLayout() if self.horizontal_mode else QHBoxLayout()
         
+        # Remplacer l'ancien layout par le nouveau
+        QWidget().setLayout(self.scroll_content.layout())
+        self.scroll_content.setLayout(new_layout)
+        self.scroll_layout = new_layout
+
+        print("self.list_patients", self.list_patients)
+
+        # Créer de nouveaux boutons pour chaque patient
+        for patient in self.list_patients:
+            button_text = patient['call_number']
+            button = QPushButton(button_text)
+            button.setFixedSize(60, 30)  # Taille fixe pour tous les boutons
+            
+            font = button.font()
+            font.setPointSize(8)
+            button.setFont(font)
+
+            button.clicked.connect(lambda checked, id=patient["id"]: self.call_web_function_validate_and_call_specifique(id))
+            self.scroll_layout.addWidget(button)
+
+        # Ajouter un spacer
+        self.scroll_layout.addStretch(0)
+
+        # Forcer la mise à jour visuelle
+        self.scroll_content.update()
+        self.scroll_area.update()
+        self.patient_list_widget.update()
+
+        # Assurez-vous que le scroll_area affiche correctement le contenu
+        self.scroll_area.setWidget(self.scroll_content)
+        self.scroll_area.setWidgetResizable(True)
+
+        # Forcer le recalcul de la géométrie
+        QApplication.processEvents()
+        self.scroll_content.updateGeometry()
+        self.scroll_area.updateGeometry()
+        self.patient_list_widget.updateGeometry()
+
         
     def update_list_patient(self, patients):
         """ Mise à jour de la liste des patients pour le bouton 'Choix' """
