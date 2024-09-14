@@ -1,4 +1,5 @@
 import requests
+import os
 from datetime import datetime
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
@@ -68,6 +69,14 @@ class PreferencesDialog(QDialog):
         
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
+
+        # Ajout de la sélection de skins
+        self.skin_label = QLabel("Sélectionner un skin:", self.general_page)
+        self.general_layout.addWidget(self.skin_label)
+        
+        self.skin_combo = QComboBox(self.general_page)
+        self.skin_combo.currentTextChanged.connect(self.preview_skin)
+        self.general_layout.addWidget(self.skin_combo)
         
         self.general_layout.addStretch()
         
@@ -180,6 +189,7 @@ class PreferencesDialog(QDialog):
         self.save_button.clicked.connect(self.save_preferences)
         self.main_layout.addWidget(self.save_button)
         
+        self.load_skins()
         self.load_preferences()
         
         self.counters_loaded.connect(self.update_counters)
@@ -241,6 +251,13 @@ class PreferencesDialog(QDialog):
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
         self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
         self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
+        
+        # pour les skins
+        selected_skin = settings.value("selected_skin", "")
+        index = self.skin_combo.findText(selected_skin)
+        if index >= 0:
+            self.skin_combo.setCurrentIndex(index)
+        self.current_skin = selected_skin
 
     def load_shortcut(self, settings, name, widget, default_shortcut):
         shortcut = settings.value(name, default_shortcut)
@@ -262,7 +279,6 @@ class PreferencesDialog(QDialog):
         deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
         pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
 
-        
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
             return
@@ -293,6 +309,9 @@ class PreferencesDialog(QDialog):
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
         settings.setValue("debug_window", self.debug_window.isChecked())
+        # skins
+        settings.setValue("selected_skin", self.skin_combo.currentText())
+        self.current_skin = self.skin_combo.currentText()
         
         self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
         self.parent().show() 
@@ -360,4 +379,24 @@ class PreferencesDialog(QDialog):
             index = self.counter_combobox.findData(int(self.counter_id))
             if index != -1:
                 self.counter_combobox.setCurrentIndex(index)
-     
+    
+    def load_skins(self):
+        skins_dir = "skins"  # Assurez-vous que ce chemin est correct
+        if not os.path.exists(skins_dir):
+            os.makedirs(skins_dir)
+        for file in os.listdir(skins_dir):
+            if file.endswith(".qss"):
+                self.skin_combo.addItem(os.path.splitext(file)[0])
+
+    def preview_skin(self, skin_name):
+        if skin_name:
+            qss_file = os.path.join("skins", f"{skin_name}.qss")
+            with open(qss_file, "r") as f:
+                self.parent().setStyleSheet(f.read())
+
+    def reject(self):
+        # Réapplique le skin enregistré si l'utilisateur ferme sans sauvegarder
+        self.preview_skin(self.current_skin)
+        super().reject()
+
+

@@ -8,7 +8,7 @@ import logging
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QAction, QTextCursor
@@ -66,6 +66,13 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
+
+def load_stylesheet(filename):
+    file = QFile(filename)
+    if file.open(QFile.ReadOnly | QFile.Text):
+        stream = QTextStream(file)
+        return stream.readAll()
+    return ""
 
 
 class RequestThread(QThread):
@@ -307,7 +314,8 @@ class MainWindow(QMainWindow):
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
         self.display_patient_list = settings.value("display_patient_list", False, type=bool)
         self.debug_window = settings.value("debug_window", False, type=bool)
-        
+        self.selected_skin = settings.value("selected_skin", "")
+
         #self.loading_screen.validate_last_line()
         
     def setup_ui(self):
@@ -347,6 +355,8 @@ class MainWindow(QMainWindow):
             self.update_patient_widget()
             self.update_patient_menu(self.list_patients)
 
+        self.load_skin()
+
         self.setup_global_shortcut()
         
     def setup_systray(self):
@@ -383,6 +393,16 @@ class MainWindow(QMainWindow):
         self.trayIcon3.show()
         
         #self.loading_screen.validate_last_line()
+
+    def load_skin(self):
+        if self.selected_skin:
+            qss_file = os.path.join("skins", f"{self.selected_skin}.qss")
+            if os.path.exists(qss_file):
+                with open(qss_file, "r") as f:
+                    qss = f.read()
+                    self.setStyleSheet(qss)
+                    # Appliquer le style à toute l'application
+                    QApplication.instance().setStyleSheet(qss)
         
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
@@ -1184,6 +1204,9 @@ if __name__ == "__main__":
     app.setApplicationName("PySide6 Web Browser Example")
     app.setOrganizationName("MyCompany")
     app.setOrganizationDomain("mycompany.com")
+
+    stylesheet = load_stylesheet("Incrypt.qss")
+    app.setStyleSheet(stylesheet)
     
     window = MainWindow()
     window.show()
