@@ -63,17 +63,13 @@ class WebSocketClient(QThread):
         try:
             if isinstance(data, str):
                 data = json.loads(data)
-            print(data)
             if data['flag'] == 'notification':
                 self.new_notification.emit(data['data'])
-            elif data['flag'] == 'update_patient_widget':
+            elif data['flag'] == 'update_patient_list':
                 if isinstance(data["data"], str):
                     data["data"] = json.loads(data["data"])
-                print('liste', data["data"])
-                print(type(data["data"]))
                 self.new_patient.emit(data["data"])
             elif data['flag'] == 'my_patient':
-                print("my_patient", data["data"])
                 self.my_patient.emit(data["data"])
         except json.JSONDecodeError as e:
             print(f"Failed to decode JSON: {e}")

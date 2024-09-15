@@ -8,13 +8,46 @@ import logging
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QAction, QTextCursor
+from PySide6.QtGui import QIcon, QAction
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
+
+
+class AudioPlayer(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        self.sounds = {}
+
+        # Ajout des callbacks
+        self.player.errorOccurred.connect(self.handle_error)
+
+    def add_sound(self, name, file_path):
+        self.sounds[name] = QUrl.fromLocalFile(file_path)
+        print(f"Son ajouté : {name} - {file_path}")
+
+    def play_sound(self, name):
+        if name in self.sounds:
+            self.player.setSource(self.sounds[name])
+            self.player.play()
+        else:
+            print(f"Son non trouvé : {name}")
+
+    def set_volume(self, volume):
+        self.audio_output.setVolume(volume / 100.0)
+        print(f"Volume réglé à : {volume}%")
+
+    @Slot(QMediaPlayer.Error, str)
+    def handle_error(self, error, error_string):
+        print(f"Erreur de lecture : {error} - {error_string}")
+
 
 class LogHandler(logging.Handler):
     def __init__(self, update_callback):
@@ -24,39 +57,6 @@ class LogHandler(logging.Handler):
     def emit(self, record):
         log_entry = self.format(record)
         self.update_callback(log_entry)
-
-class SSEClient(QThread):
-    new_patient = Signal(object)
-    new_notification = Signal(str)
-
-    def __init__(self, web_url):
-        super().__init__()
-        self.web_url = web_url
-
-    def run(self):
-        while True:
-            try:
-                url = f'{self.web_url}/events/update_patient_pyside'
-                response = requests.get(url, stream=True)
-                client = response.iter_lines()
-                for line in client:
-                    if line:
-                        decoded_line = line.decode('utf-8')
-                        if decoded_line.startswith('data:'):
-                            json_data = decoded_line[5:].strip()
-                            data = json.loads(json_data)
-                            if data['type'] == 'notification_new_patient':
-                                self.new_notification.emit(data['message'])
-                            elif data['type'] == 'patient':
-                                self.new_patient.emit(data["list"])
-            except RequestException as e:
-                print(f"Connection lost: {e}")
-                time.sleep(5)
-                print("Attempting to reconnect...")
-
-    def stop(self):
-        self._running = False
-        self.wait()
 
 
 def resource_path(relative_path):
@@ -263,6 +263,8 @@ class MainWindow(QMainWindow):
             self.connexion_for_app_init()
 
         self.setup_ui()
+
+        self.init_audio()
         
         self.setup_user()
         
@@ -277,6 +279,13 @@ class MainWindow(QMainWindow):
         
         if not self.debug_window:
             self.loading_screen.close()
+
+    def init_audio(self):
+        self.audio_player = AudioPlayer(self)
+        sound_path = resource_path("assets/sounds/already_taken.mp3")
+        print(sound_path)
+        self.audio_player.add_sound("patient_taken", sound_path)
+        self.audio_player.set_volume(100) 
 
     def closeEvent(self, event):
         # Fermeture de la fenêtre secondaire quand la fenêtre principale est fermée
@@ -443,15 +452,7 @@ class MainWindow(QMainWindow):
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
         print(f"Staff name: {staff_name}")
-        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")
-        
-
-    def start_sse_client(self, url):
-        print(f"Starting SSE client with URL: {url}")
-        self.sse_client = SSEClient(url)
-        self.sse_client.new_patient.connect(self.update_patient_menu)
-        self.sse_client.new_notification.connect(self.show_notification)
-        self.sse_client.start()
+        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")        
         
     def start_socket_io_client(self, url):
         self.loading_screen.logger.info("Création de la connexion Socket.IO...")
@@ -939,6 +940,7 @@ class MainWindow(QMainWindow):
 
     @Slot(float, str, int)
     def handle_result(self, elapsed_time, response_text, status_code):
+        print("MY RESPONSE", status_code, response_text)
         if status_code == 200:
             try:
                 print("Success:", response_text)
@@ -950,6 +952,9 @@ class MainWindow(QMainWindow):
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
         elif status_code == 204:
             self.update_my_patient(None)
+        # 423 = patient déjà pris par un autre comptoir
+        elif status_code == 423:
+            self.patient_already_taken()
         else:
             print("Failed to retrieve data:", status_code)
         print("Elapsed time:", elapsed_time)
@@ -978,6 +983,12 @@ class MainWindow(QMainWindow):
         self.thread = RequestThread(url, self.session)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
+
+
+    def patient_already_taken(self):
+        print("Patient Already Taken")
+        self.label_bar.setText("Patient déjà attribué")
+        self.audio_player.play_sound("patient_taken")
 
 
     def update_my_patient(self, patient):
