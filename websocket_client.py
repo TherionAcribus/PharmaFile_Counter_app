@@ -11,9 +11,11 @@ class WebSocketClient(QThread):
     change_paper = Signal(object)
     change_auto_calling = Signal(object)
 
-    def __init__(self, parent):
+    def __init__(self, parent, username="Counter App"):
         super().__init__()
         self.parent = parent
+        self.username = username
+
         if "https" in self.parent.web_url:
             self.web_url = self.parent.web_url.replace("https", "wss")
         else:
@@ -30,9 +32,11 @@ class WebSocketClient(QThread):
 
 
     def run(self):
+        headers = {'username': self.username}
+
         while True:
             try:
-                self.sio.connect(self.web_url, namespaces=['/socket_app_counter'])
+                self.sio.connect(f"{self.web_url}/socket_app_counter", headers=headers)
                 self.sio.wait()  # Maintenir la connexion ouverte
             except socketio.exceptions.ConnectionError as e:
                 print(f"Connection lost: {e}")

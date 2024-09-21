@@ -457,7 +457,7 @@ class MainWindow(QMainWindow):
     def start_socket_io_client(self, url):
         self.loading_screen.logger.info("Création de la connexion Socket.IO...")
         print(f"Starting Socket.IO client with URL: {url}")
-        self.socket_io_client = WebSocketClient(self)
+        self.socket_io_client = WebSocketClient(self, username=f"Counter {self.counter_id} App")
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
         # refaire les deux fonctions en recupérant directement les valeurs plutôt que de renvoyer une requete
