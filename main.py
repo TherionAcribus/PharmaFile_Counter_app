@@ -193,12 +193,12 @@ class IconeButton(QPushButton):
 class LoadingScreen(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Chargement")
+        self.setWindowTitle("PharmaFile")
         self.setFixedSize(400, 200)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         layout = QVBoxLayout()
-        self.label = QLabel("Démarrage de l'application...")
+        self.label = QLabel("Logging de l'application...")
         self.progress = QPlainTextEdit()
         self.progress.setReadOnly(True)
 
@@ -541,13 +541,13 @@ class MainWindow(QMainWindow):
         self.update_list_patient(list_patients)
 
     def _create_more_button(self):
-        self.btn_more = QPushButton("+")
+        self.btn_more = QPushButton("Menu")
         self.more_menu = QMenu()
 
         actions = [
-            ("Relancer l'appel", self.recall_shortcut, self.recall),
+            ("Relancer l'appel ", self.recall_shortcut, self.recall),
             ("Orientation", None, self.toggle_orientation),
-            ("Deconnexion", self.deconnect_shortcut, self.deconnexion_interface),
+            ("Deconnexion ", self.deconnect_shortcut, self.deconnexion_interface),
             ("Agrandir", None, self.toggle_mode),
             ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list)
         ]
@@ -859,13 +859,30 @@ class MainWindow(QMainWindow):
         else:
             self.show_error_page()
             
+    def resource_path(relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
+
     def show_error_page(self):
-        error_page_path = os.path.join('templates', 'error_page.html')
-        with open(error_page_path, 'r', encoding='utf-8') as file:
-            error_html = file.read()
-        
-        error_html = error_html.replace('{web_url}', self.web_url)
-        self.browser.setHtml(error_html, QUrl('file://'))
+        error_page_path = resource_path(os.path.join('templates', 'error_page.html'))
+        try:
+            with open(error_page_path, 'r', encoding='utf-8') as file:
+                error_html = file.read()
+            
+            error_html = error_html.replace('{web_url}', self.web_url)
+            self.browser.setHtml(error_html, QUrl('file://'))
+        except FileNotFoundError:
+            print(f"Error: Le fichier error_page.html n'a pas été trouvé à l'emplacement : {error_page_path}")
+            # Vous pouvez ajouter ici un plan B, comme afficher un message d'erreur directement dans le navigateur
+            self.browser.setHtml("<html><body><h1>Erreur</h1><p>La page d'erreur n'a pas pu être chargée.</p></body></html>", QUrl('file://'))
+        except Exception as e:
+            print(f"Une erreur inattendue s'est produite lors du chargement de la page d'erreur : {e}")
 
     def on_load_finished(self, success):
         if success and self.connected:

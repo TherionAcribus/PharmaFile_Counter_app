@@ -318,7 +318,8 @@ class PreferencesDialog(QDialog):
 
         if url != old_url:
             print("Redémarrage du client SSE")
-            self.parent().start_sse_client(url)
+            #2self.parent().start_sse_client(url)
+            # TODO idem avec websocket
         
         self.accept()
         self.parent().load_preferences()
