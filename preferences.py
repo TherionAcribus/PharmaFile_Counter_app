@@ -66,6 +66,13 @@ class PreferencesDialog(QDialog):
 
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
+
+        self.patient_list_position_combo = QComboBox(self.general_page)
+        self.patient_list_position_combo.addItems(["Bas", "Droite"])
+        self.general_layout.addWidget(self.patient_list_position_combo)
+
+        self.patient_list_position_label = QLabel("Position de la liste des patients:", self.general_page)
+        self.general_layout.addWidget(self.patient_list_position_label)
         
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
@@ -250,6 +257,7 @@ class PreferencesDialog(QDialog):
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
         self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
+        self.patient_list_position_combo.setCurrentText(settings.value("patient_list_position", "Bas"))
         self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
         
         # pour les skins
@@ -308,6 +316,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
+        settings.setValue("patient_list_position", self.patient_list_position_combo.currentText())
         settings.setValue("debug_window", self.debug_window.isChecked())
         # skins
         settings.setValue("selected_skin", self.skin_combo.currentText())

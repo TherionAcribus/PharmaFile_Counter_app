@@ -97,7 +97,7 @@ class RequestThread(QThread):
                 response = self.session.post(self.url, data=self.data, headers=self.headers)
             else:
                 raise ValueError(f"Méthode HTTP non supportée: {self.method}")
-            
+
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.result.emit(elapsed_time, response.text, response.status_code)
@@ -322,6 +322,7 @@ class MainWindow(QMainWindow):
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
         self.display_patient_list = settings.value("display_patient_list", False, type=bool)
+        self.patient_list_position = settings.value("patient_list_position", "Bas")
         self.debug_window = settings.value("debug_window", False, type=bool)
         self.selected_skin = settings.value("selected_skin", "")
 
@@ -549,7 +550,8 @@ class MainWindow(QMainWindow):
             ("Orientation", None, self.toggle_orientation),
             ("Deconnexion ", self.deconnect_shortcut, self.deconnexion_interface),
             ("Agrandir", None, self.toggle_mode),
-            ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list)
+            ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
+            ("Basculer position liste patients", None, self.toggle_patient_list_position),
         ]
 
         for text, shortcut, callback in actions:
@@ -606,7 +608,7 @@ class MainWindow(QMainWindow):
         )
     def _create_patient_list_widget(self):
         self.patient_list_widget = QWidget()
-        self.patient_list_layout = QVBoxLayout()  # Changé en QVBoxLayout pour plus de flexibilité
+        self.patient_list_layout = QVBoxLayout()
         self.patient_list_layout.setContentsMargins(0, 0, 0, 0)
         self.patient_list_layout.setSpacing(0)
 
@@ -614,7 +616,7 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
 
         self.scroll_content = QWidget()
-        self.scroll_layout = QVBoxLayout(self.scroll_content) if not self.horizontal_mode else QHBoxLayout(self.scroll_content)
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(0)
 
@@ -624,18 +626,26 @@ class MainWindow(QMainWindow):
         self.patient_list_widget.setLayout(self.patient_list_layout)
         self.patient_list_widget.setStyleSheet("background-color: lightgray;")
 
-        if self.horizontal_mode:
+        print("HORIZONTAL",self.horizontal_mode)
+
+        if self.patient_list_position == "Droite":
             self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.patient_list_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-            self.patient_list_widget.setFixedWidth(70)  # Ajustez cette valeur selon vos besoins      
-
+            if not self.horizontal_mode:
+                print("Minimum width",self.patient_list_widget.minimumWidth())
+                self.patient_list_widget.setMinimumWidth(600)
+                self.patient_list_widget.setFixedHeight(50)
         else:
-            self.scroll_area.setFixedHeight(50)
             self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self.patient_list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self.patient_list_widget.setFixedHeight(50)
+            if self.horizontal_mode:
+                print("minimum height",self.patient_list_widget.minimumHeight())
+                self.patient_list_widget.setFixedWidth(100)
+                self.patient_list_widget.setMinimumHeight(400)
+            else:
+                self.patient_list_widget.setFixedHeight(50)
 
 
         self.patient_list_widget.setVisible(self.display_patient_list)
@@ -646,7 +656,7 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.button_container)
         self.main_layout.addWidget(self.icone_widget)
 
-        self.full_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
+        self.full_layout = QHBoxLayout() if self.patient_list_position == "Droite" else QVBoxLayout()
         self.full_layout.addLayout(self.main_layout)
         self.full_layout.addWidget(self.patient_list_widget)
 
@@ -676,11 +686,9 @@ class MainWindow(QMainWindow):
             self.setMaximumSize(QSize(16777215, 16777215))
             self.resize(800, 600)
             self.menuBar().show()
-            # refresh browser
             self.load_url()
             self.stacked_widget.setCurrentWidget(self.browser)
             self.toggle_mode_action.setText("Mode réduit")
-
         else:
             self.resize_to_fit_buttons()
             self.menuBar().hide()
@@ -688,13 +696,27 @@ class MainWindow(QMainWindow):
             self.toggle_mode_action.setText("Mode normal")
 
         self.is_reduced_mode = not self.is_reduced_mode
+        self.updateGeometry()  # Force la mise à jour de la géométrie
+
+    def toggle_patient_list_position(self):
+        self.patient_list_position = "Droite" if self.patient_list_position == "Bas" else "Bas"
+        self.update_control_buttons_layout()
+        self.refresh_patient_list()
+        self.resize_to_fit_buttons()
         
     def resize_to_fit_buttons(self):
         self.button_widget.adjustSize()
         size_hint = self.button_widget.sizeHint()
         self.setMinimumSize(size_hint)
-        self.setMaximumSize(size_hint)
+        max_size = size_hint + QSize(50, 50)  # Permet un léger agrandissement
+        self.setMaximumSize(max_size)
         self.resize(size_hint)
+
+    def sizeHint(self):
+        if self.is_reduced_mode:
+            return self.button_widget.sizeHint()
+        else:
+            return QSize(800, 600)
         
     def toggle_orientation(self):
         self.loading_screen.logger.info("Changement de l'orientation...")
@@ -1029,6 +1051,19 @@ class MainWindow(QMainWindow):
                     else:
                         status_text = "????"
                     self.label_bar.setText(f"{patient['call_number']} {status_text} ({patient['activity']})")
+
+    def refresh_patient_list(self):
+        """ Mise à jour des boutons patients"""
+        # Récupérer la liste mise à jour des patients depuis le serveur
+        updated_patients = self.init_list_patients()
+        
+        # Mettre à jour la liste des patients
+        self.list_patients = updated_patients
+        
+        # Mettre à jour l'interface utilisateur
+        self.update_patient_menu(updated_patients)
+        self.update_list_patient(updated_patients)
+        self.update_patient_widget()
 
 
     def update_my_buttons(self, patient):
