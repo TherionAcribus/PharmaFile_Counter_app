@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
-        self.resize(800, 600)         
+        self.resize(800, 600)
 
         self.create_menu()      
         
@@ -708,7 +708,7 @@ class MainWindow(QMainWindow):
         self.button_widget.adjustSize()
         size_hint = self.button_widget.sizeHint()
         self.setMinimumSize(size_hint)
-        max_size = size_hint + QSize(50, 50)  # Permet un léger agrandissement
+        max_size = size_hint + QSize(500, 500)  # Permet un léger agrandissement
         self.setMaximumSize(max_size)
         self.resize(size_hint)
 
@@ -1050,7 +1050,8 @@ class MainWindow(QMainWindow):
                         status_text = "Au comptoir"
                     else:
                         status_text = "????"
-                    self.label_bar.setText(f"{patient['call_number']} {status_text} ({patient['activity']})")
+                    language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
+                    self.label_bar.setText(f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
 
     def refresh_patient_list(self):
         """ Mise à jour des boutons patients"""
@@ -1124,11 +1125,11 @@ class MainWindow(QMainWindow):
         # Mise à jour du bouton 'Choix' selon qu'il y ait ou non des patients
         if patients:
             if len(patients) == 0:
-                self.btn_choose_patient.setText("X")
+                self.btn_choose_patient.setText("Vide")
             else:
-                self.btn_choose_patient.setText(">>")
+                self.btn_choose_patient.setText("Patients")
         else:
-            self.btn_choose_patient.setText("X")
+            self.btn_choose_patient.setText("Vide")
 
         # Ajout des patients dans le menu
         for patient in patients:
@@ -1162,9 +1163,13 @@ class MainWindow(QMainWindow):
 
         # Créer de nouveaux boutons pour chaque patient
         for patient in self.list_patients:
+            print("patient", patient)
+            print("patient_code", patient["language_code"])
             button_text = patient['call_number']
+            if patient["language_code"] != "fr":
+                button_text += f" ({patient['language_code']})"
             button = QPushButton(button_text)
-            button.setFixedSize(60, 30)  # Taille fixe pour tous les boutons
+            #button.setFixedSize(60, 30)  # Taille fixe pour tous les boutons
             
             font = button.font()
             font.setPointSize(8)
@@ -1198,7 +1203,8 @@ class MainWindow(QMainWindow):
         try:
             for patient in patients:
                 print("patient entrée", patient)
-                action_select_patient = QAction(f"{patient['call_number']} - {patient['activity']}", self)
+                language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
+                action_select_patient = QAction(f"{patient['call_number']} {language}- {patient['activity']}", self)
                 action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
                 self.choose_patient_menu.addAction(action_select_patient)
             self.btn_choose_patient.setMenu(self.choose_patient_menu) 
