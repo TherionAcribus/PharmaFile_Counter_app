@@ -590,6 +590,7 @@ class MainWindow(QMainWindow):
             ("Orientation", None, self.toggle_orientation),
             ("Deconnexion ", self.deconnect_shortcut, self.deconnexion_interface),
             ("Agrandir", None, self.toggle_mode),
+            ("Préférences", None, self.show_preferences_dialog),
             ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
             ("Basculer position liste patients", None, self.toggle_patient_list_position),
         ]
