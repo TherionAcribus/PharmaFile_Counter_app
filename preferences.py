@@ -392,6 +392,7 @@ class PreferencesDialog(QDialog):
     
     def load_skins(self):
         skins_dir = "skins"  # Assurez-vous que ce chemin est correct
+        self.skin_combo.addItem("Pas de skin")  # Ajoutez cette ligne
         if not os.path.exists(skins_dir):
             os.makedirs(skins_dir)
         for file in os.listdir(skins_dir):
@@ -399,10 +400,14 @@ class PreferencesDialog(QDialog):
                 self.skin_combo.addItem(os.path.splitext(file)[0])
 
     def preview_skin(self, skin_name):
-        if skin_name:
+        if skin_name == "Pas de skin":
+            # Supprime le skin en désactivant tous les styles QSS
+            self.parent().setStyleSheet("")
+        elif skin_name:
             qss_file = os.path.join("skins", f"{skin_name}.qss")
-            with open(qss_file, "r") as f:
-                self.parent().setStyleSheet(f.read())
+            if os.path.exists(qss_file):
+                with open(qss_file, "r") as f:
+                    self.parent().setStyleSheet(f.read())
 
     def reject(self):
         # Réapplique le skin enregistré si l'utilisateur ferme sans sauvegarder
