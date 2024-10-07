@@ -10,6 +10,7 @@ class WebSocketClient(QThread):
     my_patient = Signal(object)
     change_paper = Signal(object)
     change_auto_calling = Signal(object)
+    update_auto_calling = Signal(object)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
@@ -28,7 +29,8 @@ class WebSocketClient(QThread):
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('update', self.on_update, namespace='/socket_app_counter')
         self.sio.on('paper', self.on_paper, namespace='/socket_app_counter')      
-        self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')     
+        self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')
+        self.sio.on('update_auto_calling', self.on_update_auto_calling, namespace='/socket_app_counter')   
 
 
     def run(self):
@@ -61,6 +63,10 @@ class WebSocketClient(QThread):
     def on_change_auto_calling(self, data):
         if self.parent.counter_id == int(data["data"]['counter_id']):
             self.change_auto_calling.emit(data)
+
+    def on_update_auto_calling(self, data):
+        if self.parent.counter_id == int(data["data"]['counter_id']):
+            self.update_auto_calling.emit(data)
 
     def on_update(self, data):
         print("Received update:", data)

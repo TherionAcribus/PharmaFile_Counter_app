@@ -144,9 +144,8 @@ class IconeButton(QPushButton):
             
     def handle_response(self, elapsed_time, response_text, status_code):
         response_data = json.loads(response_text)
-        print(response_data["status"], type(response_data["status"]))
         if status_code == 200:
-            if response_data["status"] == True:
+            if response_data["status"]:
                 self.state = "active"
             else:
                 self.state = "inactive"
@@ -464,6 +463,7 @@ class MainWindow(QMainWindow):
         # refaire les deux fonctions en recupérant directement les valeurs plutôt que de renvoyer une requete
         self.socket_io_client.change_paper.connect(self.change_paper)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
+        self.socket_io_client.update_auto_calling.connect(self.update_auto_calling)
         self.socket_io_client.start()
         #self.loading_screen.validate_last_line()
 
@@ -1031,6 +1031,7 @@ class MainWindow(QMainWindow):
 
 
     def update_my_patient(self, patient):
+        print("Update My Patient", patient)
         if patient is None:
             self.patient_id = None
             self.label_bar.setText("Plus de patients")
@@ -1212,7 +1213,9 @@ class MainWindow(QMainWindow):
             print("Type error")
 
     def show_notification(self, data):
+        print("show_notification", data)
         if self.notification_specific_acts:
+            print("show_notification_specific_acts")
             self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
 
     def change_paper(self, data):
@@ -1223,6 +1226,16 @@ class MainWindow(QMainWindow):
         self.autocalling = "active" if data["data"]["autocalling"] else "inactive"
         print(self.autocalling)
         self.btn_auto_calling.update_button_icon(self.autocalling)
+
+    def update_auto_calling(self, data):
+        """ Mise à jour de l'interface lors de l'autocalling"""
+        print("update_auto_calling")
+        patient = data["data"]["patient"]
+        #patient["counter_id"] = self.counter_id
+        print(patient)
+        self.update_my_patient(patient)
+        self.update_my_buttons(patient)
+        self.show_notification(str(patient))
 
     @Slot()
     def pyqt_call_preferences(self):
