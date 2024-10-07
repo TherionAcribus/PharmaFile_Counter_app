@@ -7,15 +7,50 @@ import threading
 import logging
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QAction
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtGui import QIcon, QAction, QScreen
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QSoundEffect
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
+
+class CustomNotification(QDialog):
+    def __init__(self, message, parent=None, audio_player=None):
+        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setStyleSheet("""
+            background-color: #2C3E50;
+            color: white;
+            border-radius: 10px;
+            padding: 10px;
+        """)
+        
+        self.audio_player = audio_player
+        
+        layout = QVBoxLayout()
+        label = QLabel(message)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+        # Positionner la notification en bas à gauche
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        self.setGeometry(
+            screen_geometry.bottomLeft().x() + 20,
+            screen_geometry.bottomLeft().y() - self.sizeHint().height() - 20,
+            300,
+            100
+        )
+
+    def show(self):
+        super().show()
+        print("Notification affichée")
+        if self.audio_player:
+            self.audio_player.play_sound("patient_taken")
+        QTimer.singleShot(5000, self.close)  # 
 
 
 class AudioPlayer(QObject):
@@ -110,7 +145,7 @@ class RequestThread(QThread):
 class IconeButton(QPushButton):
     def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, parent=None):
         super().__init__(parent)
-        
+
         self.icon_path = icon_path
         self.icon_inactive_path = icon_inactive_path
         self.flask_url = flask_url
@@ -379,7 +414,9 @@ class MainWindow(QMainWindow):
         open_action1.triggered.connect(self.call_web_function_pause)
         self.trayIcon1.setContextMenu(tray_menu1)
         self.trayIcon1.activated.connect(self.on_tray_icon_pause_activated)
+        self.trayIcon1.setVisible(True)
         self.trayIcon1.show()
+
 
         icon_path = resource_path("assets/images/next_orange.ico")
         self.trayIcon2 = QSystemTrayIcon(QIcon(icon_path), self)
@@ -389,7 +426,9 @@ class MainWindow(QMainWindow):
         open_action2.triggered.connect(self.call_web_function_validate_and_call_next)
         self.trayIcon2.setContextMenu(tray_menu2)
         self.trayIcon2.activated.connect(self.on_tray_icon_call_next_activated)
+        self.trayIcon2.setVisible(True)
         self.trayIcon2.show()
+
 
         icon_path = resource_path("assets/images/check.ico")
         self.trayIcon3 = QSystemTrayIcon(QIcon(icon_path), self)
@@ -399,6 +438,7 @@ class MainWindow(QMainWindow):
         open_action3.triggered.connect(self.call_web_function_validate)
         self.trayIcon3.setContextMenu(tray_menu3)
         self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
+        self.trayIcon3.setVisible(True)
         self.trayIcon3.show()
         
         #self.loading_screen.validate_last_line()
@@ -528,7 +568,7 @@ class MainWindow(QMainWindow):
             self.button_layout.addWidget(button)
 
     def _create_choose_patient_button(self):
-        self.btn_choose_patient = QPushButton(">>")
+        self.btn_choose_patient = QPushButton("Patients")
         self.choose_patient_menu = QMenu()
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
         self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -1215,8 +1255,8 @@ class MainWindow(QMainWindow):
     def show_notification(self, data):
         print("show_notification", data)
         if self.notification_specific_acts:
-            print("show_notification_specific_acts")
-            self.trayIcon1.showMessage("Patient Update", data, QSystemTrayIcon.Information, 5000)
+            notification = CustomNotification(str(data), self)
+            notification.show()
 
     def change_paper(self, data):
         self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
