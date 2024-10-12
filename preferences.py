@@ -24,6 +24,16 @@ class TestConnectionWorker(QThread):
             self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
             
 
+# Constants for UI texts and corresponding values
+BOTTOM_TEXT = "Bas"
+RIGHT_TEXT = "Droite"
+POSITION_MAPPING = {
+    BOTTOM_TEXT: "bottom",
+    RIGHT_TEXT: "right"
+}
+REVERSE_POSITION_MAPPING = {v: k for k, v in POSITION_MAPPING.items()}
+
+
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
     preferences_updated = Signal()
@@ -57,22 +67,27 @@ class PreferencesDialog(QDialog):
         
         self.always_on_top_checkbox = QCheckBox("Always on top", self.general_page)
         self.general_layout.addWidget(self.always_on_top_checkbox)
-        
-        self.start_with_reduce_mode = QCheckBox("Démarrer en mode réduit", self.general_page)
-        self.general_layout.addWidget(self.start_with_reduce_mode)
-        
+
         self.horizontal_mode = QCheckBox("Orientation verticale", self.general_page)
         self.general_layout.addWidget(self.horizontal_mode)
 
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
 
-        self.patient_list_position_combo = QComboBox(self.general_page)
-        self.patient_list_position_combo.addItems(["Bas", "Droite"])
-        self.general_layout.addWidget(self.patient_list_position_combo)
+        self.patient_list_position_vertical_label = QLabel("Position de la liste des patients en mode verticale:", self.general_page)
+        self.general_layout.addWidget(self.patient_list_position_vertical_label)
 
-        self.patient_list_position_label = QLabel("Position de la liste des patients:", self.general_page)
-        self.general_layout.addWidget(self.patient_list_position_label)
+        self.patient_list_position_vertical = QComboBox(self.general_page)
+        self.patient_list_position_vertical.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.general_layout.addWidget(self.patient_list_position_vertical)
+
+        self.patient_list_position_horizontal_label = QLabel("Position de la liste des patients en mode horizontal:", self.general_page)
+        self.general_layout.addWidget(self.patient_list_position_horizontal_label)
+
+        self.patient_list_position_horizontal = QComboBox(self.general_page)
+        self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.general_layout.addWidget(self.patient_list_position_horizontal)
+
         
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
@@ -243,6 +258,8 @@ class PreferencesDialog(QDialog):
         self.password_input.setText(settings.value("password", "admin"))
         self.counter_id = settings.value("counter_id", None)
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
+        vertical_position = settings.value("patient_list_vertical_position", "bottom")
+        horizontal_position = settings.value("patient_list_horizontal_position", "right")
         
         self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
         self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
@@ -253,11 +270,11 @@ class PreferencesDialog(QDialog):
         self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
 
-        self.start_with_reduce_mode.setChecked(settings.value("start_with_reduce_mode", False, type=bool))
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
         self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
-        self.patient_list_position_combo.setCurrentText(settings.value("patient_list_position", "Bas"))
+        self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
+        self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
         self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
         
         # pour les skins
@@ -313,10 +330,10 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
-        settings.setValue("start_with_reduce_mode", self.start_with_reduce_mode.isChecked())
-        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
+        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
-        settings.setValue("patient_list_position", self.patient_list_position_combo.currentText())
+        settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
+        settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])
         settings.setValue("debug_window", self.debug_window.isChecked())
         # skins
         settings.setValue("selected_skin", self.skin_combo.currentText())
