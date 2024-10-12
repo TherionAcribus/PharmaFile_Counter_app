@@ -16,6 +16,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QSoundEffect
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
+from buttons import DebounceButton
 
 class CustomNotification(QDialog):
     def __init__(self, message, parent=None, audio_player=None):
@@ -142,7 +143,7 @@ class RequestThread(QThread):
             self.result.emit(elapsed_time, str(e), 0)
 
 
-class IconeButton(QPushButton):
+class IconeButton(DebounceButton):
     def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, parent=None):
         super().__init__(parent)
 
@@ -393,7 +394,7 @@ class MainWindow(QMainWindow):
         ]
 
         for attr_name, text, shortcut, callback in buttons_config:
-            button = QPushButton(f"{text}\n{shortcut}")
+            button = DebounceButton(f"{text}\n{shortcut}")
             button.clicked.connect(callback)
             setattr(self, attr_name, button)  # Stocke le bouton comme attribut de la classe
             self.main_button_layout.addWidget(button)
@@ -479,7 +480,7 @@ class MainWindow(QMainWindow):
         self.thread.start()
 
     def _create_choose_patient_button(self):
-        self.btn_choose_patient = QPushButton("Patients")
+        self.btn_choose_patient = DebounceButton("Patients")
         self.choose_patient_menu = QMenu()
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
 
@@ -491,7 +492,7 @@ class MainWindow(QMainWindow):
         self.update_list_patient(list_patients)
 
     def _create_more_button(self):
-        self.btn_more = QPushButton("Menu")
+        self.btn_more = DebounceButton("Menu")
         self.more_menu = QMenu()
 
         actions = [
@@ -764,7 +765,7 @@ class MainWindow(QMainWindow):
         login_layout.addWidget(self.checkbox_on_all)
 
         # Ajouter un bouton de validation
-        validate_button = QPushButton("Valider")
+        validate_button = DebounceButton("Valider")
         validate_button.clicked.connect(self.validate_login)
         login_layout.addWidget(validate_button)
 
@@ -992,7 +993,7 @@ class MainWindow(QMainWindow):
             button_text = patient['call_number']
             if patient["language_code"] != "fr":
                 button_text += f" ({patient['language_code']})"
-            button = QPushButton(button_text)
+            button = DebounceButton(button_text)
             
             font = button.font()
             font.setPointSize(8)
@@ -1416,14 +1417,14 @@ class MainWindow2(QMainWindow):
         ]
 
         for attr_name, text, shortcut, callback in buttons_config:
-            button = QPushButton(f"{text}\n{shortcut}")
+            button = DebounceButton(f"{text}\n{shortcut}")
             button.clicked.connect(callback)
             button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
             setattr(self, attr_name, button)  # Stocke le bouton comme attribut de la classe
             self.button_layout.addWidget(button)
 
     def _create_choose_patient_button(self):
-        self.btn_choose_patient = QPushButton("Patients")
+        self.btn_choose_patient = DebounceButton("Patients")
         self.choose_patient_menu = QMenu()
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
         self.btn_choose_patient.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -1437,7 +1438,7 @@ class MainWindow2(QMainWindow):
         self.update_list_patient(list_patients)
 
     def _create_more_button(self):
-        self.btn_more = QPushButton("Menu")
+        self.btn_more = DebounceButton("Menu")
         self.more_menu = QMenu()
 
         actions = [
@@ -1677,7 +1678,7 @@ class MainWindow2(QMainWindow):
         login_layout.addWidget(self.checkbox_on_all)
 
         # Ajouter un bouton de validation
-        validate_button = QPushButton("Valider")
+        validate_button = DebounceButton("Valider")
         validate_button.clicked.connect(self.validate_login)
         login_layout.addWidget(validate_button)
 
@@ -2065,7 +2066,7 @@ class MainWindow2(QMainWindow):
             button_text = patient['call_number']
             if patient["language_code"] != "fr":
                 button_text += f" ({patient['language_code']})"
-            button = QPushButton(button_text)
+            button = DebounceButton(button_text)
             #button.setFixedSize(60, 30)  # Taille fixe pour tous les boutons
             
             font = button.font()
