@@ -1,7 +1,7 @@
 import requests
 import os
 from datetime import datetime
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 
 
@@ -197,9 +197,33 @@ class PreferencesDialog(QDialog):
         
         self.show_current_patient_checkbox = QCheckBox("Afficher le patient en cours", self.notifications_page)
         self.notifications_layout.addWidget(self.show_current_patient_checkbox)
+
+        self.notification_autocalling_new_patient_checkbox = QCheckBox("Afficher si un nouveau patient est appelé via l'autocalling", self.notifications_page)
+        self.notifications_layout.addWidget(self.notification_autocalling_new_patient_checkbox)
         
-        self.notification_specific_acts_checkbox = QCheckBox("Afficher les actes spécifiques", self.notifications_page)
+        self.notification_specific_acts_checkbox = QCheckBox("Afficher les activités spécifiques (Vaccins, Tests... voir le paramètrage du serveur)", self.notifications_page)
         self.notifications_layout.addWidget(self.notification_specific_acts_checkbox)
+
+        self.notification_add_paper_checkbox = QCheckBox("Afficher les alertes pour remplacer le papier", self.notifications_page)
+        self.notifications_layout.addWidget(self.notification_add_paper_checkbox)
+
+        # Ajout de l'option pour la durée d'affichage
+        self.notification_duration_layout = QHBoxLayout()
+        self.notification_duration_label = QLabel("Durée d'affichage (secondes):", self.notifications_page)
+        self.notification_duration_spinbox = QSpinBox(self.notifications_page)
+        self.notification_duration_spinbox.setRange(1, 60)
+        self.notification_duration_layout.addWidget(self.notification_duration_label)
+        self.notification_duration_layout.addWidget(self.notification_duration_spinbox)
+        self.notifications_layout.addLayout(self.notification_duration_layout)
+        
+        # Ajout de l'option pour la taille de la police
+        self.notification_font_size_layout = QHBoxLayout()
+        self.notification_font_size_label = QLabel("Taille de la police:", self.notifications_page)
+        self.notification_font_size_spinbox = QSpinBox(self.notifications_page)
+        self.notification_font_size_spinbox.setRange(8, 36)
+        self.notification_font_size_layout.addWidget(self.notification_font_size_label)
+        self.notification_font_size_layout.addWidget(self.notification_font_size_spinbox)
+        self.notifications_layout.addLayout(self.notification_font_size_layout)
         
         self.notifications_layout.addStretch()
         
@@ -267,8 +291,12 @@ class PreferencesDialog(QDialog):
         self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input, "Alt+R")
         self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input, "Alt+D")
 
-        self.show_current_patient_checkbox.setChecked(settings.value("show_current_patient", True, type=bool))
+        self.show_current_patient_checkbox.setChecked(settings.value("notification_current_patient", False, type=bool))
+        self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
+        self.notification_add_paper_checkbox.setChecked(settings.value("notification_add_paper", True, type=bool))
+        self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
+        self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
 
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
@@ -326,8 +354,13 @@ class PreferencesDialog(QDialog):
         settings.setValue('recall_shortcut', recall_shortcut)
         settings.setValue("deconnect_shortcut", deconnect_shortcut)
         
-        settings.setValue("show_current_patient", self.show_current_patient_checkbox.isChecked())
+        # notifications
+        settings.setValue("notification_current_patient", self.show_current_patient_checkbox.isChecked())
+        settings.setValue("notification_autocalling_new_patient", self.notification_autocalling_new_patient_checkbox.isChecked())
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
+        settings.setValue("notification_add_paper", self.notification_add_paper_checkbox.isChecked())
+        settings.setValue("notification_duration", self.notification_duration_spinbox.value())
+        settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        
@@ -335,6 +368,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
         settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])
         settings.setValue("debug_window", self.debug_window.isChecked())
+
         # skins
         settings.setValue("selected_skin", self.skin_combo.currentText())
         self.current_skin = self.skin_combo.currentText()

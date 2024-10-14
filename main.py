@@ -11,47 +11,13 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu,
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QAction, QScreen
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QSoundEffect
+from PySide6.QtGui import QIcon, QAction
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
 from buttons import DebounceButton
-
-class CustomNotification(QDialog):
-    def __init__(self, message, parent=None, audio_player=None):
-        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setStyleSheet("""
-            background-color: #2C3E50;
-            color: white;
-            border-radius: 10px;
-            padding: 10px;
-        """)
-        
-        self.audio_player = audio_player
-        
-        layout = QVBoxLayout()
-        label = QLabel(message)
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        self.setLayout(layout)
-
-        # Positionner la notification en bas à gauche
-        screen = QApplication.primaryScreen()
-        screen_geometry = screen.availableGeometry()
-        self.setGeometry(
-            screen_geometry.bottomLeft().x() + 20,
-            screen_geometry.bottomLeft().y() - self.sizeHint().height() - 20,
-            300,
-            100
-        )
-
-    def show(self):
-        super().show()
-        print("Notification affichée")
-        if self.audio_player:
-            self.audio_player.play_sound("patient_taken")
-        QTimer.singleShot(5000, self.close)  # 
+from notification import CustomNotification
 
 
 class AudioPlayer(QObject):
@@ -179,6 +145,7 @@ class IconeButton(DebounceButton):
         self.update_button_icon()
             
     def handle_response(self, elapsed_time, response_text, status_code):
+        print("handle_response", elapsed_time, response_text, status_code, type(response_text))
         response_data = json.loads(response_text)
         if status_code == 200:
             if response_data["status"]:
@@ -324,7 +291,12 @@ class MainWindow(QMainWindow):
         self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")
         self.recall_shortcut = settings.value("recall_shortcut", "Alt+R")
         self.deconnect_shortcut = settings.value("deconnect_shortcut", "Alt+D")
+        self.notification_current_patient = settings.value("notification_current_patient", True, type=bool)
+        self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
+        self.notification_add_paper = settings.value("notification_add_paper", True, type=bool)
+        self.notification_duration = settings.value("notification_duration", 5, type=int)
+        self.notification_font_size = settings.value("notification_font_size", 12, type=int)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
         self.display_patient_list = settings.value("display_patient_list", False, type=bool)
@@ -356,7 +328,6 @@ class MainWindow(QMainWindow):
         self.setup_global_shortcut()
 
     def create_interface(self):
-
         # Supprime l'ancien widget central s'il existe (changement d'orientation)
         if self.centralWidget():
             self.centralWidget().deleteLater()
@@ -365,17 +336,36 @@ class MainWindow(QMainWindow):
 
         print("self.horizontal_mode", self.horizontal_mode)
         self.main_layout = QHBoxLayout(central_widget) if self.horizontal_mode else QVBoxLayout(central_widget)
+
+        # Créer un widget conteneur pour les éléments principaux
+        self.main_elements_container = QWidget() 
+        main_elements_layout = QHBoxLayout(self.main_elements_container) if self.horizontal_mode else QVBoxLayout(self.main_elements_container)
+        main_elements_layout.setContentsMargins(0, 0, 0, 0)
+        main_elements_layout.setSpacing(5)  # Ajustez l'espacement selon vos besoins
+
         self._create_label_patient()
         self._create_main_button_container()
         self._create_option_button_container()
         self._create_icon_widget()
         self._create_patient_list_widget()
 
-        self.main_layout.addWidget(self.label_patient)
-        self.main_layout.addWidget(self.main_button_container)
-        self.main_layout.addWidget(self.option_button_container)   
+        # Ajouter les widgets au conteneur principal
+        main_elements_layout.addWidget(self.label_patient)
+        main_elements_layout.addWidget(self.main_button_container)
+        main_elements_layout.addWidget(self.option_button_container)
+
+        # Configurer la politique de taille du conteneur principal
+        self.main_elements_container.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+
+        # Ajouter le conteneur principal et les autres widgets au layout principal
+        self.main_layout.addWidget(self.main_elements_container)
         self.main_layout.addWidget(self.icone_widget)
-        #self.main_layout.addWidget(self.patient_list_widget)
+
+        # Ajouter un stretch pour pousser les widgets vers le haut/gauche
+        if self.horizontal_mode:
+            self.main_layout.addStretch(1)
+        else:
+            self.main_layout.addStretch(1)
 
     def _create_label_patient(self):
         self.label_patient = QLabel("Status: Ready")
@@ -622,6 +612,12 @@ class MainWindow(QMainWindow):
                 response_data = json.loads(response_text)
                 self.update_my_patient(response_data)
                 self.update_my_buttons(response_data)
+                print("Notification : ", self.notification_current_patient)
+                if self.notification_current_patient:
+                    print("Notification OK")
+                    message = f"Nouveau patient : {response_data['call_number']} pour '{response_data['activity']}'"
+                    self.show_notification({"origin": "new_patient", "message": message}, internal=True)
+
             except json.JSONDecodeError as e:
                 print("Failed to decode JSON:", e)
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
@@ -911,8 +907,9 @@ class MainWindow(QMainWindow):
     def init_audio(self):
         self.audio_player = AudioPlayer(self)
         sound_path = resource_path("assets/sounds/already_taken.mp3")
-        print(sound_path)
         self.audio_player.add_sound("patient_taken", sound_path)
+        sound_path = resource_path("assets/sounds/ding.mp3")
+        self.audio_player.add_sound("ding", sound_path)
         self.audio_player.set_volume(100) 
 
     def closeEvent(self, event):
@@ -1010,16 +1007,17 @@ class MainWindow(QMainWindow):
         self.scroll_area.updateGeometry()
         self.patient_list_widget.updateGeometry()
 
-
-    def show_notification(self, data):
-        print("show_notification", data)
+    def show_notification(self, data, internal=False):
         if self.notification_specific_acts:
-            notification = CustomNotification(str(data), self)
+            notification = CustomNotification(data=data, parent=self, internal=internal)
             notification.show()
 
     def change_paper(self, data):
         self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
         self.btn_paper.update_button_icon(self.add_paper)
+        if self.notification_add_paper:
+            message = "On est quasiment au bout du rouleau" if self.add_paper == "active" else "Une gentille personne a remis du papier"
+            self.show_notification({"origin": "printer_paper", "message": message}, internal=True)
         
     def change_auto_calling(self, data):
         self.autocalling = "active" if data["data"]["autocalling"] else "inactive"
@@ -1027,14 +1025,16 @@ class MainWindow(QMainWindow):
         self.btn_auto_calling.update_button_icon(self.autocalling)
 
     def update_auto_calling(self, data):
-        """ Mise à jour de l'interface lors de l'autocalling"""
+        """ Mise à jour de l'interface lors de l'autocalling (arrivé d'un patient)"""
         print("update_auto_calling")
         patient = data["data"]["patient"]
         #patient["counter_id"] = self.counter_id
         print(patient)
         self.update_my_patient(patient)
         self.update_my_buttons(patient)
-        self.show_notification(str(patient))
+        if self.notification_autocalling_new_patient:
+            message = f"Appel automatique du patient {patient['call_number']} pour '{patient['activity']}'"
+            self.show_notification({"origin": "autocalling", "message": message}, internal=True)
 
     @Slot()
     def pyqt_call_preferences(self):
@@ -1246,6 +1246,7 @@ class MainWindow2(QMainWindow):
         self.recall_shortcut = settings.value("recall_shortcut", "Alt+R")
         self.deconnect_shortcut = settings.value("deconnect_shortcut", "Alt+D")
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
+        self.notification_add_paper = settings.value("notification_add_paper", True, type=bool)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.start_with_reduce_mode = settings.value("start_with_reduce_mode", False, type=bool)
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
@@ -2109,10 +2110,10 @@ class MainWindow2(QMainWindow):
         except TypeError:
             print("Type error")
 
-    def show_notification(self, data):
+    def show_notification(self, data, internal=False):
         print("show_notification", data)
         if self.notification_specific_acts:
-            notification = CustomNotification(str(data), self)
+            notification = CustomNotification(str(data), self, internal=internal)
             notification.show()
 
     def change_paper(self, data):
@@ -2132,7 +2133,7 @@ class MainWindow2(QMainWindow):
         print(patient)
         self.update_my_patient(patient)
         self.update_my_buttons(patient)
-        self.show_notification(str(patient))
+        self.show_notification({"origin": "autocalling", "message": patient}, internal=True)
 
     @Slot()
     def pyqt_call_preferences(self):

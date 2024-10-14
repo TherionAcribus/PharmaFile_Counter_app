@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QPushButton, QSizePolicy
 from PySide6.QtCore import QTimer, Signal
 
 class DebounceButton(QPushButton):
@@ -12,6 +12,11 @@ class DebounceButton(QPushButton):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.on_debounce_timeout)
         self.clicked.connect(self.on_clicked)
+
+        # Définir la politique de taille
+        #self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Maximum)
+        #self.setMinimumSize(30, 30)
+        #self.setMaximumSize(30, 30)  # Taille minimale en pixels (ajustez selon vos besoins)
 
     def on_clicked(self):
         if not self.timer.isActive():
