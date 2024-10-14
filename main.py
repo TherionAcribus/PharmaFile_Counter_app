@@ -7,7 +7,7 @@ import threading
 import logging
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog, QDockWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog, QDockWidget, QBoxLayout
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
@@ -249,6 +249,10 @@ class MainWindow(QMainWindow):
         # LOAD PREFERENCES
         self.load_preferences()
 
+        # quand App se ferme, on ferme aussi le systray
+        app = QApplication.instance()
+        app.aboutToQuit.connect(self.cleanup_systray)
+
         self.loading_screen.logger.info("Test de la connexion...")
         self.app_token = None
         try:
@@ -331,11 +335,10 @@ class MainWindow(QMainWindow):
         # Supprime l'ancien widget central s'il existe (changement d'orientation)
         if self.centralWidget():
             self.centralWidget().deleteLater()
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
 
-        print("self.horizontal_mode", self.horizontal_mode)
-        self.main_layout = QHBoxLayout(central_widget) if self.horizontal_mode else QVBoxLayout(central_widget)
+        self.main_layout = QHBoxLayout(self.central_widget) if self.horizontal_mode else QVBoxLayout(self.central_widget)
 
         # Créer un widget conteneur pour les éléments principaux
         self.main_elements_container = QWidget() 
@@ -501,37 +504,48 @@ class MainWindow(QMainWindow):
         self.btn_more.setMenu(self.more_menu)
 
     def _create_patient_list_widget(self):
-        # Create a QDockWidget
-        self.patient_list_dock = QDockWidget("Liste des patients", self)
-        self.patient_list_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
+        need_recreation = False
 
-        print("sens : ", self.horizontal_mode)
+        # Check if the dock widget needs to be recreated
+        if not hasattr(self, 'patient_list_dock'):
+            need_recreation = True
+        elif self.patient_list_dock.widget().layout().direction() != (QBoxLayout.LeftToRight if self.horizontal_mode else QBoxLayout.TopToBottom):
+            need_recreation = True
 
-        # Create the content for the dock widget
-        self.patient_list_widget = QWidget()
-        self.patient_list_layout = QHBoxLayout(self.patient_list_widget) if self.horizontal_mode else QVBoxLayout(self.patient_list_widget)
-        self.patient_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.patient_list_layout.setSpacing(0)
+        if need_recreation:
+            if hasattr(self, 'patient_list_dock'):
+                # Remove the existing dock widget
+                self.removeDockWidget(self.patient_list_dock)
+                self.patient_list_dock.deleteLater()
 
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
+            # Create a new QDockWidget
+            self.patient_list_dock = QDockWidget("Liste des patients", self)
+            self.patient_list_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
 
-        self.scroll_content = QWidget()
-        self.scroll_layout = QHBoxLayout(self.scroll_content) if self.horizontal_mode else QVBoxLayout(self.scroll_content)
-        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout.setSpacing(0)
+            # Create the content for the dock widget
+            self.patient_list_widget = QWidget()
+            self.patient_list_layout = QHBoxLayout(self.patient_list_widget) if self.horizontal_mode else QVBoxLayout(self.patient_list_widget)
+            self.patient_list_layout.setContentsMargins(0, 0, 0, 0)
+            self.patient_list_layout.setSpacing(0)
 
-        self.scroll_area.setWidget(self.scroll_content)
-        self.patient_list_layout.addWidget(self.scroll_area)
+            self.scroll_area = QScrollArea()
+            self.scroll_area.setWidgetResizable(True)
 
-        # Set the widget for the dock
-        self.patient_list_dock.setWidget(self.patient_list_widget)
+            self.scroll_content = QWidget()
+            self.scroll_layout = QHBoxLayout(self.scroll_content) if self.horizontal_mode else QVBoxLayout(self.scroll_content)
+            self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+            self.scroll_layout.setSpacing(0)
 
-        # Add the dock widget to the main window
-        self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
+            self.scroll_area.setWidget(self.scroll_content)
+            self.patient_list_layout.addWidget(self.scroll_area)
 
-        print("VISIBLE ", self.display_patient_list)
-        # Set visibility based on preferences
+            # Set the widget for the dock
+            self.patient_list_dock.setWidget(self.patient_list_widget)
+
+            # Add the dock widget to the main window
+            self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
+
+        # Update visibility based on preferences
         self.patient_list_dock.setVisible(self.display_patient_list)
 
         # Adjust dock widget position based on preferences
@@ -539,7 +553,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.BottomDockWidgetArea, self.patient_list_dock)
         elif (self.horizontal_mode and self.patient_list_position_horizontal == "right") or (not self.horizontal_mode and self.patient_list_position_vertical == "right"):
             self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
-            
+                
 
     def toggle_patient_list(self):
         if self.patient_list_dock.isVisible():
@@ -734,28 +748,26 @@ class MainWindow(QMainWindow):
                     self.btn_validate.setEnabled(True)
                 elif patient["status"] == "ongoing":
                     self.btn_pause.setEnabled(True)
-                    self.btn_validate.setEnabled(False)
+                    self.btn_validate.setEnabled(False)        
 
-
-    def deconnexion_interface(self):
-        print("deconnexion_interface")
-        # Créer un nouveau widget pour l'interface de connexion
+    def create_login_widget(self):
         login_widget = QWidget()
-        login_layout = QVBoxLayout() if self.horizontal_mode else QHBoxLayout()
+        login_layout = QVBoxLayout()
 
         # Ajouter un label
         self.label_connexion = QLabel("Connectez-vous")
+        self.label_connexion.setAlignment(Qt.AlignCenter)  # Centre le texte
+        font = self.label_connexion.font()
+        font.setPointSize(16)  # Augmente la taille de la police (ajustez selon vos préférences)
+        font.setBold(True)  # Met le texte en gras
+        self.label_connexion.setFont(font)
         login_layout.addWidget(self.label_connexion)
 
         # Ajouter un champ pour les initiales
         self.initials_input = QLineEdit()
         self.initials_input.setPlaceholderText("Entrez vos initiales")
         login_layout.addWidget(self.initials_input)
-        # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
-        self.initials_input.setDisabled(True)
-        # réactivation après 100ms
-        QTimer.singleShot(100, self.enable_initials_input)
-        
+
         # Checkbox pour la deconnexion sur tous les autres postes
         self.checkbox_on_all = QCheckBox("Deconnexion sur tous les autres postes")
         login_layout.addWidget(self.checkbox_on_all)
@@ -765,14 +777,29 @@ class MainWindow(QMainWindow):
         validate_button.clicked.connect(self.validate_login)
         login_layout.addWidget(validate_button)
 
-        login_widget.setLayout(login_layout)
+        # Ajouter un bouton de préférences
+        preferences_button = QPushButton("Préférences")
+        preferences_button.clicked.connect(self.show_preferences_dialog)
+        login_layout.addWidget(preferences_button)
 
-        # Remplacer le widget actuel par le widget de connexion
-        self.stacked_widget.addWidget(login_widget)
-        self.stacked_widget.setCurrentWidget(login_widget)
+        login_widget.setLayout(login_layout)
 
         # Connecter la touche Enter à la fonction de validation
         self.initials_input.returnPressed.connect(self.validate_login)
+
+        return login_widget
+
+    def deconnexion_interface(self):
+        print("deconnexion_interface")
+        
+        # Créer et définir le widget de connexion
+        login_widget = self.create_login_widget()
+        self.setCentralWidget(login_widget)
+        
+        # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
+        self.initials_input.setDisabled(True)
+        # réactivation après 100ms
+        QTimer.singleShot(100, self.enable_initials_input)
         
         print("deconnexion_interface 2")
         
@@ -829,24 +856,32 @@ class MainWindow(QMainWindow):
         print(response_text)
         if status_code == 200:
             response_data = json.loads(response_text)
-            # Remise à jour de la barre de titre
+            # Mise à jour de la barre de titre
             self.update_window_title(response_data["staff"]["name"])
             # Mise à jour de l'id staff
             self.staff_id = response_data["staff"]["id"]
-            # Revenir à l'interface d'origine
-            self.stacked_widget.setCurrentWidget(self.button_widget)
+            # Recréer l'interface principale
+            self.recreate_main_interface()
             # Mettre à jour l'interface si nécessaire
             self.init_patient()
         elif status_code == 204:
             print("Success:", response_text)
             print("Staff unknown")
             self.staff_id = False
-            # Revenir à l'interface d'origine
-            self.label_connexion.setText("Initiales incorrectes ! ")            
+            # Mettre à jour le label de connexion
+            if hasattr(self, 'label_connexion'):
+                self.label_connexion.setText("Initiales incorrectes ! ")            
         else:
             # Afficher un message d'erreur
             QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
-            
+
+    def recreate_main_interface(self):
+        # Supprime l'ancien widget central (widget de login)
+        if self.centralWidget():
+            self.centralWidget().deleteLater()
+        
+        # Recrée l'interface principale
+        self.create_interface()
     
     def show_preferences_dialog(self):
         dialog = PreferencesDialog(self)
@@ -1110,8 +1145,19 @@ class MainWindow(QMainWindow):
         self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
         self.trayIcon3.setVisible(True)
         self.trayIcon3.show()
-        
-        #self.loading_screen.validate_last_line()
+
+    def cleanup_systray(self):
+        # Supprime les icônes de la barre d'état système (fermeture de l'App)
+        if hasattr(self, 'trayIcon1'):
+            self.trayIcon1.setVisible(False)
+            self.trayIcon1.deleteLater()
+        if hasattr(self, 'trayIcon2'):
+            self.trayIcon2.setVisible(False)
+            self.trayIcon2.deleteLater()
+        if hasattr(self, 'trayIcon3'):
+            self.trayIcon3.setVisible(False)
+            self.trayIcon3.deleteLater()
+
 
 class MainWindow2(QMainWindow):   
 

@@ -442,8 +442,8 @@ class PreferencesDialog(QDialog):
                 self.counter_combobox.setCurrentIndex(index)
     
     def load_skins(self):
-        skins_dir = "skins"  # Assurez-vous que ce chemin est correct
-        self.skin_combo.addItem("Pas de skin")  # Ajoutez cette ligne
+        skins_dir = "skins"
+        self.skin_combo.addItem("Pas de skin")  
         if not os.path.exists(skins_dir):
             os.makedirs(skins_dir)
         for file in os.listdir(skins_dir):
@@ -451,6 +451,7 @@ class PreferencesDialog(QDialog):
                 self.skin_combo.addItem(os.path.splitext(file)[0])
 
     def preview_skin(self, skin_name):
+        print(skin_name)
         if skin_name == "Pas de skin":
             # Supprime le skin en désactivant tous les styles QSS
             self.parent().setStyleSheet("")
