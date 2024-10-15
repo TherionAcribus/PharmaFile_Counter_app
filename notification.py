@@ -82,6 +82,8 @@ class CustomNotification(QDialog):
             self.title = "Ils arrivent !"
         elif origin == "new_patient":
             self.title = "Nouveau patient !"
+        elif origin == "connection":
+            self.title = "Problème de connexion"
         else:
             self.title = origin
 

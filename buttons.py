@@ -62,6 +62,7 @@ class IconeButton(DebounceButton):
         self.update_button_icon()
 
     def toggle_state(self):
+        print("toggle_state", self.state)
         if self.state == "inactive":
             self.state = "waiting"
             self.update_button_icon()

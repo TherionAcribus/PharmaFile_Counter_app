@@ -20,6 +20,8 @@ from buttons import DebounceButton, IconeButton
 from notification import CustomNotification
 from connections import RequestThread
 
+from line_profiler import profile
+
 
 class AudioPlayer(QObject):
     def __init__(self, parent=None):
@@ -121,7 +123,8 @@ class MainWindow(QMainWindow):
     connected = False  # permet de savoir si on a réussi à se connecter
     add_paper = "waiting"
     autocalling = "waiting"
-    list_patients = []  # liste des patient qui sera chargée au démarrage puis mise à jour via SocketIO
+    list_patients = None  # liste des patient qui sera chargée au démarrage puis mise à jour via SocketIO
+    my_patient =  None
 
     def __init__(self):
         super().__init__()
@@ -165,6 +168,8 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         self.show()
 
+        self.alert_if_not_connected()
+
         if not self.debug_window:
             self.loading_screen.close()
 
@@ -202,16 +207,21 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
 
-        self.create_interface()
-
         self.setup_systray()
 
         if self.connected:
-            self.init_patient()        
-            self.list_patients = self.init_list_patients()
+            self.init_patient()   
+            if not self.list_patients:     
+                self.list_patients = self.init_list_patients()
             print(self.list_patients)
-            self.update_patient_widget()
-            self.update_patient_menu(self.list_patients)
+        else:
+            self.list_patients = []
+            #self.update_patient_widget()
+            #self.update_patient_menu(self.list_patients)
+
+        print("PATIENT LISTE", self.list_patients)
+
+        self.create_interface()
 
         self.load_skin()
 
@@ -250,6 +260,9 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.main_elements_container)
         self.main_layout.addWidget(self.icone_widget)
 
+        self.update_patient_widget()
+        self.update_patient_menu(self.list_patients)
+
         # Ajouter un stretch pour pousser les widgets vers le haut/gauche
         if self.horizontal_mode:
             self.main_layout.addStretch(1)
@@ -257,7 +270,7 @@ class MainWindow(QMainWindow):
             self.main_layout.addStretch(1)
 
     def _create_label_patient(self):
-        self.label_patient = QLabel("Status: Ready")
+        self.label_patient = QLabel("Pas de connexion !")
         self.label_patient.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.label_patient.setAlignment(Qt.AlignCenter)
 
@@ -279,6 +292,7 @@ class MainWindow(QMainWindow):
             self.main_button_layout.addWidget(button)
 
         self.main_button_container.setLayout(self.main_button_layout)
+
 
     def _create_option_button_container(self):
 
@@ -358,17 +372,26 @@ class MainWindow(QMainWindow):
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
+    @profile
     def _create_choose_patient_button(self):
         self.btn_choose_patient = DebounceButton("Patients")
         self.choose_patient_menu = QMenu()
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
 
-        self.loading_screen.logger.info("__ Connexion pour charger le patient en cours...")
-        self.init_patient()
+        # pas de patient en cours. On initialise le patient courant
+        if not self.my_patient:
+            self.loading_screen.logger.info("__ Connexion pour charger le patient en cours...")
+            self.my_patient = self.init_patient()
+        # uniquement si chargement des patients réussi (pas de connexion)
+        if self.my_patient:
+            self.update_my_patient(self.my_patient)
+            self.update_my_buttons(self.my_patient)
 
-        self.loading_screen.logger.info("__ Connexion pour charger la liste des patients...")
-        list_patients = self.init_list_patients()
-        self.update_list_patient(list_patients)
+        if not self.list_patients:
+            self.loading_screen.logger.info("__ Connexion pour charger la liste des patients...")
+            self.list_patients = self.init_list_patients()
+        if self.list_patients:
+            self.update_list_patient(self.list_patients)
 
     def _create_more_button(self):
         self.btn_more = DebounceButton("Menu")
@@ -475,6 +498,7 @@ class MainWindow(QMainWindow):
         self.adjustSize()
 
     def init_list_patients(self):
+        print("INIT LISTE PATIENT")
         url = f'{self.web_url}/api/patients_list_for_pyside'
         try:
             response = requests.get(url)
@@ -577,21 +601,20 @@ class MainWindow(QMainWindow):
         self.socket_io_client.start()
         #self.loading_screen.validate_last_line()
 
-
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
         try:
             response = requests.get(url)
             print(response)
             if response.status_code == 200:
-                print("Success:", response)
-                self.update_my_patient(response.json())
-                self.update_my_buttons(response.json())
+                print("Success:", response.json())
+                return response.json()
             else:
                 print("Failed to retrieve data:", response.status_code)
+                return None
         except RequestException as e:
             print(f"Connection lost: {e}")
-
+            return None
 
     def patient_already_taken(self):
         print("Patient Already Taken")
@@ -760,7 +783,7 @@ class MainWindow(QMainWindow):
         else:
             # Afficher un message d'erreur
             QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
-
+    
     def recreate_main_interface(self):
         # Supprime l'ancien widget central (widget de login)
         if self.centralWidget():
@@ -1043,6 +1066,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'trayIcon3'):
             self.trayIcon3.setVisible(False)
             self.trayIcon3.deleteLater()
+
+    def alert_if_not_connected(self):
+        """ Affiche une alerte si le serveur n'est pas accessible"""
+        if not self.connected:
+            self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
 
 if __name__ == "__main__":
