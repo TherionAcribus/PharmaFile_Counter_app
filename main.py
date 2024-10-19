@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         main_elements_layout.setContentsMargins(0, 0, 0, 0)
         main_elements_layout.setSpacing(5)  # Ajustez l'espacement selon vos besoins
 
+        self._create_name()
         self._create_label_patient()
         self._create_main_button_container()
         self._create_option_button_container()
@@ -253,6 +254,7 @@ class MainWindow(QMainWindow):
         self._create_patient_list_widget()
 
         # Ajouter les widgets au conteneur principal
+        main_elements_layout.addWidget(self.label_staff)
         main_elements_layout.addWidget(self.label_patient)
         main_elements_layout.addWidget(self.main_button_container)
         main_elements_layout.addWidget(self.option_button_container)
@@ -272,6 +274,10 @@ class MainWindow(QMainWindow):
             self.main_layout.addStretch(1)
         else:
             self.main_layout.addStretch(1)
+
+    def _create_name(self):
+        self.label_staff = QLabel("")
+        self.label_staff.setAlignment(Qt.AlignCenter)
 
     def _create_label_patient(self):
         self.label_patient = QLabel("Pas de connexion !")
@@ -568,7 +574,8 @@ class MainWindow(QMainWindow):
                 self.staff_id = response_data["staff"]['id']
                 staff_name = response_data["staff"]['name']
                 # on modifie le titre
-                self.update_window_title(staff_name)              
+                self.update_window_title(staff_name)
+                self.update_staff_label(staff_name)
                 
             except json.JSONDecodeError as e:
                 print("Failed to decode JSON:", e)
@@ -591,7 +598,16 @@ class MainWindow(QMainWindow):
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
         print(f"Staff name: {staff_name}")
-        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")      
+        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")  
+
+    def update_staff_label(self, staff_name):
+        """ Met à jour le nom de l'équipier """
+        try:
+            if not self.horizontal_mode:
+                name = f'-= {staff_name} =-'
+                self.label_staff.setText(name)
+        except RuntimeError:
+            pass
 
         
     def start_socket_io_client(self, url):
@@ -786,12 +802,14 @@ class MainWindow(QMainWindow):
         print(response_text)
         if status_code == 200:
             response_data = json.loads(response_text)
+            staff_name = response_data["staff"]["name"]
             # Mise à jour de la barre de titre
-            self.update_window_title(response_data["staff"]["name"])
+            self.update_window_title(staff_name)
             # Mise à jour de l'id staff
             self.staff_id = response_data["staff"]["id"]
-            # Recréer l'interface principale
+            # Recréer l'interface principale1
             self.recreate_main_interface()
+            self.update_staff_label(staff_name)
             # Mettre à jour l'interface si nécessaire
             self.init_patient()
         elif status_code == 204:
