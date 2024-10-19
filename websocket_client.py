@@ -11,6 +11,7 @@ class WebSocketClient(QThread):
     change_paper = Signal(object)
     change_auto_calling = Signal(object)
     update_auto_calling = Signal(object)
+    disconnect_user = Signal(object)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
@@ -32,7 +33,7 @@ class WebSocketClient(QThread):
         self.sio.on('notification', self.on_notification, namespace='/socket_app_counter')     
         self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')
         self.sio.on('update_auto_calling', self.on_update_auto_calling, namespace='/socket_app_counter')   
-
+        self.sio.on('disconnect_user', self.on_disconnect_user, namespace='/socket_app_counter')
 
     def run(self):
         headers = {'username': self.username}
@@ -68,6 +69,12 @@ class WebSocketClient(QThread):
     def on_update_auto_calling(self, data):
         if self.parent.counter_id == int(data["data"]['counter_id']):
             self.update_auto_calling.emit(data)
+
+    def on_disconnect_user(self, data):
+        print("DISCONNECT")
+        print(data)
+        if self.parent.counter_id == int(data["data"]['counter_id']):
+            self.disconnect_user.emit(data)
     
     def on_notification(self, data):
         print("Received notification:", data)

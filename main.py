@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
         )
 
     def _create_auto_calling_button(self):
-        self.loading_screen.logger.info("__ Connexion pour charger le bouton d'appel automatique...")
+        self.loading_screen.logger.info("Connexion pour charger le bouton d'appel automatique...")
         self.btn_auto_calling = self._create_icon_button(
             "assets/images/loop_yes.ico",
             "assets/images/loop_no.ico",
@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
         )
 
     def _create_paper_button(self):
-        self.loading_screen.logger.info("__ Connexion pour charger l'icone de changement de papier...")
+        self.loading_screen.logger.info("Connexion pour charger l'icone de changement de papier...")
         self.btn_paper = self._create_icon_button(
             "assets/images/paper_add.ico",
             "assets/images/paper.ico",
@@ -576,9 +576,11 @@ class MainWindow(QMainWindow):
         elif status_code == 204:
             print("Success:", response_text)
             print("No staff on counter")
+            # deconnexion
+            self.disconnect_from_counter()
             self.staff_id = False
             # on modifie le titre
-            self.update_window_title("Connectez-vous !")
+            self.update_window_title("Connectez-vous !")            
             # on affiche l'interface de connexion
             self.deconnexion_interface()
         else:
@@ -602,6 +604,7 @@ class MainWindow(QMainWindow):
         self.socket_io_client.change_paper.connect(self.change_paper)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.update_auto_calling.connect(self.update_auto_calling)
+        self.socket_io_client.disconnect_user.connect(self.disconnect_user)
         self.socket_io_client.start()
         #self.loading_screen.validate_last_line()
 
@@ -631,7 +634,7 @@ class MainWindow(QMainWindow):
             print("Update My Patient", patient)
             if patient is None:
                 self.patient_id = None
-                self.label_patient.setText("Plus de patients")
+                self.label_patient.setText("Plus de patient")
             else:
                 print("Update My Patient new", patient, type(patient))
                 if patient["counter_id"] == self.counter_id:
@@ -692,7 +695,8 @@ class MainWindow(QMainWindow):
         login_layout.addWidget(self.initials_input)
 
         # Checkbox pour la deconnexion sur tous les autres postes
-        self.checkbox_on_all = QCheckBox("Deconnexion sur tous les autres postes")
+        self.checkbox_on_all = QCheckBox("Déconnexion sur tous les autres postes")
+        self.checkbox_on_all.setChecked(True)
         login_layout.addWidget(self.checkbox_on_all)
 
         # Ajouter un bouton de validation
@@ -713,8 +717,8 @@ class MainWindow(QMainWindow):
         return login_widget
 
     def deconnexion_interface(self):
-        print("deconnexion_interface")
-        
+        print("deconnexion_interface")   
+
         # Créer et définir le widget de connexion
         login_widget = self.create_login_widget()
         self.setCentralWidget(login_widget)
@@ -722,10 +726,11 @@ class MainWindow(QMainWindow):
         # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
         self.initials_input.setDisabled(True)
         # réactivation après 100ms
-        QTimer.singleShot(100, self.enable_initials_input)
+        QTimer.singleShot(100, self.enable_initials_input)        
+
         
-        print("deconnexion_interface 2")
-        
+
+    def disconnect_from_counter(self):
         # Deconnexion sur le serveur
         url = f'{self.web_url}/app/counter/remove_staff'
         data = {'counter_id': self.counter_id}     
@@ -733,6 +738,7 @@ class MainWindow(QMainWindow):
         self.disconnect_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
         self.disconnect_thread.result.connect(self.handle_disconnect_result)
         self.disconnect_thread.start()
+
         
     def enable_initials_input(self):
         """ Permet d'activer le champ des initiales lors de l'initialisation + focus
@@ -763,9 +769,10 @@ class MainWindow(QMainWindow):
         
         initials = self.initials_input.text()
         cb_deconnexion_on_all = self.checkbox_on_all.isChecked()
+
         if initials:
             url = f'{self.web_url}/app/counter/update_staff'
-            data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": True, "app": True}
+            data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": cb_deconnexion_on_all, "app": True}
             headers = {'X-App-Token': self.app_token}
             
             self.login_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
@@ -873,6 +880,12 @@ class MainWindow(QMainWindow):
         self.audio_player.set_volume(100) 
 
     def closeEvent(self, event):
+        self.loading_screen.logger.info("Fermeture de l'App")
+
+        # déconnection du comptoir
+        self.loading_screen.logger.info("Déconnexion du comptoir suite à la fermeture de l'App")
+        self.disconnect_from_counter()
+        
         # Fermeture de la fenêtre secondaire quand la fenêtre principale est fermée
         if self.loading_screen:
             self.loading_screen.close()
@@ -995,6 +1008,13 @@ class MainWindow(QMainWindow):
         if self.notification_autocalling_new_patient:
             message = f"Appel automatique du patient {patient['call_number']} pour '{patient['activity']}'"
             self.show_notification({"origin": "autocalling", "message": message}, internal=True)
+
+    def disconnect_user(self, data):
+        print("Totalement disconnect")
+        message = f'Vous avez déconnecté par {data["data"]["staff"]}'
+        self.loading_screen.logger.info(message)
+        self.show_notification({"origin": "disconnect_by_user", "message": message}, internal=True)
+        self.deconnexion_interface()
 
     @Slot()
     def pyqt_call_preferences(self):

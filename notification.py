@@ -88,6 +88,8 @@ class CustomNotification(QDialog):
         elif origin == "please_validate":
             self.title = "Sauvez un bébé phoque : validez votre patient !"
             self.sound = "please_validate"
+        elif origin == "disconnect_by_user":
+            self.title = "Pousse toi de là !"
         else:
             self.title = origin
 
