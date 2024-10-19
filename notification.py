@@ -70,6 +70,7 @@ class CustomNotification(QDialog):
         origin = notification_data["origin"]
         self.message = notification_data["message"]
 
+        self.sound = "ding"
         if origin == "activity":
             self.title = "Une nouvelle mission arrive !"
         elif origin == "printer_error":
@@ -84,6 +85,9 @@ class CustomNotification(QDialog):
             self.title = "Nouveau patient !"
         elif origin == "connection":
             self.title = "Problème de connexion"
+        elif origin == "please_validate":
+            self.title = "Sauvez un bébé phoque : validez votre patient !"
+            self.sound = "please_validate"
         else:
             self.title = origin
 
@@ -91,7 +95,7 @@ class CustomNotification(QDialog):
         super().show()
         print("Notification affichée", self.parent().notification_duration)
         if self.audio_player:
-            self.audio_player.play_sound("ding")
+            self.audio_player.play_sound(self.sound)
         QTimer.singleShot(self.parent().notification_duration*1000, self.close)
 
     def mousePressEvent(self, event):

@@ -87,7 +87,6 @@ class PreferencesDialog(QDialog):
         self.patient_list_position_horizontal = QComboBox(self.general_page)
         self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.general_layout.addWidget(self.patient_list_position_horizontal)
-
         
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
@@ -207,9 +206,18 @@ class PreferencesDialog(QDialog):
         self.notification_add_paper_checkbox = QCheckBox("Afficher les alertes pour remplacer le papier", self.notifications_page)
         self.notifications_layout.addWidget(self.notification_add_paper_checkbox)
 
+        # Ajout de l'option pour le temps avant une notification pour valider un patient
+        self.notification_after_calling_layout = QHBoxLayout()
+        self.notification_after_calling_label = QLabel("Temps (s) avant une notification si le patient n'est pas validé", self.notifications_page)
+        self.notification_after_calling_spinbox = QSpinBox(self.notifications_page)
+        self.notification_after_calling_spinbox.setRange(10, 120)
+        self.notification_after_calling_layout.addWidget(self.notification_after_calling_label)
+        self.notification_after_calling_layout.addWidget(self.notification_after_calling_spinbox)
+        self.notifications_layout.addLayout(self.notification_after_calling_layout)
+
         # Ajout de l'option pour la durée d'affichage
         self.notification_duration_layout = QHBoxLayout()
-        self.notification_duration_label = QLabel("Durée d'affichage (secondes):", self.notifications_page)
+        self.notification_duration_label = QLabel("Durée d'affichage (s):", self.notifications_page)
         self.notification_duration_spinbox = QSpinBox(self.notifications_page)
         self.notification_duration_spinbox.setRange(1, 60)
         self.notification_duration_layout.addWidget(self.notification_duration_label)
@@ -295,6 +303,7 @@ class PreferencesDialog(QDialog):
         self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
         self.notification_add_paper_checkbox.setChecked(settings.value("notification_add_paper", True, type=bool))
+        self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
 
@@ -360,6 +369,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
         settings.setValue("notification_add_paper", self.notification_add_paper_checkbox.isChecked())
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
+        settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())

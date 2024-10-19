@@ -138,6 +138,9 @@ class MainWindow(QMainWindow):
         # LOAD PREFERENCES
         self.load_preferences()
 
+        # on créé un timer qui permet d'alerter si le patient reste en Calling
+        self.create_call_timer()
+
         # quand App se ferme, on ferme aussi le systray
         app = QApplication.instance()
         app.aboutToQuit.connect(self.cleanup_systray)
@@ -177,7 +180,7 @@ class MainWindow(QMainWindow):
         self.loading_screen.logger.info("Initialisation des préférences...")
         
         settings = QSettings()
-        self.web_url = settings.value("web_url", "http://localhost:5000")
+        self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
         self.username = settings.value("username", "admin")
         self.password = settings.value("password", "admin")
         self.counter_id = settings.value("counter_id", "1")
@@ -190,6 +193,7 @@ class MainWindow(QMainWindow):
         self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.notification_add_paper = settings.value("notification_add_paper", True, type=bool)
+        self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
         self.notification_duration = settings.value("notification_duration", 5, type=int)
         self.notification_font_size = settings.value("notification_font_size", 12, type=int)
         self.always_on_top = settings.value("always_on_top", False, type=bool)
@@ -623,41 +627,51 @@ class MainWindow(QMainWindow):
 
 
     def update_my_patient(self, patient):
-        print("Update My Patient", patient)
-        if patient is None:
-            self.patient_id = None
-            self.label_patient.setText("Plus de patients")
-        else:
-            print("Update My Patient new", patient, type(patient))
-            if patient["counter_id"] == self.counter_id:
-                print(patient["id"], type(patient["id"]))
-                if patient["id"] is None:
-                    self.patient_id = None
-                    self.label_patient.setText("Pas de patient en cours")
-                else:
-                    self.patient_id = patient["id"]
-                    status = patient["status"]
-                    if status == "calling":
-                        status_text = "En appel"
-                    elif status == "ongoing":
-                        status_text = "Au comptoir"
+        try:
+            print("Update My Patient", patient)
+            if patient is None:
+                self.patient_id = None
+                self.label_patient.setText("Plus de patients")
+            else:
+                print("Update My Patient new", patient, type(patient))
+                if patient["counter_id"] == self.counter_id:
+                    print(patient["id"], type(patient["id"]))
+                    if patient["id"] is None:
+                        self.patient_id = None
+                        self.label_patient.setText("Pas de patient en cours")
                     else:
-                        status_text = "????"
-                    language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
-                    self.label_patient.setText(f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
+                        self.patient_id = patient["id"]
+                        status = patient["status"]
+                        if status == "calling":
+                            status_text = "En appel"
+                        elif status == "ongoing":
+                            status_text = "Au comptoir"
+                        else:
+                            status_text = "????"
+                        language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
+                        self.label_patient.setText(f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
+        except:
+            pass
 
     def update_my_buttons(self, patient):
-        if patient["counter_id"] == self.counter_id:
-            if patient["id"] is None:
-                self.btn_pause.setEnabled(False)
-                self.btn_validate.setEnabled(False)
-            else:
-                if patient["status"] == "calling":
+        #TEMPORAIRE
+        try:
+            if patient["counter_id"] == self.counter_id:
+                if patient["id"] is None:
                     self.btn_pause.setEnabled(False)
-                    self.btn_validate.setEnabled(True)
-                elif patient["status"] == "ongoing":
-                    self.btn_pause.setEnabled(True)
-                    self.btn_validate.setEnabled(False)        
+                    self.btn_validate.setEnabled(False)
+                    self.call_timer.stop()  # bloque le timer "calling" si plus personne
+                else:
+                    if patient["status"] == "calling":
+                        self.btn_pause.setEnabled(False)
+                        self.btn_validate.setEnabled(True)
+                        self.call_timer.start()  # démarre le timer "calling" si le patient en appel
+                    elif patient["status"] == "ongoing":
+                        self.btn_pause.setEnabled(True)
+                        self.btn_validate.setEnabled(False)
+                        self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
+        except:
+            pass
 
     def create_login_widget(self):
         login_widget = QWidget()
@@ -854,6 +868,8 @@ class MainWindow(QMainWindow):
         self.audio_player.add_sound("patient_taken", sound_path)
         sound_path = resource_path("assets/sounds/ding.mp3")
         self.audio_player.add_sound("ding", sound_path)
+        sound_path = resource_path("assets/sounds/please_validate.mp3")
+        self.audio_player.add_sound("please_validate", sound_path)
         self.audio_player.set_volume(100) 
 
     def closeEvent(self, event):
@@ -1072,12 +1088,21 @@ class MainWindow(QMainWindow):
         if not self.connected:
             self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
+    def call_timer_delay_expired(self):
+        self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."}, internal=True)
+
+    def create_call_timer(self):
+        """ Permet de définir un timer qui envoye une alerte si le patient n'est pas validé """
+        self.call_timer = QTimer(self)
+        self.call_timer.setInterval(self.timer_after_calling * 1000)
+        self.call_timer.timeout.connect(self.call_timer_delay_expired)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    app.setApplicationName("PySide6 Web Browser Example")
-    app.setOrganizationName("MyCompany")
+    app.setApplicationName("PySide6 Web Browser Example2")
+    app.setOrganizationName("MyCompany2")
     app.setOrganizationDomain("mycompany.com")
 
     #stylesheet = load_stylesheet("Incrypt.qss")
