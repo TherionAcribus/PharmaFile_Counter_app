@@ -34,6 +34,7 @@ class WebSocketClient(QThread):
         self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')
         self.sio.on('update_auto_calling', self.on_update_auto_calling, namespace='/socket_app_counter')   
         self.sio.on('disconnect_user', self.on_disconnect_user, namespace='/socket_app_counter')
+        self.sio.on('update_patient_list', self.on_update_patient_list, namespace='/socket_app_counter')
 
     def run(self):
         headers = {'username': self.username}
@@ -82,8 +83,21 @@ class WebSocketClient(QThread):
         if not data["flag"] or data["flag"] == self.parent.counter_id:
             self.new_notification.emit(data['data'])
 
+    def on_update_patient_list(self, data):
+        print('nouvelle liste de patients', data)
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data["data"], str):
+                data["data"] = json.loads(data["data"])
+            self.new_patient.emit(data["data"])
+            self.my_patient.emit(data["data"])
+        except json.JSONDecodeError as e:
+            print(f"Failed to decode JSON: {e}")
+
     def on_update(self, data):
         print("Received update:", data)
+        # Normalement cette partie peut être supprimée
         try:
             if isinstance(data, str):
                 data = json.loads(data)

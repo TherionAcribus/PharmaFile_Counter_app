@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         main_elements_layout.setContentsMargins(0, 0, 0, 0)
         main_elements_layout.setSpacing(5)  # Ajustez l'espacement selon vos besoins
 
+        self._create_name()
         self._create_label_patient()
         self._create_main_button_container()
         self._create_option_button_container()
@@ -253,6 +254,7 @@ class MainWindow(QMainWindow):
         self._create_patient_list_widget()
 
         # Ajouter les widgets au conteneur principal
+        main_elements_layout.addWidget(self.label_staff)
         main_elements_layout.addWidget(self.label_patient)
         main_elements_layout.addWidget(self.main_button_container)
         main_elements_layout.addWidget(self.option_button_container)
@@ -272,6 +274,10 @@ class MainWindow(QMainWindow):
             self.main_layout.addStretch(1)
         else:
             self.main_layout.addStretch(1)
+
+    def _create_name(self):
+        self.label_staff = QLabel("")
+        self.label_staff.setAlignment(Qt.AlignCenter)
 
     def _create_label_patient(self):
         self.label_patient = QLabel("Pas de connexion !")
