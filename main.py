@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
         actions = [
             ("Relancer l'appel ", self.recall_shortcut, self.recall),
             ("Changer l'orientation", None, self.toggle_orientation),
-            ("Deconnexion ", self.deconnect_shortcut, self.deconnexion_interface),
+            ("Deconnexion ", self.deconnect_shortcut, self.deconnection),
             ("Préférences", None, self.show_preferences_dialog),
             ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
         ]
@@ -574,7 +574,8 @@ class MainWindow(QMainWindow):
                 self.staff_id = response_data["staff"]['id']
                 staff_name = response_data["staff"]['name']
                 # on modifie le titre
-                self.update_window_title(staff_name)              
+                self.update_window_title(staff_name)
+                self.update_staff_label(staff_name)
                 
             except json.JSONDecodeError as e:
                 print("Failed to decode JSON:", e)
@@ -597,7 +598,16 @@ class MainWindow(QMainWindow):
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
         print(f"Staff name: {staff_name}")
-        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")      
+        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")  
+
+    def update_staff_label(self, staff_name):
+        """ Met à jour le nom de l'équipier """
+        try:
+            if not self.horizontal_mode:
+                name = f'-= {staff_name} =-'
+                self.label_staff.setText(name)
+        except RuntimeError:
+            pass
 
         
     def start_socket_io_client(self, url):
@@ -721,9 +731,13 @@ class MainWindow(QMainWindow):
         self.initials_input.returnPressed.connect(self.validate_login)
 
         return login_widget
+    
+    def deconnection(self):
+        self.disconnect_from_counter()
+        self.deconnexion_interface()
 
     def deconnexion_interface(self):
-        print("deconnexion_interface")   
+        print("deconnexion_interface")  
 
         # Créer et définir le widget de connexion
         login_widget = self.create_login_widget()
@@ -745,14 +759,13 @@ class MainWindow(QMainWindow):
         self.disconnect_thread.result.connect(self.handle_disconnect_result)
         self.disconnect_thread.start()
 
-        
     def enable_initials_input(self):
         """ Permet d'activer le champ des initiales lors de l'initialisation + focus
         Obligé de le désactiver pour éviter entrée du raccourci clavier dans le champ """
         self.initials_input.setDisabled(False)
         # Donner le focus au champ des initiales
         self.initials_input.setFocus()
-        
+
     @Slot(float, str, int)
     def handle_disconnect_result(self, elapsed_time, response_text, status_code):
         print("OK")
@@ -766,7 +779,6 @@ class MainWindow(QMainWindow):
         else:
             # Afficher un message d'erreur
             QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
-            
 
     def validate_login(self):
         if not self.app_token:
@@ -792,12 +804,14 @@ class MainWindow(QMainWindow):
         print(response_text)
         if status_code == 200:
             response_data = json.loads(response_text)
+            staff_name = response_data["staff"]["name"]
             # Mise à jour de la barre de titre
-            self.update_window_title(response_data["staff"]["name"])
+            self.update_window_title(staff_name)
             # Mise à jour de l'id staff
             self.staff_id = response_data["staff"]["id"]
-            # Recréer l'interface principale
+            # Recréer l'interface principale1
             self.recreate_main_interface()
+            self.update_staff_label(staff_name)
             # Mettre à jour l'interface si nécessaire
             self.init_patient()
         elif status_code == 204:
@@ -852,7 +866,7 @@ class MainWindow(QMainWindow):
         
     def handle_deconnect_shortcut(self):
         print("handle_deconnect_shortcut")
-        QMetaObject.invokeMethod(self, 'deconnexion_interface', Qt.QueuedConnection)
+        QMetaObject.invokeMethod(self, 'deconnection', Qt.QueuedConnection)
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
