@@ -1,9 +1,9 @@
 import requests
 import os
 from datetime import datetime
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
-
+from notification import CustomNotification
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -232,6 +232,36 @@ class PreferencesDialog(QDialog):
         self.notification_font_size_layout.addWidget(self.notification_font_size_label)
         self.notification_font_size_layout.addWidget(self.notification_font_size_spinbox)
         self.notifications_layout.addLayout(self.notification_font_size_layout)
+
+        # Ajout du contrôle du volume avec affichage numérique
+        self.volume_layout = QHBoxLayout()
+        self.volume_label = QLabel("Volume des notifications:", self.notifications_page)
+        
+        # Création du slider
+        self.volume_slider = QSlider(Qt.Horizontal, self.notifications_page)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setTickPosition(QSlider.TicksBelow)
+        self.volume_slider.setTickInterval(10)
+        
+        # Création du spinbox
+        self.volume_spinbox = QSpinBox(self.notifications_page)
+        self.volume_spinbox.setRange(0, 100)
+        self.volume_spinbox.setSuffix("%")
+        
+        # Connexion des signaux pour la synchronisation
+        self.volume_slider.valueChanged.connect(self.volume_spinbox.setValue)
+        self.volume_spinbox.valueChanged.connect(self.volume_slider.setValue)
+        
+        # Ajout des widgets au layout
+        self.volume_layout.addWidget(self.volume_label)
+        self.volume_layout.addWidget(self.volume_slider)
+        self.volume_layout.addWidget(self.volume_spinbox)
+        self.notifications_layout.addLayout(self.volume_layout)
+
+        # Bouton de test des notifications
+        self.test_notification_button = QPushButton("Tester la notification", self.notifications_page)
+        self.test_notification_button.clicked.connect(self.test_notification)
+        self.notifications_layout.addWidget(self.test_notification_button)
         
         self.notifications_layout.addStretch()
         
@@ -306,6 +336,7 @@ class PreferencesDialog(QDialog):
         self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
+        self.volume_slider.setValue(settings.value("notification_volume", 50, type=int))
 
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
@@ -371,6 +402,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
+        settings.setValue("notification_volume", self.volume_slider.value())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        
@@ -476,4 +508,9 @@ class PreferencesDialog(QDialog):
         self.preview_skin(self.current_skin)
         super().reject()
 
+    def test_notification(self):
+        data = {"origin": "test_notification", "message": "Test de notification"}
+        notification = CustomNotification(data=data, parent=self.parent(), internal=True)
+        self.parent().audio_player.set_volume(self.volume_spinbox.value())
+        notification.show()
 

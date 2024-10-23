@@ -22,7 +22,6 @@ from connections import RequestThread
 
 from line_profiler import profile
 
-
 class AudioPlayer(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -196,6 +195,8 @@ class MainWindow(QMainWindow):
         self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
         self.notification_duration = settings.value("notification_duration", 5, type=int)
         self.notification_font_size = settings.value("notification_font_size", 12, type=int)
+        self.sound_volume = settings.value("notification_volume", 50, type=int)
+
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
         self.display_patient_list = settings.value("display_patient_list", False, type=bool)
@@ -837,9 +838,12 @@ class MainWindow(QMainWindow):
         dialog = PreferencesDialog(self)
         dialog.preferences_updated.connect(self.apply_preferences)
         if dialog.exec():
+            # a la fermeture on recharge les preferences
             self.load_preferences()
+            # on ajuste le volume
+            self.audio_player.set_volume(self.sound_volume)
+            # on recharge les raccourcis
             self.setup_global_shortcut()
-
 
     def setup_global_shortcut(self):
         self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
@@ -897,7 +901,7 @@ class MainWindow(QMainWindow):
         self.audio_player.add_sound("ding", sound_path)
         sound_path = resource_path("assets/sounds/please_validate.mp3")
         self.audio_player.add_sound("please_validate", sound_path)
-        self.audio_player.set_volume(100) 
+        self.audio_player.set_volume(self.sound_volume) 
 
     def closeEvent(self, event):
         self.loading_screen.logger.info("Fermeture de l'App")
