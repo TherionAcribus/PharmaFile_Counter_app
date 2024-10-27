@@ -277,10 +277,39 @@ class MainWindow(QMainWindow):
         self.label_staff.setAlignment(Qt.AlignCenter)
 
     def _create_label_patient(self):
-        self.label_patient = QLabel("Pas de connexion !")
+        # Remplacer QLabel par QPushButton
+        self.label_patient = QPushButton("Pas de connexion !")
         self.label_patient.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.label_patient.setAlignment(Qt.AlignCenter)
+        self.label_patient.setCheckable(False)  # Le bouton n'est pas "toggle"
+        self.label_patient.setFlat(True)  # Le bouton ressemble davantage à un label
 
+        # Créer un menu d'actions
+        menu = QMenu(self.label_patient)
+        action_wait = menu.addAction("Remettre en attente")
+        action_delete = menu.addAction("Supprimer")
+
+        # Connecter les actions à des méthodes
+        action_wait.triggered.connect(self.on_action_wait)
+        action_delete.triggered.connect(self.on_action_delete)
+
+        # Associer le menu au bouton
+        self.label_patient.setMenu(menu)
+
+    def on_action_wait(self):
+        # Logique pour remettre le patient en attente
+        print("Patient remis en attente")
+        url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result)
+        self.thread.start()
+
+    def on_action_delete(self):
+        # Logique pour supprimer le patient
+        print("Patient supprimé")
+        url = f'{self.web_url}/api/counter/delete_patient/{self.patient_id}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result)
+        self.thread.start()
 
     def _create_main_button_container(self):
         self.main_button_container = QWidget()
@@ -556,6 +585,11 @@ class MainWindow(QMainWindow):
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
         elif status_code == 204:
             self.update_my_patient(None)
+        # utiliser pour supprimer ou remettre un patient en attente
+        elif status_code == 201:
+            self.update_my_patient(False)
+            patient = {"counter_id": self.counter_id, "id": None}
+            self.update_my_buttons(patient)
         # 423 = patient déjà pris par un autre comptoir
         elif status_code == 423:
             self.patient_already_taken()
@@ -649,6 +683,9 @@ class MainWindow(QMainWindow):
             if patient is None:
                 self.patient_id = None
                 self.label_patient.setText("Plus de patient")
+            if patient is False:
+                self.patient_id = None
+                self.label_patient.setText("Pas de patient")
             else:
                 print("Update My Patient new", patient, type(patient))
                 if patient["counter_id"] == self.counter_id:
