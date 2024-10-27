@@ -15,7 +15,9 @@ class DebounceButton(QPushButton):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.on_debounce_timeout)
         self.clicked.connect(self.on_clicked)
+        self.color_changed = False  # défini si on a changé la couleur
         self._user_enabled = True  # Nouvel attribut pour suivre l'état souhaité par l'utilisateur
+        self.original_style = self.styleSheet()
 
     def on_clicked(self):
         if not self.timer.isActive() and self._user_enabled:
@@ -39,6 +41,17 @@ class DebounceButton(QPushButton):
         #self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Maximum)
         #self.setMinimumSize(30, 30)
         #self.setMaximumSize(30, 30)  # Taille minimale en pixels (ajustez selon vos besoins)
+
+    def setRed(self):
+        self.color_changed = True
+        """ Change temporairement la couleur du bouton en rouge """
+        self.setStyleSheet("background-color: red; color: white;")
+
+    def resetColor(self):
+        """ Réinitialise la couleur du bouton à son style d'origine """
+        if self.color_changed:
+            self.setStyleSheet(self.original_style)
+            self.color_changed = False
 
 class IconeButton(DebounceButton):
     def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, parent=None):

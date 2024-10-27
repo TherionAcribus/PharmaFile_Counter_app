@@ -676,6 +676,7 @@ class MainWindow(QMainWindow):
                 if patient["id"] is None:
                     self.btn_pause.setEnabled(False)
                     self.btn_validate.setEnabled(False)
+                    self.btn_validate.resetColor()
                     self.call_timer.stop()  # bloque le timer "calling" si plus personne
                 else:
                     if patient["status"] == "calling":
@@ -685,6 +686,7 @@ class MainWindow(QMainWindow):
                     elif patient["status"] == "ongoing":
                         self.btn_pause.setEnabled(True)
                         self.btn_validate.setEnabled(False)
+                        self.btn_validate.resetColor()
                         self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
         except:
             pass
@@ -1126,7 +1128,7 @@ class MainWindow(QMainWindow):
             self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
     def call_timer_delay_expired(self):
-
+        self.btn_validate.setRed()
         self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."}, internal=True)
 
     def create_call_timer(self):
