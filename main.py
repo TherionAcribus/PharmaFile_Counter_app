@@ -476,6 +476,9 @@ class MainWindow(QMainWindow):
             self.patient_list_dock.hide()
         else:
             self.patient_list_dock.show()
+    
+    def hide_patient_list(self):
+        self.patient_list_dock.hide()
 
     def toggle_orientation(self):
         self.horizontal_mode = not self.horizontal_mode
@@ -505,7 +508,6 @@ class MainWindow(QMainWindow):
         self.adjustSize()
 
     def init_list_patients(self):
-        print("INIT LISTE PATIENT")
         url = f'{self.web_url}/api/patients_list_for_pyside'
         try:
             response = requests.get(url)
@@ -606,7 +608,6 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             pass
 
-        
     def start_socket_io_client(self, url):
         self.loading_screen.logger.info("Création de la connexion Socket.IO...")
         print(f"Starting Socket.IO client with URL: {url}")
@@ -737,10 +738,11 @@ class MainWindow(QMainWindow):
 
     def deconnexion_interface(self):
         print("deconnexion_interface")  
-
         # Créer et définir le widget de connexion
         login_widget = self.create_login_widget()
         self.setCentralWidget(login_widget)
+
+        self.hide_patient_list()
         
         # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
         self.initials_input.setDisabled(True)
