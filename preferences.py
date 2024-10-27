@@ -22,7 +22,7 @@ class TestConnectionWorker(QThread):
                 self.connection_tested.emit(False, f"Erreur de connexion: {response.status_code} à {current_time}")
         except requests.exceptions.RequestException as e:
             self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
-            
+
 
 # Constants for UI texts and corresponding values
 BOTTOM_TEXT = "Bas"
@@ -510,7 +510,8 @@ class PreferencesDialog(QDialog):
 
     def test_notification(self):
         data = {"origin": "test_notification", "message": "Test de notification"}
-        notification = CustomNotification(data=data, parent=self.parent(), internal=True)
+        font_size = self.notification_font_size_spinbox.value()
+        notification = CustomNotification(data=data, font_size=font_size,parent=self.parent(), internal=True)
         self.parent().audio_player.set_volume(self.volume_spinbox.value())
         notification.show()
 

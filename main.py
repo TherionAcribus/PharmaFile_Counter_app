@@ -1,6 +1,5 @@
 import sys
 import os
-import time
 import json
 import requests
 import threading
@@ -8,9 +7,7 @@ import logging
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog, QDockWidget, QBoxLayout
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QThread, QTimer, Qt, QSize, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -77,7 +74,6 @@ def load_stylesheet(filename):
         stream = QTextStream(file)
         return stream.readAll()
     return ""
-
 
 class LoadingScreen(QWidget):
     def __init__(self):
@@ -747,9 +743,7 @@ class MainWindow(QMainWindow):
         # désactivation du champ à l'initialisation sinon le raccourci clavier est entré dans le champ
         self.initials_input.setDisabled(True)
         # réactivation après 100ms
-        QTimer.singleShot(100, self.enable_initials_input)        
-
-        
+        QTimer.singleShot(100, self.enable_initials_input)
 
     def disconnect_from_counter(self):
         # Deconnexion sur le serveur
@@ -800,7 +794,6 @@ class MainWindow(QMainWindow):
 
     @Slot(float, str, int)
     def handle_login_result(self, elapsed_time, response_text, status_code):
-        print("OK")
         print(status_code)
         print(response_text)
         if status_code == 200:
@@ -1133,6 +1126,7 @@ class MainWindow(QMainWindow):
             self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
     def call_timer_delay_expired(self):
+
         self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."}, internal=True)
 
     def create_call_timer(self):

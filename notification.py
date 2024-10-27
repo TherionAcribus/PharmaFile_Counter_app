@@ -4,7 +4,7 @@ from PySide6.QtGui import QFont
 import json
 
 class CustomNotification(QDialog):
-    def __init__(self, data, parent=None, internal=False):        
+    def __init__(self, data, font_size=None, parent=None, internal=False):        
         super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
         self.internal = internal
@@ -12,7 +12,23 @@ class CustomNotification(QDialog):
 
         self.format_data(data)
 
-        self.setStyleSheet(f"font-size: {self.parent().notification_font_size}pt;")
+        font_size = font_size or self.parent().notification_font_size
+        print(font_size)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                border: 1px solid black;
+                background-color: white;
+                border-radius: 5px;
+            }}
+            QLabel#titleLabel {{
+                font-size: {font_size + 4}pt; /* Taille spécifique pour le titre */
+                font-weight: bold;
+            }}
+            QLabel#messageLabel {{
+                font-size: {font_size}pt; /* Taille spécifique pour le message */
+            }}
+        """)
         
         layout = QVBoxLayout()
         
@@ -21,9 +37,7 @@ class CustomNotification(QDialog):
         
         # Ajout du titre
         title_label = QLabel(self.title)
-        title_font = QFont()
-        title_font.setBold(True)
-        title_label.setFont(title_font)
+        title_label.setObjectName("titleLabel")  # Pour que le style s'applique au titre
         top_layout.addWidget(title_label)
         
         top_layout.addStretch()
@@ -41,6 +55,7 @@ class CustomNotification(QDialog):
         layout.addWidget(separator)
         
         message_label = QLabel(self.message)
+        message_label.setObjectName("messageLabel")  # Pour que le style s'applique au message
         message_label.setAlignment(Qt.AlignCenter)
         message_label.setWordWrap(True)
         layout.addWidget(message_label)
@@ -90,12 +105,13 @@ class CustomNotification(QDialog):
             self.sound = "please_validate"
         elif origin == "disconnect_by_user":
             self.title = "Pousse toi de là !"
+        elif origin == "test_notification":
+            self.title = "Test micro, 1, 2, 3, Test..."
         else:
             self.title = origin
 
     def show(self):
         super().show()
-        print("Notification affichée", self.parent().notification_duration)
         if self.audio_player:
             self.audio_player.play_sound(self.sound)
         QTimer.singleShot(self.parent().notification_duration*1000, self.close)
