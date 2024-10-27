@@ -18,15 +18,17 @@ class CustomNotification(QDialog):
         self.setStyleSheet(f"""
             QDialog {{
                 border: 1px solid black;
-                background-color: white;
+                background-color: {self.background_color};  /* Couleur de fond dynamique */
                 border-radius: 5px;
             }}
             QLabel#titleLabel {{
                 font-size: {font_size + 4}pt; /* Taille spécifique pour le titre */
                 font-weight: bold;
+                color: {self.font_color};  /* Couleur de texte dynamique */
             }}
             QLabel#messageLabel {{
                 font-size: {font_size}pt; /* Taille spécifique pour le message */
+                color: {self.font_color};  /* Couleur de texte dynamique */
             }}
         """)
         
@@ -85,6 +87,10 @@ class CustomNotification(QDialog):
         origin = notification_data["origin"]
         self.message = notification_data["message"]
 
+        # Définir des couleurs par défaut
+        self.background_color = "white"
+        self.font_color = "black"
+
         self.sound = "ding"
         if origin == "activity":
             self.title = "Une nouvelle mission arrive !"
@@ -92,6 +98,7 @@ class CustomNotification(QDialog):
             self.title = "Je crois qu'on a un problème..."
         elif origin == "printer_paper":
             self.title = "Papier, s'il vous plait !"
+            self.background_color = "orange"
         elif origin == "patient_taken":
             self.title = "A une seconde près !"
         elif origin == "autocalling":
@@ -103,6 +110,7 @@ class CustomNotification(QDialog):
         elif origin == "please_validate":
             self.title = "Sauvez un bébé phoque : validez votre patient !"
             self.sound = "please_validate"
+            self.background_color = "red"
         elif origin == "disconnect_by_user":
             self.title = "Pousse toi de là !"
         elif origin == "test_notification":
