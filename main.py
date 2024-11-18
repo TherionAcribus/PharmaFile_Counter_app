@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
         self.indicator_layout.addStretch()
 
 
-    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state):
+    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True):
         return IconeButton(
             icon_path=resource_path(icon_path),
             icon_inactive_path=resource_path(icon_inactive_path),
@@ -385,7 +385,9 @@ class MainWindow(QMainWindow):
             tooltip_text=tooltip_text,
             tooltip_inactive_text=tooltip_inactive_text,
             state=state,
-            parent=self
+            parent=self,
+            is_always_visible=is_always_visible
+
         )
 
     def _create_auto_calling_button(self):
@@ -407,7 +409,22 @@ class MainWindow(QMainWindow):
             f'{self.web_url}/app/counter/paper_add',
             "Indiquer que vous avez changé le papier",
             "Indiquer qu'il faut changer le papier",
-            self.add_paper)
+            self.add_paper,
+            is_always_visible=False)
+        
+    def trigger_paper_button(self):
+        if hasattr(self, 'btn_paper'):
+            print("trigger_paper_button", self.btn_paper)
+            print("État actuel:", self.btn_paper.state)
+            self.btn_paper.toggle_state()
+
+    def update_paper_action_text(self, state):
+        if hasattr(self, 'btn_paper'):
+            print("update texte", state)
+            if state == "active":
+                self.paper_action.setText("J'ai changé le papier")
+            else:
+                self.paper_action.setText("Changement papier nécessaire")
 
     def call_web_function_validate_and_call_next(self):
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
@@ -454,8 +471,14 @@ class MainWindow(QMainWindow):
         self.btn_more = DebounceButton("Menu")
         self.more_menu = QMenu()
 
+        # Créer l'action pour le papier séparément pour pouvoir la mettre à jour
+        self.paper_action = QAction("Changement papier nécessaire", self)
+        self.paper_action.triggered.connect(self.trigger_paper_button)
+        self.update_paper_action_text(self.add_paper)  # Mettre à jour le texte initial
+
         actions = [
             ("Relancer l'appel ", self.recall_shortcut, self.recall),
+            (None, None, self.paper_action), 
             ("Changer l'orientation", None, self.toggle_orientation),
             ("Deconnexion ", self.deconnect_shortcut, self.deconnection),
             ("Préférences", None, self.show_preferences_dialog),
@@ -463,9 +486,12 @@ class MainWindow(QMainWindow):
         ]
 
         for text, shortcut, callback in actions:
-            action = QAction(f"{text}{shortcut if shortcut else ''}", self)
-            action.triggered.connect(callback)
-            self.more_menu.addAction(action)
+            if isinstance(callback, QAction):  # Si c'est déjà une action
+                self.more_menu.addAction(callback)
+            else:
+                action = QAction(f"{text}{shortcut if shortcut else ''}", self)
+                action.triggered.connect(callback)
+                self.more_menu.addAction(action)
 
         self.btn_more.setMenu(self.more_menu)
 

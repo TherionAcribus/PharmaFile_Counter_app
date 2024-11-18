@@ -1,5 +1,5 @@
 import json
-from PySide6.QtWidgets import QPushButton, QSizePolicy
+from PySide6.QtWidgets import QPushButton, QSizePolicy, QMainWindow
 from PySide6.QtCore import QTimer, Signal, QSize
 from PySide6.QtGui import QIcon, QAction
 from connections import RequestThread
@@ -54,7 +54,7 @@ class DebounceButton(QPushButton):
             self.color_changed = False
 
 class IconeButton(DebounceButton):
-    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, parent=None):
+    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, parent=None):
         super().__init__(parent)
 
         self.icon_path = icon_path
@@ -65,6 +65,7 @@ class IconeButton(DebounceButton):
         self.app_token = parent.app_token
         self.session = parent.session
         self.counter_id = parent.counter_id
+        self.is_always_visible = is_always_visible
         self.setFixedSize(50, 50)
         self.setIcon(QIcon(self.icon_path))
         self.setIconSize(QSize(50, 50))
@@ -104,6 +105,16 @@ class IconeButton(DebounceButton):
             self.state = "waiting"
             self.update_button_icon()
             print(f"Erreur {status_code}: {response_text}")
+        
+        print("handle_response", self.flask_url)
+        if "paper" in self.flask_url:
+            print("update_paper_action_text")
+            print(self.parent().parent().parent())
+            print("Main window methods:", [method for method in dir(self.parent().parent().parent) if not method.startswith('_')])
+            print(hasattr(self.parent(), 'update_paper_action_text'))
+            main_window = self.parent().parent().parent()
+            if isinstance(main_window, QMainWindow):  # Vérifie si c'est bien une MainWindow
+                main_window.update_paper_action_text(self.state)
 
     def send_request(self, action):
         print(f"Envoi de la requête {action}", self.flask_url)
@@ -117,20 +128,29 @@ class IconeButton(DebounceButton):
         self.request_thread.start()
 
     def update_button_icon(self, state=None):
+        print("update_button_icon", self.state)
         if state:
             self.state = state
         print("update_button_icon", self.state)
+        
         if self.state == "inactive":
-            self.setIcon(QIcon(self.icon_inactive_path))
-            self.setIconSize(QSize(50, 50))
-            self.setEnabled(True)
-            self.setToolTip(self.tooltip_inactive_text)
+            if self.is_always_visible:
+                self.setIcon(QIcon(self.icon_inactive_path))
+                self.setIconSize(QSize(50, 50))
+                self.setEnabled(True)
+                self.setToolTip(self.tooltip_inactive_text)
+                self.show()  
+            else:
+                self.hide()
         elif self.state == "active":
+            self.show() 
             self.setIcon(QIcon(self.icon_path))
             self.setIconSize(QSize(50, 50))
             self.setEnabled(True)
             self.setToolTip(self.tooltip_text)
         elif self.state == "waiting":
+            if self.is_always_visible:
+                self.show()
             self.setIcon(QIcon(self.icon_path))
             self.setIconSize(QSize(50, 50))
             self.setEnabled(False)
