@@ -333,23 +333,24 @@ class MainWindow(QMainWindow):
 
 
     def _create_option_button_container(self):
-
+        
         self.option_button_container = QWidget()
         self.option_button_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
 
         self._create_choose_patient_button()
         self._create_more_button()
-        self._create_indicator_widget()
 
         self.option_button_layout.addWidget(self.btn_choose_patient)
         self.option_button_layout.addWidget(self.btn_more)
-        self.option_button_layout.addWidget(self.indicator_container)
 
         self.option_button_container.setLayout(self.option_button_layout)
 
     def _create_icon_widget(self):
         self.icone_widget = QWidget()
         self.icone_layout = QHBoxLayout()
+
+        self.connection_indicator = ConnectionStatusIndicator()
+        self.icone_layout.addWidget(self.connection_indicator)
         
         self._create_auto_calling_button()
         self._create_paper_button()
@@ -357,24 +358,7 @@ class MainWindow(QMainWindow):
         self.icone_layout.addWidget(self.btn_auto_calling)
         self.icone_layout.addWidget(self.btn_paper)
 
-        self.icone_widget.setLayout(self.icone_layout)
-
-    def _create_indicator_widget(self):
-        # Créer l'indicateur de statut
-        self.connection_indicator = ConnectionStatusIndicator()
-        
-        # Créer un layout vertical pour contenir le bouton "More" et l'indicateur
-        more_container = QWidget()
-        more_layout = QVBoxLayout(more_container)
-        more_layout.setContentsMargins(0, 0, 0, 0)
-        more_layout.setSpacing(2)  # Petit espace entre le bouton et l'indicateur
-
-        self.indicator_container = QWidget()
-        self.indicator_layout = QHBoxLayout(self.indicator_container)
-        self.indicator_layout.setContentsMargins(0, 0, 0, 0)
-        self.indicator_layout.addStretch()
-        self.indicator_layout.addWidget(self.connection_indicator)
-        self.indicator_layout.addStretch()
+        self.icone_widget.setLayout(self.icone_layout)       
 
 
     def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True):
@@ -387,7 +371,6 @@ class MainWindow(QMainWindow):
             state=state,
             parent=self,
             is_always_visible=is_always_visible
-
         )
 
     def _create_auto_calling_button(self):
