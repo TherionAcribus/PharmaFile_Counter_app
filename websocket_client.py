@@ -12,11 +12,13 @@ class WebSocketClient(QThread):
     change_auto_calling = Signal(object)
     update_auto_calling = Signal(object)
     disconnect_user = Signal(object)
+    ws_connection_status = Signal(bool, int, bool)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
         self.parent = parent
         self.username = username
+        self.previously_connected = False
 
         if "https" in self.parent.web_url:
             self.web_url = self.parent.web_url.replace("https", "wss")
@@ -38,15 +40,36 @@ class WebSocketClient(QThread):
 
     def run(self):
         headers = {'username': self.username}
+        reconnection_attempts = 0
+        max_reconnection_delay = 30
+        initial_delay = 5
 
         while True:
             try:
+                if reconnection_attempts > 0:
+                    show_notification = self.previously_connected
+                    self.ws_connection_status.emit(False, reconnection_attempts, show_notification)
+                    delay = min(initial_delay * reconnection_attempts, max_reconnection_delay)
+                    print(f"Waiting {delay} seconds before reconnection attempt {reconnection_attempts}")
+                    time.sleep(delay)
+                    
+                print(f"Attempting to connect to {self.web_url}/socket_app_counter")
+                self.ws_connection_status.emit(None, reconnection_attempts, False)
                 self.sio.connect(f"{self.web_url}/socket_app_counter", headers=headers)
-                self.sio.wait()  # Maintenir la connexion ouverte
+                
+                print("Connection successful!")
+                show_notification = not self.previously_connected
+                self.previously_connected = True 
+                reconnection_attempts = 0
+                self.ws_connection_status.emit(True, 0, show_notification)
+                self.sio.wait()
+
             except socketio.exceptions.ConnectionError as e:
-                print(f"Connection lost: {e}")
-                time.sleep(5)  # Attendre 5 secondes avant de tenter une reconnexion
-                print("Attempting to reconnect...")
+                reconnection_attempts += 1
+                print(f"Connection attempt {reconnection_attempts} failed: {str(e)}")
+                show_notification = self.previously_connected 
+                self.previously_connected = False
+                self.ws_connection_status.emit(False, reconnection_attempts, show_notification)
 
     def stop(self):
         self.sio.disconnect()
@@ -54,10 +77,12 @@ class WebSocketClient(QThread):
         self.wait()
 
     def on_connect(self):
-        print('WebSocket connected et c cool')
+        print('WebSocket connected')
+        self.ws_connection_status.emit(True, 0, False)
 
     def on_disconnect(self):
         print('WebSocket disconnected')
+        self.ws_connection_status.emit(False, 0, False)
         
     def on_paper(self, data):
         print("Received paper:", data)

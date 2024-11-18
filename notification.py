@@ -132,3 +132,4 @@ class CustomNotification(QDialog):
             self.close()
         else:
             super().keyPressEvent(event)
+

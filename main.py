@@ -7,9 +7,10 @@ import logging
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog, QDockWidget, QBoxLayout
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime, QByteArray
+from PySide6.QtGui import QIcon, QAction, QColor, QBrush, QPainter, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtSvg import QSvgRenderer
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
         self.load_skin()
 
         self.setup_global_shortcut()
+        
 
     def create_interface(self):
         # Supprime l'ancien widget central s'il existe (changement d'orientation)
@@ -337,9 +339,11 @@ class MainWindow(QMainWindow):
 
         self._create_choose_patient_button()
         self._create_more_button()
+        self._create_indicator_widget()
 
         self.option_button_layout.addWidget(self.btn_choose_patient)
         self.option_button_layout.addWidget(self.btn_more)
+        self.option_button_layout.addWidget(self.indicator_container)
 
         self.option_button_container.setLayout(self.option_button_layout)
 
@@ -354,6 +358,23 @@ class MainWindow(QMainWindow):
         self.icone_layout.addWidget(self.btn_paper)
 
         self.icone_widget.setLayout(self.icone_layout)
+
+    def _create_indicator_widget(self):
+        # Créer l'indicateur de statut
+        self.connection_indicator = ConnectionStatusIndicator()
+        
+        # Créer un layout vertical pour contenir le bouton "More" et l'indicateur
+        more_container = QWidget()
+        more_layout = QVBoxLayout(more_container)
+        more_layout.setContentsMargins(0, 0, 0, 0)
+        more_layout.setSpacing(2)  # Petit espace entre le bouton et l'indicateur
+
+        self.indicator_container = QWidget()
+        self.indicator_layout = QHBoxLayout(self.indicator_container)
+        self.indicator_layout.setContentsMargins(0, 0, 0, 0)
+        self.indicator_layout.addStretch()
+        self.indicator_layout.addWidget(self.connection_indicator)
+        self.indicator_layout.addStretch()
 
 
     def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state):
@@ -653,6 +674,7 @@ class MainWindow(QMainWindow):
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.update_auto_calling.connect(self.update_auto_calling)
         self.socket_io_client.disconnect_user.connect(self.disconnect_user)
+        self.socket_io_client.ws_connection_status.connect(self.handle_socket_connection)
         self.socket_io_client.start()
         #self.loading_screen.validate_last_line()
 
@@ -675,6 +697,25 @@ class MainWindow(QMainWindow):
         print("Patient Already Taken")
         self.label_patient.setText("Patient déjà attribué")
         self.audio_player.play_sound("patient_taken")
+
+
+    def handle_socket_connection(self, status, reconnection_attempts=0, display_notification=True):
+        if status is None:  # Connecting
+            self.connection_indicator.set_status("connecting", reconnection_attempts)
+        elif status:  # Connected
+            if display_notification:
+                self.show_notification({
+                    "origin": "socket_connection", 
+                    "message": "La connexion temps réel est rétablie !"
+                }, internal=True)
+            self.connection_indicator.set_status("connected")
+        else:  # Disconnected
+            if display_notification:
+                self.show_notification({
+                    "origin": "socket_connection", 
+                    "message": "La connexion temps réel a été perdue. Tentative de reconnexion..."
+                }, internal=True)
+            self.connection_indicator.set_status("disconnected", reconnection_attempts)
 
 
     def update_my_patient(self, patient):
@@ -1176,6 +1217,76 @@ class MainWindow(QMainWindow):
         self.call_timer.setInterval(self.timer_after_calling * 1000)
         self.call_timer.timeout.connect(self.call_timer_delay_expired)
 
+
+class ConnectionStatusIndicator(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(30, 30)
+        self.status = "connected"
+        self.last_connection_time = None
+        self.reconnection_attempts = 0
+        self.setMouseTracking(True)
+
+        # Charger les SVG avec vos noms de fichiers
+        self.renderers = {}
+        status_files = {
+            "connected": "connection_true.svg",
+            "connecting": "connection_standing.svg",
+            "disconnected": "connection_false.svg"
+        }
+
+        for status, filename in status_files.items():
+            renderer = QSvgRenderer()
+            svg_path = resource_path(f"assets/images/{filename}")
+            if renderer.load(svg_path):
+                self.renderers[status] = renderer
+            else:
+                print(f"Erreur lors du chargement de {filename}")
+
+    def set_status(self, status, reconnection_attempts=None):
+        print("STATUS", status)
+        try:
+            if self.isVisible():
+                self.status = status
+                if status == "connected":
+                    self.last_connection_time = QDateTime.currentDateTime()
+                    self.reconnection_attempts = 0
+                elif reconnection_attempts is not None:
+                    self.reconnection_attempts = reconnection_attempts
+                self.update_tooltip()
+                self.update()
+        except RuntimeError:
+            pass
+
+    def update_tooltip(self):
+        print("UPDATE TOOLTIP")
+        try:
+            if self.isVisible():
+                if self.status == "connected":
+                    if self.last_connection_time:
+                        time_str = self.last_connection_time.toString("HH:mm:ss")
+                        tooltip = f"Connecté depuis {time_str}"
+                    else:
+                        tooltip = "Connecté"
+                elif self.status == "connecting":
+                    tooltip = f"Tentative de reconnexion... (essai n°{self.reconnection_attempts})"
+                else:
+                    tooltip = "Déconnecté"
+                    if self.reconnection_attempts > 0:
+                        tooltip += f"\nNombre de tentatives de reconnexion : {self.reconnection_attempts}"
+                
+                self.setToolTip(tooltip)
+        except RuntimeError:
+            pass
+
+    def paintEvent(self, event):
+        try:
+            if self.isVisible() and self.status in self.renderers:
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.Antialiasing)
+                self.renderers[self.status].render(painter, self.rect())
+        except RuntimeError:
+            pass
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
