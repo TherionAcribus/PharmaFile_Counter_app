@@ -5,7 +5,7 @@ import json
 
 class CustomNotification(QDialog):
     def __init__(self, data, font_size=None, parent=None, internal=False):        
-        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
 
         self.internal = internal
         self.audio_player = self.parent().audio_player
