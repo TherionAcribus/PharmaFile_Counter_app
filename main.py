@@ -714,15 +714,15 @@ class MainWindow(QMainWindow):
         elif status:  # Connected
             if display_notification:
                 self.show_notification({
-                    "origin": "socket_connection", 
-                    "message": "La connexion temps réel est rétablie !"
+                    "origin": "socket_connection_true", 
+                    "message": "La connexion temps réel est (r)établie !"
                 }, internal=True)
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
             if display_notification:
                 self.show_notification({
-                    "origin": "socket_connection", 
-                    "message": "La connexion temps réel a été perdue. Tentative de reconnexion..."
+                    "origin": "socket_connection_false", 
+                    "message": "La connexion temps réel a été perdue. Tentative de reconnexion... La liste des patients ne s'affichera plus en temps réél, mais les boutons fonctionnent toujours."
                 }, internal=True)
             self.connection_indicator.set_status("disconnected", reconnection_attempts)
 
@@ -1268,7 +1268,6 @@ class ConnectionStatusIndicator(QWidget):
             pass
 
     def update_tooltip(self):
-        print("UPDATE TOOLTIP")
         try:
             if self.isVisible():
                 if self.status == "connected":
@@ -1276,11 +1275,9 @@ class ConnectionStatusIndicator(QWidget):
                         time_str = self.last_connection_time.toString("HH:mm:ss")
                         tooltip = f"Connecté depuis {time_str}"
                     else:
-                        tooltip = "Connecté"
-                elif self.status == "connecting":
-                    tooltip = f"Tentative de reconnexion... (essai n°{self.reconnection_attempts})"
+                        tooltip = "Temps réel Connecté"
                 else:
-                    tooltip = "Déconnecté"
+                    tooltip = "Temps réel déconnecté"
                     if self.reconnection_attempts > 0:
                         tooltip += f"\nNombre de tentatives de reconnexion : {self.reconnection_attempts}"
                 

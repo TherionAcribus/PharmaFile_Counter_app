@@ -115,6 +115,11 @@ class CustomNotification(QDialog):
             self.title = "Pousse toi de là !"
         elif origin == "test_notification":
             self.title = "Test micro, 1, 2, 3, Test..."
+        elif origin == "socket_connection_true":
+            self.title = "Tout va bien, on est branché !"
+        elif origin == "socket_connection_false":
+            self.title = "Quelqu'un s'est pris les pieds dans les cables !"
+            self.background_color = "red"
         else:
             self.title = origin
 
