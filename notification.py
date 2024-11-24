@@ -120,6 +120,8 @@ class CustomNotification(QDialog):
         elif origin == "socket_connection_false":
             self.title = "Quelqu'un s'est pris les pieds dans les cables !"
             self.background_color = "red"
+        elif origin == "patient_for_staff_from_app":
+            self.title = "Transfert de patient"
         else:
             self.title = origin
 

@@ -106,7 +106,11 @@ class WebSocketClient(QThread):
     def on_notification(self, data):
         print("Received notification:", data)
         # si on affiche à tous ou si on affiche seulement pour le counter
-        if not data["flag"] or data["flag"] == self.parent.counter_id:
+        if (
+        not data["flag"] or  # Cas où tout le monde peut voir la notification
+        data["flag"] == self.parent.counter_id or  # Cas où le counter_id correspond directement
+        (isinstance(data["flag"], list) and self.parent.counter_id in data["flag"])  # Cas où flag est une liste et contient le counter_id
+    ):
             self.new_notification.emit(data['data'])
 
     def on_update_patient_list(self, data):
@@ -118,6 +122,7 @@ class WebSocketClient(QThread):
                 data["data"] = json.loads(data["data"])
             self.new_patient.emit(data["data"])
             self.my_patient.emit(data["data"])
+
         except json.JSONDecodeError as e:
             print(f"Failed to decode JSON: {e}")
 

@@ -664,6 +664,8 @@ class MainWindow(QMainWindow):
                     print("Notification OK")
                     message = f"Nouveau patient : {response_data['call_number']} pour '{response_data['activity']}'"
                     self.show_notification({"origin": "new_patient", "message": message}, internal=True)
+                
+                print()
 
             except json.JSONDecodeError as e:
                 print("Failed to decode JSON:", e)
