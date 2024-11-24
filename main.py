@@ -14,7 +14,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
-from buttons import DebounceButton, IconeButton
+from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
 from connections import RequestThread
 
@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
     patient_data_received = Signal(object)
     patient_id = None
     staff_id = None
+    activities_staff = None  # les activités "Staff" pour renvoyer un patient vers quelqu'un
     connected = False  # permet de savoir si on a réussi à se connecter
     add_paper = "waiting"
     autocalling = "waiting"
@@ -286,16 +287,40 @@ class MainWindow(QMainWindow):
         self.label_patient.setFlat(True)  # Le bouton ressemble davantage à un label
 
         # Créer un menu d'actions
-        menu = QMenu(self.label_patient)
-        action_wait = menu.addAction("Remettre en attente")
-        action_delete = menu.addAction("Supprimer")
+        self.patient_menu = QMenu(self.label_patient)  # Stocké comme attribut de classe
+        self.action_wait = self.patient_menu.addAction("Remettre en attente")
+        
+        # on ne crée le sous-menu que si on a défini des "activités Staff"
+        if hasattr(self, 'activities_staff') and self.activities_staff:
+            # Créer un sous-menu pour "Remettre en attente pour..."
+            self.wait_for_submenu = QMenu("Remettre en attente pour...", self.patient_menu)
+            
+            # Ajouter chaque activité staff comme une action dans le sous-menu
+            for activity in self.activities_staff:
+                action = self.wait_for_submenu.addAction(activity['name'])
+                action.triggered.connect(lambda checked, a=activity: self.on_action_wait_for(a))
+            
+            # Ajouter le sous-menu au menu principal
+            self.patient_menu.addMenu(self.wait_for_submenu)
+
+        self.action_delete = self.patient_menu.addAction("Supprimer")
 
         # Connecter les actions à des méthodes
-        action_wait.triggered.connect(self.on_action_wait)
-        action_delete.triggered.connect(self.on_action_delete)
+        self.action_wait.triggered.connect(self.on_action_wait)
+        self.action_delete.triggered.connect(self.on_action_delete)
 
         # Associer le menu au bouton
-        self.label_patient.setMenu(menu)
+        self.label_patient.setMenu(self.patient_menu)
+
+        # Désactiver les actions par défaut
+        self._update_menu_actions(False)
+
+    def _update_menu_actions(self, enable):
+        """Active ou désactive les actions du menu"""
+        self.action_wait.setEnabled(enable)
+        if hasattr(self, 'wait_for_submenu'):
+            self.wait_for_submenu.setEnabled(enable)
+        self.action_delete.setEnabled(enable)
 
     def on_action_wait(self):
         # Logique pour remettre le patient en attente
@@ -305,10 +330,24 @@ class MainWindow(QMainWindow):
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
-    def on_action_delete(self):
-        # Logique pour supprimer le patient
-        print("Patient supprimé")
-        url = f'{self.web_url}/api/counter/delete_patient/{self.patient_id}'
+    def on_action_wait_for(self, activity, patient_id=None):
+        """
+        patient_id: si non fourni, utilise self.patient_id (patient en cours)
+        """
+        target_id = patient_id if patient_id is not None else self.patient_id
+        print(f"Patient {target_id} remis en attente pour l'activité {activity['name']} (ID: {activity['id']})")
+        url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result)
+        self.thread.start()
+
+    def on_action_delete(self, patient_id=None):
+        """
+        patient_id: si non fourni, utilise self.patient_id (patient en cours)
+        """
+        target_id = patient_id if patient_id is not None else self.patient_id
+        print(f"Patient {target_id} supprimé")
+        url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
         self.thread = RequestThread(url, self.session)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
@@ -733,9 +772,11 @@ class MainWindow(QMainWindow):
             if patient is None:
                 self.patient_id = None
                 self.label_patient.setText("Plus de patient")
-            if patient is False:
+                self._update_menu_actions(False)
+            elif patient is False:
                 self.patient_id = None
                 self.label_patient.setText("Pas de patient")
+                self._update_menu_actions(False)
             else:
                 print("Update My Patient new", patient, type(patient))
                 if patient["counter_id"] == self.counter_id:
@@ -743,6 +784,7 @@ class MainWindow(QMainWindow):
                     if patient["id"] is None:
                         self.patient_id = None
                         self.label_patient.setText("Pas de patient en cours")
+                        self._update_menu_actions(False)
                     else:
                         self.patient_id = patient["id"]
                         status = patient["status"]
@@ -754,8 +796,9 @@ class MainWindow(QMainWindow):
                             status_text = "????"
                         language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
                         self.label_patient.setText(f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
+                        self._update_menu_actions(True)  # Active les actions car il y a un patient
         except:
-            pass
+            self._update_
 
     def update_my_buttons(self, patient):
         #TEMPORAIRE
@@ -1010,9 +1053,14 @@ class MainWindow(QMainWindow):
         
     def handle_init_app(self, elapsed_time, response_text, status_code):
         response_data = json.loads(response_text)
+        print("handle",response_data)
         if status_code == 200:
             self.autocalling = "active" if response_data['autocalling'] else "inactive"
             self.add_paper = "active" if response_data['add_paper'] else "inactive"
+            print("Activity staff", response_data['activities_staff'], len(response_data['activities_staff']))
+            # s'il y a des réponses pour les "activités staff" on remplace le None
+            if len(response_data['activities_staff']) > 0:
+                self.activities_staff = response_data['activities_staff']
 
 
     def update_list_patient(self, patients):
@@ -1053,6 +1101,10 @@ class MainWindow(QMainWindow):
         # Ajout des patients dans le menu
         for patient in patients:
             action_text = f"{patient['call_number']} - {patient['activity']}"
+            label = QLabel(action_text)
+            if self.staff_id == patient["activity_is_staff"]:
+                label.setStyleSheet("background-color: #f98517; color: #000000;")
+
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
             
@@ -1068,14 +1120,20 @@ class MainWindow(QMainWindow):
 
         # Add new buttons for each patient
         for patient in self.list_patients:
+            print("patient", patient)
             button_text = patient['call_number']
+            if patient['activity_is_staff']:
+                button_text += f" -> {patient['activity']}"
             if patient["language_code"] != "fr":
                 button_text += f" ({patient['language_code']})"
-            button = DebounceButton(button_text)
+            button = PatientButton(button_text, patient, self)  # Utilisation d'une classe personnalisée
             
             font = button.font()
             font.setPointSize(8)
             button.setFont(font)
+
+            if self.staff_id == patient["activity_is_staff"]:
+                button.setStyleSheet("background-color: #f98517; color: #000000;")
 
             button.clicked.connect(lambda checked, id=patient["id"]: self.call_web_function_validate_and_call_specifique(id))
             self.scroll_layout.addWidget(button)

@@ -1,7 +1,7 @@
 import json
-from PySide6.QtWidgets import QPushButton, QSizePolicy, QMainWindow
-from PySide6.QtCore import QTimer, Signal, QSize
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtWidgets import QPushButton, QMainWindow, QMenu
+from PySide6.QtCore import QTimer, Signal, QSize, Qt
+from PySide6.QtGui import QIcon
 from connections import RequestThread
 
 class DebounceButton(QPushButton):
@@ -52,6 +52,36 @@ class DebounceButton(QPushButton):
         if self.color_changed:
             self.setStyleSheet(self.original_style)
             self.color_changed = False
+
+
+class PatientButton(DebounceButton):
+    def __init__(self, text, patient_data, parent=None):
+        super().__init__(text)
+        self.patient_data = patient_data
+        self.parent = parent
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
+    def show_context_menu(self, position):
+        menu = QMenu()
+
+        # Action pour supprimer
+        action_delete = menu.addAction("Supprimer")
+        action_delete.triggered.connect(lambda: self.parent.on_action_delete(self.patient_data['id']))
+
+        # Sous-menu pour assigner à un membre de l'équipe
+        if hasattr(self.parent, 'activities_staff') and self.parent.activities_staff:
+            assign_submenu = QMenu("Assigner à...", menu)
+            
+            for activity in self.parent.activities_staff:
+                action = assign_submenu.addAction(activity['name'])
+                action.triggered.connect(lambda checked, a=activity: self.parent.on_action_wait_for(a, self.patient_data['id']))
+            
+            menu.addMenu(assign_submenu)
+
+        # Afficher le menu à la position du clic droit
+        menu.exec_(self.mapToGlobal(position))
+
 
 class IconeButton(DebounceButton):
     def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, parent=None):
@@ -155,3 +185,4 @@ class IconeButton(DebounceButton):
             self.setIconSize(QSize(50, 50))
             self.setEnabled(False)
             self.setToolTip("En attente d'une connexion")
+
