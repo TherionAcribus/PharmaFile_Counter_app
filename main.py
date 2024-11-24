@@ -346,11 +346,27 @@ class MainWindow(QMainWindow):
         patient_id: si non fourni, utilise self.patient_id (patient en cours)
         """
         target_id = patient_id if patient_id is not None else self.patient_id
-        print(f"Patient {target_id} supprimé")
-        url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
-        self.thread = RequestThread(url, self.session)
-        self.thread.result.connect(self.handle_result)
-        self.thread.start()
+        
+        msg_box = QMessageBox()
+        msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowStaysOnTopHint)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Confirmation de suppression")
+        msg_box.setText("Êtes-vous sûr de vouloir supprimer ce patient ?")
+        
+        # Création des boutons personnalisés
+        bouton_oui = msg_box.addButton("Oui", QMessageBox.YesRole)
+        bouton_non = msg_box.addButton("Non", QMessageBox.NoRole)
+        msg_box.setDefaultButton(bouton_non)
+        
+        msg_box.exec()
+        
+        # Si l'utilisateur clique sur "Oui"
+        if msg_box.clickedButton() == bouton_oui:
+            print(f"Patient {target_id} supprimé")
+            url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
+            self.thread = RequestThread(url, self.session)
+            self.thread.result.connect(self.handle_result)
+            self.thread.start()
 
     def _create_main_button_container(self):
         self.main_button_container = QWidget()
