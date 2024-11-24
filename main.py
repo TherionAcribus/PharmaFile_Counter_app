@@ -4,11 +4,13 @@ import json
 import requests
 import threading
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from requests.exceptions import RequestException
+from datetime import datetime
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QTextEdit, QGroupBox,  QStackedWidget, QWidget, QCheckBox, QSizePolicy, QSpacerItem, QPlainTextEdit, QScrollArea, QDialog, QDockWidget, QBoxLayout
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime, QByteArray
-from PySide6.QtGui import QIcon, QAction, QColor, QBrush, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
+from PySide6.QtGui import QIcon, QAction, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
 
@@ -17,6 +19,7 @@ from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
 from connections import RequestThread
+from my_logger import AppLogger, LogHandler
 
 from line_profiler import profile
 
@@ -51,16 +54,6 @@ class AudioPlayer(QObject):
         print(f"Erreur de lecture : {error} - {error_string}")
 
 
-class LogHandler(logging.Handler):
-    def __init__(self, update_callback):
-        super().__init__()
-        self.update_callback = update_callback
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.update_callback(log_entry)
-
-
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -76,6 +69,7 @@ def load_stylesheet(filename):
         return stream.readAll()
     return ""
 
+
 class LoadingScreen(QWidget):
     def __init__(self):
         super().__init__()
@@ -83,6 +77,16 @@ class LoadingScreen(QWidget):
         self.setFixedSize(400, 200)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
+        # Configuration de l'interface utilisateur
+        self._setup_ui()
+        
+        # Obtention de l'instance du logger et ajout du handler UI
+        self.app_logger = AppLogger.get_instance()
+        self.ui_handler = self.app_logger.add_ui_handler(self.update_progress)
+        self.logger = self.app_logger.get_logger()
+
+    def _setup_ui(self):
+        """Configure l'interface utilisateur"""
         layout = QVBoxLayout()
         self.label = QLabel("Logging de l'application...")
         self.progress = QPlainTextEdit()
@@ -92,24 +96,17 @@ class LoadingScreen(QWidget):
         layout.addWidget(self.progress)
         self.setLayout(layout)
 
-        # Configurez le logger pour utiliser notre LogHandler
-        self.logger = logging.getLogger("LoadingScreenLogger")
-        self.logger.setLevel(logging.DEBUG)
-
-        log_handler = LogHandler(self.update_progress)
-        log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(log_handler)
-
-        # Vous pouvez également ajouter un handler pour écrire dans un fichier ou la console
-        file_handler = logging.FileHandler("application.log")
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(file_handler)
-
     def update_progress(self, message):
+        """Met à jour l'affichage des logs dans l'interface"""
         self.progress.appendPlainText(message)
         self.progress.ensureCursorVisible()
         QCoreApplication.processEvents()
 
+    def closeEvent(self, event):
+        """Gestionnaire d'événement de fermeture"""
+        if hasattr(self, 'ui_handler'):
+            self.logger.removeHandler(self.ui_handler)
+        super().closeEvent(event)
 
 class MainWindow(QMainWindow):
 
@@ -129,7 +126,8 @@ class MainWindow(QMainWindow):
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
 
-        self.loading_screen.logger.info("Initialisation de la session...")
+        self.logger = AppLogger.get_instance().get_logger()
+        self.logger.info("Initialisation de la session...")
         self.session = requests.Session()  # Session HTTP persistante
 
         # LOAD PREFERENCES
@@ -142,7 +140,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.aboutToQuit.connect(self.cleanup_systray)
 
-        self.loading_screen.logger.info("Test de la connexion...")
+        self.logger.info("Test de la connexion...")
         self.app_token = None
         try:
             self.get_app_token()
@@ -174,7 +172,7 @@ class MainWindow(QMainWindow):
             self.loading_screen.close()
 
     def load_preferences(self):
-        self.loading_screen.logger.info("Initialisation des préférences...")
+        self.logger.info("Initialisation des préférences...")
         
         settings = QSettings()
         self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
@@ -204,7 +202,7 @@ class MainWindow(QMainWindow):
         self.selected_skin = settings.value("selected_skin", "")
 
     def setup_ui(self):
-        self.loading_screen.logger.info("Initialisation de l'interface...")
+        self.logger.info("Initialisation de l'interface...")
 
         icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
         self.setWindowIcon(QIcon(icon_path))
@@ -429,7 +427,7 @@ class MainWindow(QMainWindow):
         )
 
     def _create_auto_calling_button(self):
-        self.loading_screen.logger.info("Connexion pour charger le bouton d'appel automatique...")
+        self.logger.info("Connexion pour charger le bouton d'appel automatique...")
         self.btn_auto_calling = self._create_icon_button(
             "assets/images/loop_yes.ico",
             "assets/images/loop_no.ico",
@@ -440,7 +438,7 @@ class MainWindow(QMainWindow):
         )
 
     def _create_paper_button(self):
-        self.loading_screen.logger.info("Connexion pour charger l'icone de changement de papier...")
+        self.logger.info("Connexion pour charger l'icone de changement de papier...")
         self.btn_paper = self._create_icon_button(
             "assets/images/paper_add.ico",
             "assets/images/paper.ico",
@@ -492,7 +490,7 @@ class MainWindow(QMainWindow):
 
         # pas de patient en cours. On initialise le patient courant
         if not self.my_patient:
-            self.loading_screen.logger.info("__ Connexion pour charger le patient en cours...")
+            self.logger.info("__ Connexion pour charger le patient en cours...")
             self.my_patient = self.init_patient()
         # uniquement si chargement des patients réussi (pas de connexion)
         if self.my_patient:
@@ -500,7 +498,7 @@ class MainWindow(QMainWindow):
             self.update_my_buttons(self.my_patient)
 
         if not self.list_patients:
-            self.loading_screen.logger.info("__ Connexion pour charger la liste des patients...")
+            self.logger.info("__ Connexion pour charger la liste des patients...")
             self.list_patients = self.init_list_patients()
         if self.list_patients:
             self.update_list_patient(self.list_patients)
@@ -644,7 +642,7 @@ class MainWindow(QMainWindow):
 
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
-        self.loading_screen.logger.info("Paramétrage de l'utilisateur...")
+        self.logger.info("Paramétrage de l'utilisateur...")
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
         self.user_thread = RequestThread(url, self.session, method='GET')
         self.user_thread.result.connect(self.handle_user_result)
@@ -730,7 +728,7 @@ class MainWindow(QMainWindow):
             pass
 
     def start_socket_io_client(self, url):
-        self.loading_screen.logger.info("Création de la connexion Socket.IO...")
+        self.logger.info("Création de la connexion Socket.IO...")
         print(f"Starting Socket.IO client with URL: {url}")
         self.socket_io_client = WebSocketClient(self, username=f"Counter {self.counter_id} App")
         self.socket_io_client.new_patient.connect(self.new_patient)
@@ -1049,10 +1047,10 @@ class MainWindow(QMainWindow):
         self.audio_player.set_volume(self.sound_volume) 
 
     def closeEvent(self, event):
-        self.loading_screen.logger.info("Fermeture de l'App")
+        self.logger.info("Fermeture de l'App")
 
         # déconnection du comptoir
-        self.loading_screen.logger.info("Déconnexion du comptoir suite à la fermeture de l'App")
+        self.logger.info("Déconnexion du comptoir suite à la fermeture de l'App")
         self.disconnect_from_counter()
         
         # Fermeture de la fenêtre secondaire quand la fenêtre principale est fermée
@@ -1061,7 +1059,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def connexion_for_app_init(self):
-        self.loading_screen.logger.info("Initialisation du bouton d'appel automatique...")
+        self.logger.info("Initialisation du bouton d'appel automatique...")
         url = f'{self.web_url}/app/counter/init_app'
         data = {'counter_id': self.counter_id}
         headers = {'X-App-Token': self.app_token}
@@ -1196,7 +1194,7 @@ class MainWindow(QMainWindow):
     def disconnect_user(self, data):
         print("Totalement disconnect")
         message = f'Vous avez déconnecté par {data["data"]["staff"]}'
-        self.loading_screen.logger.info(message)
+        self.logger.info(message)
         self.show_notification({"origin": "disconnect_by_user", "message": message}, internal=True)
         self.deconnexion_interface()
 
@@ -1239,7 +1237,7 @@ class MainWindow(QMainWindow):
 
     def setup_systray(self):
         """ Création du Systray"""        
-        self.loading_screen.logger.info("Création du Systray...")
+        self.logger.info("Création du Systray...")
         icon_path = resource_path("assets/images/pause.ico")
         self.trayIcon1 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon1.setToolTip("Pause")

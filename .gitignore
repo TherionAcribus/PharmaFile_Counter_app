@@ -1,6 +1,7 @@
 build/
 dist/
 env/
+logs/
 __pycache__/
 pysidedeploy.spec
 application.log
