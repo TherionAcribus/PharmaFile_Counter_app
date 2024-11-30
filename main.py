@@ -339,6 +339,13 @@ class MainWindow(QMainWindow):
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
+    def on_action_validate(self, patient_id):
+        print(f"Patient {patient_id} validé")
+        url = f'{self.web_url}/api/counter/validate_patient/{patient_id}'
+        self.thread = RequestThread(url, self.session)
+        self.thread.result.connect(self.handle_result)
+        self.thread.start()
+
     def on_action_delete(self, patient_id=None):
         """
         patient_id: si non fourni, utilise self.patient_id (patient en cours)
@@ -1106,13 +1113,8 @@ class MainWindow(QMainWindow):
         menu = QMenu()       
 
         # Mise à jour du bouton 'Choix' selon qu'il y ait ou non des patients
-        if patients:
-            if len(patients) == 0:
-                self.btn_choose_patient.setText("Vide")
-            else:
-                self.btn_choose_patient.setText("Patients")
-        else:
-            self.btn_choose_patient.setText("Vide")
+        label_text = f"Patient{'s' if len(patients) > 1 else ''} ({len(patients)})"
+        self.btn_choose_patient.setText(label_text)
 
         # Ajout des patients dans le menu
         for patient in patients:

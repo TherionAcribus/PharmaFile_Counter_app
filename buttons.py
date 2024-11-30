@@ -65,6 +65,10 @@ class PatientButton(DebounceButton):
     def show_context_menu(self, position):
         menu = QMenu()
 
+        # Action pour valider
+        action_validate = menu.addAction("Marquer comme validé")
+        action_validate.triggered.connect(lambda: self.parent.on_action_validate(self.patient_data['id']))
+
         # Action pour supprimer
         action_delete = menu.addAction("Supprimer")
         action_delete.triggered.connect(lambda: self.parent.on_action_delete(self.patient_data['id']))
