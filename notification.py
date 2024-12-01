@@ -1,9 +1,48 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QApplication
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, Signal
 import json
 
+
+
+class NotificationManager:
+    def __init__(self):
+        self.active_notifications = []
+        self.spacing = 10  # Espacement vertical entre les notifications
+
+    def add_notification(self, notification):
+        self.active_notifications.append(notification)
+        self.update_positions()
+        
+        # Connecter la fermeture de la notification
+        notification.closed.connect(lambda: self.remove_notification(notification))
+    
+    def remove_notification(self, notification):
+        if notification in self.active_notifications:
+            self.active_notifications.remove(notification)
+            self.update_positions()
+    
+    def update_positions(self):
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        base_y = screen_geometry.bottomLeft().y()
+        
+        # Positionner les notifications de bas en haut
+        current_y = base_y
+        for notif in reversed(self.active_notifications):
+            height = notif.sizeHint().height()
+            notif.setGeometry(
+                screen_geometry.bottomLeft().x() + 20,
+                current_y - height - 20,
+                300,
+                height
+            )
+            current_y -= (height + self.spacing)
+
+
 class CustomNotification(QDialog):
+
+    closed = Signal()
+
     def __init__(self, data, font_size=None, parent=None, internal=False):        
         super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
 
@@ -132,10 +171,23 @@ class CustomNotification(QDialog):
             self.title = origin
 
     def show(self):
+        if not hasattr(self.parent(), 'notification_manager'):
+            self.parent().notification_manager = NotificationManager()
+        
         super().show()
         if self.audio_player:
             self.audio_player.play_sound(self.sound)
+            
+        # Ajouter cette notification au manager
+        self.parent().notification_manager.add_notification(self)
+        
+        # Configurer le timer pour la fermeture automatique
         QTimer.singleShot(self.parent().notification_duration*1000, self.close)
+
+    def closeEvent(self, event):
+        # Émettre le signal de fermeture avant de fermer
+        self.closed.emit()
+        super().closeEvent(event)
 
     def mousePressEvent(self, event):
         self.close()
