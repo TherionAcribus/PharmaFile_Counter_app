@@ -96,9 +96,15 @@ class CustomNotification(QDialog):
             self.title = "Une nouvelle mission arrive !"
         elif origin == "printer_error":
             self.title = "Je crois qu'on a un problème..."
-        elif origin == "printer_paper":
-            self.title = "Papier, s'il vous plait !"
+        elif origin == "low_paper":
+            self.title = "Fin du rouleau !"
             self.background_color = "orange"
+        elif origin == "no_paper":
+            self.title = "Il n'y a plus de papier !"
+            self.background_color = "red"
+        elif origin == "paper_ok":
+            self.title = "Vous faites bonne impression !"
+            self.background_color = "light_green"
         elif origin == "patient_taken":
             self.title = "A une seconde près !"
         elif origin == "autocalling":

@@ -3,10 +3,7 @@ import os
 import json
 import requests
 import threading
-import logging
-from logging.handlers import TimedRotatingFileHandler
 from requests.exceptions import RequestException
-from datetime import datetime
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
@@ -19,7 +16,7 @@ from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
 from connections import RequestThread
-from my_logger import AppLogger, LogHandler
+from my_logger import AppLogger
 
 from line_profiler import profile
 
