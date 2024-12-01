@@ -3,7 +3,6 @@ from PySide6.QtCore import Qt, QTimer, Signal
 import json
 
 
-
 class NotificationManager:
     def __init__(self):
         self.active_notifications = []

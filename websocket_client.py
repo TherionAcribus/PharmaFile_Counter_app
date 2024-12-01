@@ -9,6 +9,7 @@ class WebSocketClient(QThread):
     new_notification = Signal(str)
     my_patient = Signal(object)
     change_paper = Signal(object)
+    change_paper_button = Signal(str)
     change_auto_calling = Signal(object)
     update_auto_calling = Signal(object)
     disconnect_user = Signal(object)
@@ -105,6 +106,17 @@ class WebSocketClient(QThread):
     
     def on_notification(self, data):
         print("Received notification:", data)
+        
+        # Parser data["data"] si c'est une chaîne JSON
+        if isinstance(data["data"], str):
+            try:
+                notification_data = json.loads(data["data"])
+            except json.JSONDecodeError:
+                print("Error parsing notification data")
+                return
+        else:
+            notification_data = data["data"]
+
         # si on affiche à tous ou si on affiche seulement pour le counter
         if (
             not data["flag"] or  # Cas où tout le monde peut voir la notification
@@ -112,6 +124,10 @@ class WebSocketClient(QThread):
             (isinstance(data["flag"], list) and self.parent.counter_id in data["flag"])  # Cas où flag est une liste et contient le counter_id
         ):
             self.new_notification.emit(data['data'])
+        
+        # si la notification concerne le papier, mettre à jour le bouton
+        if notification_data["origin"] in ["no_paper", "low_paper", "paper_ok"]:
+            self.change_paper_button.emit(notification_data["origin"])
 
     def on_update_patient_list(self, data):
         print('nouvelle liste de patients', data)

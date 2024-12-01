@@ -739,6 +739,7 @@ class MainWindow(QMainWindow):
         self.socket_io_client.new_notification.connect(self.show_notification)
         # refaire les deux fonctions en recupérant directement les valeurs plutôt que de renvoyer une requete
         self.socket_io_client.change_paper.connect(self.change_paper)
+        self.socket_io_client.change_paper_button.connect(self.change_paper_button)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.update_auto_calling.connect(self.update_auto_calling)
         self.socket_io_client.disconnect_user.connect(self.disconnect_user)
@@ -1171,8 +1172,15 @@ class MainWindow(QMainWindow):
         self.btn_paper.update_button_icon(self.add_paper)
         if self.notification_add_paper:
             message = "On est quasiment au bout du rouleau" if self.add_paper == "active" else "Une gentille personne a remis du papier"
-            self.show_notification({"origin": "printer_paper", "message": message}, internal=True)
+            self.show_notification({"origin": "low_paper", "message": message}, internal=True)
         
+    def change_paper_button(self, origin):
+        """ Appelé lors d'une notification venant de l'imprimante via le serveur. Le but est de ne pas redéclencher une seconde notification """
+        print("youpiii")
+        add_paper = "active" if origin in ["low_paper", "no_paper"] else "inactive"
+        self.btn_paper.update_button_icon(add_paper)
+
+
     def change_auto_calling(self, data):
         self.autocalling = "active" if data["data"]["autocalling"] else "inactive"
         print(self.autocalling)
