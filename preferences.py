@@ -206,6 +206,17 @@ class PreferencesDialog(QDialog):
         self.notification_add_paper_checkbox = QCheckBox("Afficher les alertes pour remplacer le papier", self.notifications_page)
         self.notifications_layout.addWidget(self.notification_add_paper_checkbox)
 
+        self.notification_connection_checkbox = QCheckBox("Afficher en cas de problème de connexion", self.notifications_page)
+        self.notifications_layout.addWidget(self.notification_connection_checkbox)
+
+        # Ajout de l'option pour le temps pour une notification après déconnexion
+        self.notification_after_deconnection_layout = QHBoxLayout()
+        self.notification_after_deconnection_label = QLabel("Temps (s) avant une notification si la connexion est perdue", self.notifications_page)
+        self.notification_after_deconnection_spinbox = QSpinBox(self.notifications_page)
+        self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_label)
+        self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_spinbox)
+        self.notifications_layout.addLayout(self.notification_after_deconnection_layout)
+
         # Ajout de l'option pour le temps avant une notification pour valider un patient
         self.notification_after_calling_layout = QHBoxLayout()
         self.notification_after_calling_label = QLabel("Temps (s) avant une notification si le patient n'est pas validé", self.notifications_page)
@@ -333,6 +344,10 @@ class PreferencesDialog(QDialog):
         self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
         self.notification_add_paper_checkbox.setChecked(settings.value("notification_add_paper", True, type=bool))
+        self.notification_connection_checkbox.setChecked(settings.value("notification_connection", True, type=bool))
+        self.notification_after_deconnection_spinbox.setValue(settings.value("notification_after_deconnection", 10, type=int))
+        print(settings.value("notification_after_deconnection"))
+        print(settings.value("notification_after_deconnection", 10, type=int))
         self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
@@ -399,10 +414,14 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_autocalling_new_patient", self.notification_autocalling_new_patient_checkbox.isChecked())
         settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
         settings.setValue("notification_add_paper", self.notification_add_paper_checkbox.isChecked())
+        settings.setValue("notification_connection", self.notification_connection_checkbox.isChecked())
+        settings.setValue("notification_after_deconnection", self.notification_after_deconnection_spinbox.value())
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
         settings.setValue("notification_volume", self.volume_slider.value())
+        print("SPIN", self.notification_after_deconnection_spinbox.value())
+        print("SAVE", settings.value("notification_after_deconnection"))
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        

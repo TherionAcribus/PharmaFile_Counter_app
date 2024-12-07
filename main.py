@@ -192,6 +192,8 @@ class MainWindow(QMainWindow):
         self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
         self.notification_add_paper = settings.value("notification_add_paper", True, type=bool)
+        self.notification_connection = settings.value("notification_connection", True, type=bool)
+        self.notification_after_deconnection = settings.value("notification_after_deconnection", 10, type=int)
         self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
         self.notification_duration = settings.value("notification_duration", 5, type=int)
         self.notification_font_size = settings.value("notification_font_size", 12, type=int)
@@ -778,7 +780,7 @@ class MainWindow(QMainWindow):
         if status is None:  # Connecting
             self.connection_indicator.set_status("connecting", reconnection_attempts)
         elif status:  # Connected
-            should_notify = self.disconnect_notification_shown and display_notification
+            should_notify = self.disconnect_notification_shown and display_notification and self.notification_connection
             if should_notify:
                 self.show_notification({
                     "origin": "socket_connection_true", 
@@ -786,7 +788,7 @@ class MainWindow(QMainWindow):
                 }, internal=True)
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
-            if display_notification:
+            if display_notification and self.notification_connection:
                 self.disconnect_notification_shown = True
                 self.show_notification({
                     "origin": "socket_connection_false", 
@@ -1183,7 +1185,7 @@ class MainWindow(QMainWindow):
         
         # Démarre le timer si pas déjà actif
         if not self.disconnect_timer.isActive() and not self.disconnect_notification_shown:
-            self.disconnect_timer.start(5000)  # 5 secondes
+            self.disconnect_timer.start(self.notification_after_deconnection*1000)  # délai avant notification
     
     def _handle_disconnection_timeout(self):
         """Appelé après le délai de 5 secondes"""
