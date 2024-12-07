@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
     autocalling = "waiting"
     list_patients = None  # liste des patient qui sera chargée au démarrage puis mise à jour via SocketIO
     my_patient =  None
+    counter_name = None
 
     def __init__(self):
         super().__init__()
@@ -733,7 +734,7 @@ class MainWindow(QMainWindow):
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
         print(f"Staff name: {staff_name}")
-        self.setWindowTitle(f"PharmaFile - {self.counter_id} - {staff_name}")  
+        self.setWindowTitle(f"PharmaFile - {self.counter_name} - {staff_name}")  
 
     def update_staff_label(self, staff_name):
         """ Met à jour le nom de l'équipier """
@@ -1100,6 +1101,7 @@ class MainWindow(QMainWindow):
         if status_code == 200:
             self.autocalling = "active" if response_data['autocalling'] else "inactive"
             self.add_paper = "active" if response_data['add_paper'] else "inactive"
+            self.counter_name = response_data['counter_name']
             print("Activity staff", response_data['activities_staff'], len(response_data['activities_staff']))
             # s'il y a des réponses pour les "activités staff" on remplace le None
             if len(response_data['activities_staff']) > 0:
