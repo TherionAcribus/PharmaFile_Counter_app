@@ -483,10 +483,14 @@ class MainWindow(QMainWindow):
 
     def call_web_function_validate(self):
         print("Call Web Function Validate")
-        url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
-        self.thread = RequestThread(url, self.session)
-        self.thread.result.connect(self.handle_result)
-        self.thread.start()
+        if self.patient_id:
+            url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
+            self.thread = RequestThread(url, self.session)
+            self.thread.result.connect(self.handle_result)
+            self.thread.start()
+        # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
+        else:
+            self.update_my_buttons(self.my_patient)
 
     def call_web_function_pause(self):
         print("Call Web Function Pause")
@@ -753,6 +757,7 @@ class MainWindow(QMainWindow):
         self.socket_io_client.disconnect_user.connect(self.disconnect_user)
         self.socket_io_client.ws_connection_status.connect(self.handle_socket_connection)
         self.socket_io_client.connection_lost.connect(self._handle_connection_lost)
+        self.socket_io_client.refresh_after_clear_patient_list.connect(self.refresh_after_clear_patient_list)
         self.socket_io_client.start()
 
     def init_patient(self):
@@ -834,22 +839,29 @@ class MainWindow(QMainWindow):
     def update_my_buttons(self, patient):
         #TEMPORAIRE
         try:
-            if patient["counter_id"] == self.counter_id:
-                if patient["id"] is None:
+            # cas de la suppression quotidienne de la liste des patients
+            if not patient:
                     self.btn_pause.setEnabled(False)
                     self.btn_validate.setEnabled(False)
                     self.btn_validate.resetColor()
                     self.call_timer.stop()  # bloque le timer "calling" si plus personne
-                else:
-                    if patient["status"] == "calling":
+            else:
+                if patient["counter_id"] == self.counter_id:
+                    if patient["id"] is None:
                         self.btn_pause.setEnabled(False)
-                        self.btn_validate.setEnabled(True)
-                        self.call_timer.start()  # démarre le timer "calling" si le patient en appel
-                    elif patient["status"] == "ongoing":
-                        self.btn_pause.setEnabled(True)
                         self.btn_validate.setEnabled(False)
                         self.btn_validate.resetColor()
-                        self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
+                        self.call_timer.stop()  # bloque le timer "calling" si plus personne
+                    else:
+                        if patient["status"] == "calling":
+                            self.btn_pause.setEnabled(False)
+                            self.btn_validate.setEnabled(True)
+                            self.call_timer.start()  # démarre le timer "calling" si le patient en appel
+                        elif patient["status"] == "ongoing":
+                            self.btn_pause.setEnabled(True)
+                            self.btn_validate.setEnabled(False)
+                            self.btn_validate.resetColor()
+                            self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
         except:
             pass
 
@@ -1207,6 +1219,10 @@ class MainWindow(QMainWindow):
         add_paper = "active" if origin in ["low_paper", "no_paper"] else "inactive"
         self.btn_paper.update_button_icon(add_paper)
 
+    def refresh_after_clear_patient_list(self):
+        print("refresh_after_clear_patient_list")
+        self.update_my_patient(None)
+        self.update_my_buttons(None)
 
     def change_auto_calling(self, data):
         self.autocalling = "active" if data["data"]["autocalling"] else "inactive"

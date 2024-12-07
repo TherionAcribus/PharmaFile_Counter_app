@@ -15,6 +15,7 @@ class WebSocketClient(QThread):
     disconnect_user = Signal(object)
     ws_connection_status = Signal(bool, int, bool)
     connection_lost = Signal(int)
+    refresh_after_clear_patient_list = Signal(bool)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
@@ -41,6 +42,7 @@ class WebSocketClient(QThread):
         self.sio.on('update_auto_calling', self.on_update_auto_calling, namespace='/socket_app_counter')   
         self.sio.on('disconnect_user', self.on_disconnect_user, namespace='/socket_app_counter')
         self.sio.on('update_patient_list', self.on_update_patient_list, namespace='/socket_app_counter')
+        self.sio.on('refresh_after_clear_patient_list', self.on_refresh_after_clear_patient_list, namespace='/socket_app_counter')
 
     def run(self):
         headers = {'username': self.username}
@@ -136,6 +138,10 @@ class WebSocketClient(QThread):
         except json.JSONDecodeError as e:
             print(f"Failed to decode JSON: {e}")
 
+    def on_refresh_after_clear_patient_list(self, data):
+        print('nouvelle liste de patients', data)
+        self.refresh_after_clear_patient_list.emit(True)
+        
     def on_update(self, data):
         print("Received update:", data)
         # Normalement cette partie peut être supprimée
