@@ -120,6 +120,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # pour gérer le délai avant d'indiquer une erreur de connexion
+        self.disconnect_timer = QTimer(self)  # Timer créé dans le thread principal
+        self.disconnect_timer.setSingleShot(True)
+        self.disconnect_timer.timeout.connect(self._handle_disconnection_timeout)
+        self.current_reconnection_attempts = 0
+        self.disconnect_notification_shown = False 
+
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
 
@@ -737,15 +744,14 @@ class MainWindow(QMainWindow):
         self.socket_io_client = WebSocketClient(self, username=f"Counter {self.counter_id} App")
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
-        # refaire les deux fonctions en recupérant directement les valeurs plutôt que de renvoyer une requete
         self.socket_io_client.change_paper.connect(self.change_paper)
         self.socket_io_client.change_paper_button.connect(self.change_paper_button)
         self.socket_io_client.change_auto_calling.connect(self.change_auto_calling)
         self.socket_io_client.update_auto_calling.connect(self.update_auto_calling)
         self.socket_io_client.disconnect_user.connect(self.disconnect_user)
         self.socket_io_client.ws_connection_status.connect(self.handle_socket_connection)
+        self.socket_io_client.connection_lost.connect(self._handle_connection_lost)
         self.socket_io_client.start()
-        #self.loading_screen.validate_last_line()
 
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
@@ -772,7 +778,8 @@ class MainWindow(QMainWindow):
         if status is None:  # Connecting
             self.connection_indicator.set_status("connecting", reconnection_attempts)
         elif status:  # Connected
-            if display_notification:
+            should_notify = self.disconnect_notification_shown and display_notification
+            if should_notify:
                 self.show_notification({
                     "origin": "socket_connection_true", 
                     "message": "La connexion temps réel est (r)établie !"
@@ -780,6 +787,7 @@ class MainWindow(QMainWindow):
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
             if display_notification:
+                self.disconnect_notification_shown = True
                 self.show_notification({
                     "origin": "socket_connection_false", 
                     "message": "La connexion temps réel a été perdue. Tentative de reconnexion... La liste des patients ne s'affichera plus en temps réél, mais les boutons fonctionnent toujours."
@@ -1166,6 +1174,23 @@ class MainWindow(QMainWindow):
         if self.notification_specific_acts:
             notification = CustomNotification(data=data, parent=self, internal=internal)
             notification.show()
+
+    def _handle_connection_lost(self, reconnection_attempts):
+        """Gère la perte de connexion"""
+        self.current_reconnection_attempts = reconnection_attempts
+        # Met à jour immédiatement l'indicateur visuel sans notification
+        self.handle_socket_connection(False, reconnection_attempts, False)
+        
+        # Démarre le timer si pas déjà actif
+        if not self.disconnect_timer.isActive() and not self.disconnect_notification_shown:
+            self.disconnect_timer.start(5000)  # 5 secondes
+    
+    def _handle_disconnection_timeout(self):
+        """Appelé après le délai de 5 secondes"""
+        if not self.disconnect_notification_shown:
+        # Affiche la notification de déconnexion
+            self.disconnect_notification_shown = True
+            self.handle_socket_connection(False, self.current_reconnection_attempts, True)
 
     def change_paper(self, data):
         self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
