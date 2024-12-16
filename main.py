@@ -347,11 +347,8 @@ class MainWindow(QMainWindow):
         self.thread.start()
 
     def on_action_validate(self, patient_id):
-        print(f"Patient {patient_id} validé")
         url = f'{self.web_url}/api/counter/validate_patient/{patient_id}'
-        self.thread = RequestThread(url, self.session)
-        self.thread.result.connect(self.handle_result)
-        self.thread.start()
+        self.validate_my_patient(url)
 
     def on_action_delete(self, patient_id=None):
         """
@@ -484,14 +481,28 @@ class MainWindow(QMainWindow):
 
     def call_web_function_validate(self):
         print("Call Web Function Validate")
-        if self.patient_id:
-            url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
+        self.close_please_validate_notification()
+        url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
+        self.validate_my_patient(url)                    
+
+
+    def validate_my_patient(self, url):
+        print("Validate My Patient")
+        self.close_please_validate_notification()
+        if self.my_patient:
             self.thread = RequestThread(url, self.session)
             self.thread.result.connect(self.handle_result)
             self.thread.start()
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
             self.update_my_buttons(self.my_patient)
+
+    def close_please_validate_notification(self):
+        # Fermeture des notification qui appele à valider le patient si il y a en a ouverte et que l'on clique sur le bouton "Valider"
+        if hasattr(self, 'notification_manager'):
+            for notification in self.notification_manager.active_notifications[:]:  # Create a copy of the list to avoid modification during iteration
+                if isinstance(notification, CustomNotification) and getattr(notification, 'origin', None) == "please_validate":
+                    notification.close()
 
     def call_web_function_pause(self):
         print("Call Web Function Pause")
@@ -874,7 +885,7 @@ class MainWindow(QMainWindow):
         self.label_connexion = QLabel("Connectez-vous")
         self.label_connexion.setAlignment(Qt.AlignCenter)  # Centre le texte
         font = self.label_connexion.font()
-        font.setPointSize(16)  # Augmente la taille de la police (ajustez selon vos préférences)
+        font.setPointSize(16)  # Augmente la taille de la police (ajustez selon vos besoins)
         font.setBold(True)  # Met le texte en gras
         self.label_connexion.setFont(font)
         login_layout.addWidget(self.label_connexion)

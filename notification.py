@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QApplication
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, QMetaObject, Slot
 import json
 
 
@@ -122,7 +122,7 @@ class CustomNotification(QDialog):
             except json.JSONDecodeError:
                 self.parent().logger.error("Failed to decode JSON data")
 
-        origin = notification_data["origin"]
+        self.origin = notification_data["origin"]
         self.message = notification_data["message"]
 
         # Définir des couleurs par défaut
@@ -130,44 +130,44 @@ class CustomNotification(QDialog):
         self.font_color = "black"
 
         self.sound = "ding"
-        if origin == "activity":
+        if self.origin == "activity":
             self.title = "Une nouvelle mission arrive !"
-        elif origin == "printer_error":
+        elif self.origin == "printer_error":
             self.title = "Je crois qu'on a un problème..."
-        elif origin == "low_paper":
+        elif self.origin == "low_paper":
             self.title = "Fin du rouleau !"
             self.background_color = "orange"
-        elif origin == "no_paper":
+        elif self.origin == "no_paper":
             self.title = "Il n'y a plus de papier !"
             self.background_color = "red"
-        elif origin == "paper_ok":
+        elif self.origin == "paper_ok":
             self.title = "Vous faites bonne impression !"
             self.background_color = "light_green"
-        elif origin == "patient_taken":
+        elif self.origin == "patient_taken":
             self.title = "A une seconde près !"
-        elif origin == "autocalling":
+        elif self.origin == "autocalling":
             self.title = "Ils arrivent !"
-        elif origin == "new_patient":
+        elif self.origin == "new_patient":
             self.title = "Nouveau patient !"
-        elif origin == "connection":
+        elif self.origin == "connection":
             self.title = "Problème de connexion"
-        elif origin == "please_validate":
+        elif self.origin == "please_validate":
             self.title = "Sauvez un bébé phoque : validez votre patient !"
             self.sound = "please_validate"
             self.background_color = "red"
-        elif origin == "disconnect_by_user":
+        elif self.origin == "disconnect_by_user":
             self.title = "Pousse toi de là !"
-        elif origin == "test_notification":
+        elif self.origin == "test_notification":
             self.title = "Test micro, 1, 2, 3, Test..."
-        elif origin == "socket_connection_true":
+        elif self.origin == "socket_connection_true":
             self.title = "Tout va bien, on est branché !"
-        elif origin == "socket_connection_false":
+        elif self.origin == "socket_connection_false":
             self.title = "Quelqu'un s'est pris les pieds dans les cables !"
             self.background_color = "red"
-        elif origin == "patient_for_staff_from_app":
+        elif self.origin == "patient_for_staff_from_app":
             self.title = "Transfert de patient"
         else:
-            self.title = origin
+            self.title = self.origin
 
     def show(self):
         if not hasattr(self.parent(), 'notification_manager'):
@@ -183,6 +183,18 @@ class CustomNotification(QDialog):
         # Configurer le timer pour la fermeture automatique
         QTimer.singleShot(self.parent().notification_duration*1000, self.close)
 
+    def close(self):
+        # Ensure we close the notification in the main thread
+        if QThread.currentThread() is QApplication.instance().thread():
+            super().close()
+        else:
+            # If we're in a different thread, use invokeMethod to close in the main thread
+            QMetaObject.invokeMethod(self, "close_from_main_thread", Qt.QueuedConnection)
+
+    @Slot()
+    def close_from_main_thread(self):
+        super().close()
+
     def closeEvent(self, event):
         # Émettre le signal de fermeture avant de fermer
         self.closed.emit()
@@ -196,4 +208,3 @@ class CustomNotification(QDialog):
             self.close()
         else:
             super().keyPressEvent(event)
-
