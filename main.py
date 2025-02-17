@@ -480,6 +480,9 @@ class MainWindow(QMainWindow):
         self.thread = RequestThread(url, self.session)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
+        self.update_my_buttons(self.my_patient)
+        self.close_please_validate_notification()
+
 
     def call_web_function_validate(self):
         print("Call Web Function Validate")
