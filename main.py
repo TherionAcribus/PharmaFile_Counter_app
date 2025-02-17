@@ -253,6 +253,9 @@ class MainWindow(QMainWindow):
         main_elements_layout.setContentsMargins(0, 0, 0, 0)
         main_elements_layout.setSpacing(5)  # Ajustez l'espacement selon vos besoins
 
+        self.central_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.main_elements_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         self._create_name()
         self._create_label_patient()
         self._create_main_button_container()
