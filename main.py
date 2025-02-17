@@ -5,7 +5,7 @@ import requests
 import threading
 from requests.exceptions import RequestException
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout, QFrame
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
 from PySide6.QtGui import QIcon, QAction, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -568,56 +568,72 @@ class MainWindow(QMainWindow):
         self.btn_more.setMenu(self.more_menu)
 
     def _create_patient_list_widget(self):
-        need_recreation = False
-
-        # Check if the dock widget needs to be recreated
+        # Create the dock widget if it doesn't exist
         if not hasattr(self, 'patient_list_dock'):
-            need_recreation = True
-        elif self.patient_list_dock.widget().layout().direction() != (QBoxLayout.LeftToRight if self.horizontal_mode else QBoxLayout.TopToBottom):
-            need_recreation = True
-
-        if need_recreation:
-            if hasattr(self, 'patient_list_dock'):
-                # Remove the existing dock widget
-                self.removeDockWidget(self.patient_list_dock)
-                self.patient_list_dock.deleteLater()
-
-            # Create a new QDockWidget
+            # Create the dock widget
             self.patient_list_dock = QDockWidget("Liste des patients", self)
             self.patient_list_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
-
-            # Create the content for the dock widget
-            self.patient_list_widget = QWidget()
-            self.patient_list_layout = QHBoxLayout(self.patient_list_widget) if self.horizontal_mode else QVBoxLayout(self.patient_list_widget)
-            self.patient_list_layout.setContentsMargins(0, 0, 0, 0)
-            self.patient_list_layout.setSpacing(0)
-
+            
+            # Create main container widget
+            container_widget = QWidget()
+            container_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            
+            # Utiliser un QVBoxLayout pour le conteneur principal
+            container_layout = QVBoxLayout(container_widget)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+            
+            # Create and configure scroll area
             self.scroll_area = QScrollArea()
             self.scroll_area.setWidgetResizable(True)
-
+            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            
+            # Create scroll content with a QWidget
             self.scroll_content = QWidget()
-            self.scroll_layout = QHBoxLayout(self.scroll_content) if self.horizontal_mode else QVBoxLayout(self.scroll_content)
+            self.scroll_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)  # Important: Maximum ici
+            
+            # Créer le layout pour le contenu
+            self.scroll_layout = QVBoxLayout(self.scroll_content)
             self.scroll_layout.setContentsMargins(0, 0, 0, 0)
             self.scroll_layout.setSpacing(0)
-
+            self.scroll_layout.setAlignment(Qt.AlignTop)
+            
+            # Configurer la hiérarchie
             self.scroll_area.setWidget(self.scroll_content)
-            self.patient_list_layout.addWidget(self.scroll_area)
-
-            # Set the widget for the dock
-            self.patient_list_dock.setWidget(self.patient_list_widget)
-
-            # Add the dock widget to the main window
+            container_layout.addWidget(self.scroll_area, 1)  # Le 1 donne la priorité d'expansion
+            
+            # Set the container as the dock widget's content
+            self.patient_list_dock.setWidget(container_widget)
+            
+            # Add dock widget to main window
             self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
-
+            
+            # Adjust minimum size
+            self.patient_list_dock.setMinimumHeight(100)
+            
+            # Remove borders and make it look cleaner
+            self.patient_list_dock.setStyleSheet("""
+                QDockWidget {
+                    border: none;
+                    padding: 0;
+                }
+                QScrollArea {
+                    border: none;
+                }
+            """)
+        
         # Update visibility based on preferences
         self.patient_list_dock.setVisible(self.display_patient_list)
-
+        
         # Adjust dock widget position based on preferences
-        if (self.horizontal_mode and self.patient_list_position_horizontal == "bottom") or (not self.horizontal_mode and self.patient_list_position_vertical == "bottom"):
+        if (self.horizontal_mode and self.patient_list_position_horizontal == "bottom") or \
+            (not self.horizontal_mode and self.patient_list_position_vertical == "bottom"):
             self.addDockWidget(Qt.BottomDockWidgetArea, self.patient_list_dock)
-        elif (self.horizontal_mode and self.patient_list_position_horizontal == "right") or (not self.horizontal_mode and self.patient_list_position_vertical == "right"):
+        elif (self.horizontal_mode and self.patient_list_position_horizontal == "right") or \
+            (not self.horizontal_mode and self.patient_list_position_vertical == "right"):
             self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
-                
 
     def toggle_patient_list(self):
         if self.patient_list_dock.isVisible():
@@ -1202,7 +1218,6 @@ class MainWindow(QMainWindow):
         # Force layout update
         self.scroll_content.updateGeometry()
         self.scroll_area.updateGeometry()
-        self.patient_list_widget.updateGeometry()
 
     def show_notification(self, data, internal=False):
         if self.notification_specific_acts:
