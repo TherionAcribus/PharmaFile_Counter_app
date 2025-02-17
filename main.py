@@ -289,7 +289,9 @@ class MainWindow(QMainWindow):
     def _create_label_patient(self):
         # Remplacer QLabel par QPushButton
         self.label_patient = QPushButton("Pas de connexion !")
-        self.label_patient.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.label_patient.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.label_patient.setMinimumWidth(0)
+        self.label_patient.setStyleSheet("text-align: left;")
         self.label_patient.setCheckable(False)  # Le bouton n'est pas "toggle"
         self.label_patient.setFlat(True)  # Le bouton ressemble davantage à un label
 
