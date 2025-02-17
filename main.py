@@ -135,6 +135,8 @@ class MainWindow(QMainWindow):
         self.logger.info("Initialisation de la session...")
         self.session = requests.Session()  # Session HTTP persistante
 
+        self.activities_staff = None  # pour être en global
+
         # LOAD PREFERENCES
         self.load_preferences()
 
