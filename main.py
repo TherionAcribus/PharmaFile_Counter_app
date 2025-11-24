@@ -18,7 +18,9 @@ from notification import CustomNotification
 from connections import RequestThread
 from my_logger import AppLogger
 
-from line_profiler import profile
+# from line_profiler import profile
+def profile(func):
+    return func
 
 class AudioPlayer(QObject):
     def __init__(self, parent=None):
