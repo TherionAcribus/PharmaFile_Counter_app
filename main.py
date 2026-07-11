@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import uuid
 import requests
 import threading
 from requests.exceptions import RequestException
@@ -540,8 +541,14 @@ class MainWindow(QMainWindow):
 
     def call_web_function_validate_and_call_next(self):
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
+        # Clé d'idempotence : une nouvelle par action utilisateur. Si la requête
+        # est renvoyée (relance réseau, ou relance automatique après un 401),
+        # le serveur reconnaît la même clé et ne fait pas avancer la file deux
+        # fois. La clé est portée par le RequestThread, donc la relance interne
+        # après 401 réutilise bien la même valeur.
+        headers = {'X-Idempotency-Key': str(uuid.uuid4())}
         self.btn_next.set_busy(True)
-        self.thread = self.make_request_thread(url)
+        self.thread = self.make_request_thread(url, headers=headers)
         self.thread.result.connect(self.handle_result)
         self.thread.finished.connect(lambda: self.btn_next.set_busy(False))
         self.thread.start()
