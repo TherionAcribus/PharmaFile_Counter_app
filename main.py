@@ -110,7 +110,7 @@ class LoadingScreen(QWidget):
 class StartupWorker(QThread):
     """ Exécute en arrière-plan la séquence réseau de démarrage (token + données
     initiales) pour ne pas geler le thread GUI pendant que le serveur répond. """
-    finished_startup = Signal(bool, object)  # connected, list_patients
+    finished_startup = Signal(bool, object, object)  # connected, my_patient, list_patients
 
     def __init__(self, main_window):
         super().__init__()
@@ -119,6 +119,7 @@ class StartupWorker(QThread):
     def run(self):
         mw = self.main_window
         connected = False
+        my_patient = None
         list_patients = []
 
         try:
@@ -130,10 +131,10 @@ class StartupWorker(QThread):
             connected = False
 
         if connected:
-            mw.init_patient()
+            my_patient = mw.init_patient()
             list_patients = mw.init_list_patients() or []
 
-        self.finished_startup.emit(connected, list_patients)
+        self.finished_startup.emit(connected, my_patient, list_patients)
 
 
 class MainWindow(QMainWindow):
@@ -190,9 +191,10 @@ class MainWindow(QMainWindow):
         self.startup_worker.finished_startup.connect(self._on_startup_ready)
         self.startup_worker.start()
 
-    def _on_startup_ready(self, connected, list_patients):
+    def _on_startup_ready(self, connected, my_patient, list_patients):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
         self.connected = connected
+        self.my_patient = my_patient if connected else None
         self.list_patients = list_patients if connected else []
 
         if self.connected:
@@ -555,7 +557,11 @@ class MainWindow(QMainWindow):
         self.choose_patient_menu = QMenu()
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
 
-        # pas de patient en cours. On initialise le patient courant
+        # self.my_patient/self.list_patients sont normalement déjà remplis par
+        # _on_startup_ready() (StartupWorker) avant le premier appel à cette
+        # méthode. Ce qui suit est un filet de sécurité (ex: reconstruction de
+        # l'interface après un changement d'orientation) au cas où ils seraient
+        # encore vides, pas le chemin normal de démarrage.
         if not self.my_patient:
             self.logger.info("__ Connexion pour charger le patient en cours...")
             self.my_patient = self.init_patient()
