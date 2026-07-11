@@ -17,23 +17,41 @@ class DebounceButton(QPushButton):
         self.clicked.connect(self.on_clicked)
         self.color_changed = False  # défini si on a changé la couleur
         self._user_enabled = True  # Nouvel attribut pour suivre l'état souhaité par l'utilisateur
+        # Verrou explicite tenu par l'appelant tant qu'une requête réseau
+        # déclenchée par ce bouton est en cours. Contrairement au debounce
+        # ci-dessus (qui ne fait que patienter un temps fixe de 500ms), ce
+        # verrou reste actif jusqu'à ce que set_busy(False) soit appelé, donc
+        # jusqu'à la réponse effective du serveur même si elle met plus de
+        # 500ms à arriver.
+        self._busy = False
         self.original_style = self.styleSheet()
 
     def on_clicked(self):
-        if not self.timer.isActive() and self._user_enabled:
+        if not self.timer.isActive() and self._user_enabled and not self._busy:
             super().setEnabled(False)
             self.timer.start(self.debounce_time)
 
     def on_debounce_timeout(self):
-        if self._user_enabled:
+        if self._user_enabled and not self._busy:
             super().setEnabled(True)
             self.clicked_with_debounce.emit()
+
+    def set_busy(self, busy):
+        """ Verrouille (ou déverrouille) le bouton pour la durée d'une requête
+        réseau en cours, indépendamment du debounce à durée fixe. """
+        self._busy = busy
+        if busy:
+            self.timer.stop()
+            super().setEnabled(False)
+        elif self._user_enabled:
+            super().setEnabled(True)
 
     def setEnabled(self, enabled):
         self._user_enabled = enabled
         if not enabled:
             self.timer.stop()  # Arrêter le timer si le bouton est désactivé
-        super().setEnabled(enabled)
+        if not self._busy:
+            super().setEnabled(enabled)
 
     def isEnabled(self):
         return self._user_enabled

@@ -540,8 +540,10 @@ class MainWindow(QMainWindow):
 
     def call_web_function_validate_and_call_next(self):
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
+        self.btn_next.set_busy(True)
         self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
+        self.thread.finished.connect(lambda: self.btn_next.set_busy(False))
         self.thread.start()
         self.update_my_buttons(self.my_patient)
         self.close_please_validate_notification()
@@ -558,8 +560,10 @@ class MainWindow(QMainWindow):
         print("Validate My Patient")
         self.close_please_validate_notification()
         if self.my_patient:
+            self.btn_validate.set_busy(True)
             self.thread = self.make_request_thread(url)
             self.thread.result.connect(self.handle_result)
+            self.thread.finished.connect(lambda: self.btn_validate.set_busy(False))
             self.thread.start()
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
@@ -575,8 +579,10 @@ class MainWindow(QMainWindow):
     def call_web_function_pause(self):
         print("Call Web Function Pause")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
+        self.btn_pause.set_busy(True)
         self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
+        self.thread.finished.connect(lambda: self.btn_pause.set_busy(False))
         self.thread.start()
 
     @profile
@@ -1135,6 +1141,11 @@ class MainWindow(QMainWindow):
         self.shortcut_thread.start()
 
     def setup_shortcuts(self):
+        # Retire les raccourcis précédemment enregistrés avant d'en ajouter de
+        # nouveaux : sans ça, chaque changement de préférences empilait un
+        # nouveau hook sur les anciens et une pression déclenchait l'action
+        # autant de fois que de hooks accumulés.
+        keyboard.unhook_all_hotkeys()
         keyboard.add_hotkey(self.next_patient_shortcut, self.handle_next_patient_shortcut)
         keyboard.add_hotkey(self.validate_patient_shortcut, self.handle_validate_shortcut)
         keyboard.add_hotkey(self.pause_shortcut, self.handle_pause_shortcut)
@@ -1142,16 +1153,17 @@ class MainWindow(QMainWindow):
         keyboard.add_hotkey(self.deconnect_shortcut, self.handle_deconnect_shortcut)
 
     def handle_next_patient_shortcut(self):
+        # Ne fait que simuler le clic : le bouton est déjà connecté à
+        # call_web_function_validate_and_call_next() (cf. _create_main_button_container).
+        # Appeler la fonction ici en plus déclenchait l'action deux fois par
+        # pression, ce qui pouvait faire avancer la file de deux patients.
         self.btn_next.animateClick()
-        self.call_web_function_validate_and_call_next()
 
     def handle_validate_shortcut(self):
         self.btn_validate.animateClick()
-        self.call_web_function_validate()
 
     def handle_pause_shortcut(self):
         self.btn_pause.animateClick()
-        self.call_web_function_pause()
         
     def handle_deconnect_shortcut(self):
         print("handle_deconnect_shortcut")
