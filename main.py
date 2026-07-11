@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
         self.username = settings.value("username", "admin")
         self.password = settings.value("password", "admin")
+        self.app_secret = settings.value("app_secret", "")
         self.counter_id = settings.value("counter_id", "1")
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
@@ -395,7 +396,7 @@ class MainWindow(QMainWindow):
         # Logique pour remettre le patient en attente
         print("Patient remis en attente")
         url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
-        self.thread = RequestThread(url, self.session)
+        self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
@@ -406,7 +407,7 @@ class MainWindow(QMainWindow):
         target_id = patient_id if patient_id is not None else self.patient_id
         print(f"Patient {target_id} remis en attente pour l'activité {activity['name']} (ID: {activity['id']})")
         url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
-        self.thread = RequestThread(url, self.session)
+        self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
@@ -437,7 +438,7 @@ class MainWindow(QMainWindow):
         if msg_box.clickedButton() == bouton_oui:
             print(f"Patient {target_id} supprimé")
             url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
-            self.thread = RequestThread(url, self.session)
+            self.thread = self.make_request_thread(url)
             self.thread.result.connect(self.handle_result)
             self.thread.start()
 
@@ -539,7 +540,7 @@ class MainWindow(QMainWindow):
 
     def call_web_function_validate_and_call_next(self):
         url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
-        self.thread = RequestThread(url, self.session)
+        self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
         self.update_my_buttons(self.my_patient)
@@ -557,7 +558,7 @@ class MainWindow(QMainWindow):
         print("Validate My Patient")
         self.close_please_validate_notification()
         if self.my_patient:
-            self.thread = RequestThread(url, self.session)
+            self.thread = self.make_request_thread(url)
             self.thread.result.connect(self.handle_result)
             self.thread.start()
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
@@ -574,7 +575,7 @@ class MainWindow(QMainWindow):
     def call_web_function_pause(self):
         print("Call Web Function Pause")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        self.thread = RequestThread(url, self.session)
+        self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
         self.thread.start()
 
@@ -738,7 +739,7 @@ class MainWindow(QMainWindow):
     def init_list_patients(self):
         url = f'{self.web_url}/api/patients_list_for_pyside'
         try:
-            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
             print(response.json())
             if response.status_code == 200:
                 print("Success:", response)
@@ -751,16 +752,14 @@ class MainWindow(QMainWindow):
 
     def recall(self):
         url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
-        headers = {'X-App-Token': self.app_token}
-
-        self.request_thread = RequestThread(url, self.session, method='POST', headers=headers)
+        self.request_thread = self.make_request_thread(url, method='POST')
         self.request_thread.start()
 
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
         self.logger.info("Paramétrage de l'utilisateur...")
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
-        self.user_thread = RequestThread(url, self.session, method='GET')
+        self.user_thread = self.make_request_thread(url, method='GET')
         self.user_thread.result.connect(self.handle_user_result)
         self.user_thread.start()
 
@@ -862,7 +861,7 @@ class MainWindow(QMainWindow):
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
         try:
-            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
             print(response)
             if response.status_code == 200:
                 print("Success:", response.json())
@@ -1043,9 +1042,8 @@ class MainWindow(QMainWindow):
     def disconnect_from_counter(self):
         # Deconnexion sur le serveur
         url = f'{self.web_url}/app/counter/remove_staff'
-        data = {'counter_id': self.counter_id}     
-        headers = {'X-App-Token': self.app_token}
-        self.disconnect_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        data = {'counter_id': self.counter_id}
+        self.disconnect_thread = self.make_request_thread(url, method='POST', data=data)
         self.disconnect_thread.result.connect(self.handle_disconnect_result)
         self.disconnect_thread.start()
 
@@ -1081,9 +1079,8 @@ class MainWindow(QMainWindow):
         if initials:
             url = f'{self.web_url}/app/counter/update_staff'
             data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": cb_deconnexion_on_all, "app": True}
-            headers = {'X-App-Token': self.app_token}
-            
-            self.login_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+
+            self.login_thread = self.make_request_thread(url, method='POST', data=data)
             self.login_thread.result.connect(self.handle_login_result)
             self.login_thread.start()
 
@@ -1162,20 +1159,45 @@ class MainWindow(QMainWindow):
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-            self.thread = RequestThread(url, self.session)
+            self.thread = self.make_request_thread(url)
             self.thread.result.connect(self.handle_result)
             self.thread.start()
 
 
     def get_app_token(self):
+        """ Récupère un token applicatif et l'installe sur la session HTTP
+        partagée, pour que toutes les requêtes (GET et POST) l'envoient
+        automatiquement. Lève une exception si l'authentification échoue,
+        pour que l'appelant (démarrage, renouvellement) le sache clairement
+        plutôt que de continuer comme si de rien n'était. """
         url = f'{self.web_url}/api/get_app_token'
-        data = {'app_secret': 'votre_secret_app'}
+        data = {'app_secret': self.app_secret}
         response = self.session.post(url, data=data, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             self.app_token = response.json()['token']
+            self.session.headers['X-App-Token'] = self.app_token
             print("Token obtenu :", self.app_token)
         else:
-            print("Échec de l'obtention du token")
+            self.app_token = None
+            self.session.headers.pop('X-App-Token', None)
+            raise RuntimeError(f"Échec de l'obtention du token (statut {response.status_code})")
+
+    def try_refresh_app_token(self):
+        """ Variante de get_app_token() qui ne lève pas d'exception : à utiliser
+        comme reauth_callback par RequestThread quand une requête reçoit un 401. """
+        try:
+            self.get_app_token()
+            return True
+        except Exception as e:
+            print("Échec du renouvellement du token :", e)
+            return False
+
+    def make_request_thread(self, url, method='GET', data=None, headers=None):
+        """ Fabrique de RequestThread partagée : garantit que le token
+        applicatif (porté par self.session) est renouvelé automatiquement
+        si le serveur répond 401. """
+        return RequestThread(url, self.session, method=method, data=data, headers=headers,
+                              reauth_callback=self.try_refresh_app_token)
 
     def apply_preferences(self):
         self.load_preferences()
@@ -1207,8 +1229,7 @@ class MainWindow(QMainWindow):
         self.logger.info("Initialisation du bouton d'appel automatique...")
         url = f'{self.web_url}/app/counter/init_app'
         data = {'counter_id': self.counter_id}
-        headers = {'X-App-Token': self.app_token}
-        self.init_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        self.init_thread = self.make_request_thread(url, method='POST', data=data)
         self.init_thread.result.connect(self.handle_init_app)
         self.init_thread.start()
         

@@ -27,16 +27,30 @@ class TestConnectionWorker(QThread):
 
 class CountersWorker(QThread):
     """ Récupère la liste des comptoirs en arrière-plan pour ne pas geler la
-    boîte de dialogue Préférences pendant l'appel réseau. """
+    boîte de dialogue Préférences pendant l'appel réseau.
+
+    /api/counters est protégée côté serveur (require_app_token_or_login) : on
+    récupère d'abord un token applicatif avec le secret saisi dans les
+    préférences avant d'appeler la route. """
     result = Signal(bool, object)  # success, counters (list) ou message d'erreur (str)
 
-    def __init__(self, url):
+    def __init__(self, web_url, app_secret):
         super().__init__()
-        self.url = url
+        self.web_url = web_url
+        self.app_secret = app_secret
 
     def run(self):
         try:
-            response = requests.get(self.url, timeout=DEFAULT_TIMEOUT)
+            token_response = requests.post(f"{self.web_url}/api/get_app_token",
+                                            data={'app_secret': self.app_secret},
+                                            timeout=DEFAULT_TIMEOUT)
+            if token_response.status_code != 200:
+                self.result.emit(False, "Secret applicatif invalide : impossible de récupérer la liste des comptoirs")
+                return
+            token = token_response.json()['token']
+
+            response = requests.get(f"{self.web_url}/api/counters",
+                                     headers={'X-App-Token': token}, timeout=DEFAULT_TIMEOUT)
             if response.status_code == 200:
                 self.result.emit(True, response.json())
             else:
@@ -160,7 +174,14 @@ class PreferencesDialog(QDialog):
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.connexion_layout.addWidget(self.password_input)
-        
+
+        self.app_secret_label = QLabel("Secret applicatif (doit correspondre à APP_SECRET côté serveur):", self.connexion_page)
+        self.connexion_layout.addWidget(self.app_secret_label)
+
+        self.app_secret_input = QLineEdit()
+        self.app_secret_input.setEchoMode(QLineEdit.Password)
+        self.connexion_layout.addWidget(self.app_secret_input)
+
         self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
         self.connexion_layout.addWidget(self.counter_label)
         
@@ -350,6 +371,7 @@ class PreferencesDialog(QDialog):
         self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
         self.username_input.setText(settings.value("username", "admin"))
         self.password_input.setText(settings.value("password", "admin"))
+        self.app_secret_input.setText(settings.value("app_secret", ""))
         self.counter_id = settings.value("counter_id", None)
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
         vertical_position = settings.value("patient_list_vertical_position", "bottom")
@@ -401,6 +423,7 @@ class PreferencesDialog(QDialog):
         url = self.url_input.text()
         username = self.username_input.text()
         password = self.password_input.text()
+        app_secret = self.app_secret_input.text()
         counter_id = self.counter_combobox.currentData()
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
         validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
@@ -423,6 +446,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("web_url", url)
         settings.setValue("username", username)
         settings.setValue("password", password)
+        settings.setValue("app_secret", app_secret)
         settings.setValue("counter_id", counter_id)
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
@@ -501,8 +525,7 @@ class PreferencesDialog(QDialog):
             self.load_counters()
 
     def load_counters(self):
-        url = self.url_input.text() + '/api/counters'
-        self.counters_worker = CountersWorker(url)
+        self.counters_worker = CountersWorker(self.url_input.text(), self.app_secret_input.text())
         self.counters_worker.result.connect(self._on_counters_result)
         self.counters_worker.start()
 
