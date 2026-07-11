@@ -4,6 +4,7 @@ from datetime import datetime
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from notification import CustomNotification
+from connections import DEFAULT_TIMEOUT
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -15,7 +16,7 @@ class TestConnectionWorker(QThread):
     def run(self):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            response = requests.get(self.url)
+            response = requests.get(self.url, timeout=DEFAULT_TIMEOUT)
             if response.status_code == 200:
                 self.connection_tested.emit(True, f"Connexion réussie à {current_time}")
             else:
@@ -482,7 +483,7 @@ class PreferencesDialog(QDialog):
     def load_counters(self):
         url = self.url_input.text() + '/api/counters'
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             if response.status_code == 200:
                 counters = response.json()
                 self.counters_loaded.emit(counters)

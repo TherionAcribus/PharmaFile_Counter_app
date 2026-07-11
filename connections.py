@@ -2,27 +2,33 @@ import time
 from PySide6.QtCore import QThread, Signal
 from requests.exceptions import RequestException
 
+# (connect_timeout, read_timeout) en secondes. Evite qu'une requête reste
+# bloquée indéfiniment quand le serveur ou le réseau ne répond plus
+# (proxy/box qui coupe silencieusement, serveur qui ne répond plus, etc.)
+DEFAULT_TIMEOUT = (5, 10)
+
 
 class RequestThread(QThread):
     result = Signal(float, str, int)
 
-    def __init__(self, url, session, method='GET', data=None, headers=None):
+    def __init__(self, url, session, method='GET', data=None, headers=None, timeout=DEFAULT_TIMEOUT):
         super().__init__()
         self.url = url
         self.session = session
         self.method = method
         self.data = data
         self.headers = headers
+        self.timeout = timeout
 
     def run(self):
         print("Requesting URL:", self.url)
         start_time = time.time()
         try:
             if self.method == 'GET':
-                response = self.session.get(self.url)
+                response = self.session.get(self.url, timeout=self.timeout)
                 print(response)
             elif self.method == 'POST':
-                response = self.session.post(self.url, data=self.data, headers=self.headers)
+                response = self.session.post(self.url, data=self.data, headers=self.headers, timeout=self.timeout)
             else:
                 raise ValueError(f"Méthode HTTP non supportée: {self.method}")
 

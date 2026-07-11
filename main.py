@@ -15,7 +15,7 @@ from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
-from connections import RequestThread
+from connections import RequestThread, DEFAULT_TIMEOUT
 from my_logger import AppLogger
 
 # from line_profiler import profile
@@ -679,7 +679,7 @@ class MainWindow(QMainWindow):
     def init_list_patients(self):
         url = f'{self.web_url}/api/patients_list_for_pyside'
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             print(response.json())
             if response.status_code == 200:
                 print("Success:", response)
@@ -803,7 +803,7 @@ class MainWindow(QMainWindow):
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             print(response)
             if response.status_code == 200:
                 print("Success:", response.json())
@@ -1092,7 +1092,7 @@ class MainWindow(QMainWindow):
     def get_app_token(self):
         url = f'{self.web_url}/api/get_app_token'
         data = {'app_secret': 'votre_secret_app'}
-        response = self.session.post(url, data=data)
+        response = self.session.post(url, data=data, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             self.app_token = response.json()['token']
             print("Token obtenu :", self.app_token)
