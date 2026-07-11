@@ -137,6 +137,28 @@ class StartupWorker(QThread):
         self.finished_startup.emit(connected, my_patient, list_patients)
 
 
+class ResyncWorker(QThread):
+    """ Récupère en arrière-plan l'état courant (patient en cours + liste des
+    patients) après une reconnexion WebSocket.
+
+    SocketIO ne rejoue pas les évènements manqués pendant une coupure : sans
+    ça, un comptoir qui perd la connexion quelques secondes/minutes reste
+    figé sur son dernier état connu jusqu'au prochain évènement poussé, qui
+    peut ne jamais arriver si rien d'autre ne change côté serveur entretemps.
+    """
+    finished_resync = Signal(object, object)  # my_patient, list_patients
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+
+    def run(self):
+        mw = self.main_window
+        my_patient = mw.init_patient()
+        list_patients = mw.init_list_patients() or []
+        self.finished_resync.emit(my_patient, list_patients)
+
+
 class MainWindow(QMainWindow):
 
     patient_data_received = Signal(object)
@@ -158,7 +180,12 @@ class MainWindow(QMainWindow):
         self.disconnect_timer.setSingleShot(True)
         self.disconnect_timer.timeout.connect(self._handle_disconnection_timeout)
         self.current_reconnection_attempts = 0
-        self.disconnect_notification_shown = False 
+        self.disconnect_notification_shown = False
+        # Distinct de disconnect_notification_shown (qui dépend du réglage
+        # "notification_connection") : sert uniquement à savoir si on a
+        # réellement perdu la connexion, pour déclencher un rattrapage d'état
+        # à la reconnexion (SocketIO ne rejoue pas les évènements manqués).
+        self.socket_was_disconnected = False
 
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
@@ -860,18 +887,37 @@ class MainWindow(QMainWindow):
             should_notify = self.disconnect_notification_shown and display_notification and self.notification_connection
             if should_notify:
                 self.show_notification({
-                    "origin": "socket_connection_true", 
+                    "origin": "socket_connection_true",
                     "message": "La connexion temps réel est (r)établie !"
                 }, internal=True)
+            if self.socket_was_disconnected:
+                # On a réellement perdu la connexion à un moment : rattrape
+                # l'état courant au lieu de compter sur le prochain évènement
+                # poussé par le serveur.
+                self.socket_was_disconnected = False
+                self.resync_worker = ResyncWorker(self)
+                self.resync_worker.finished_resync.connect(self._on_resync_ready)
+                self.resync_worker.start()
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
+            self.socket_was_disconnected = True
             if display_notification and self.notification_connection:
                 self.disconnect_notification_shown = True
                 self.show_notification({
-                    "origin": "socket_connection_false", 
+                    "origin": "socket_connection_false",
                     "message": "La connexion temps réel a été perdue. Tentative de reconnexion... La liste des patients ne s'affichera plus en temps réél, mais les boutons fonctionnent toujours."
                 }, internal=True)
             self.connection_indicator.set_status("disconnected", reconnection_attempts)
+
+    def _on_resync_ready(self, my_patient, list_patients):
+        """ Applique l'état rattrapé par ResyncWorker après une reconnexion. """
+        if my_patient:
+            self.my_patient = my_patient
+            self.update_my_patient(self.my_patient)
+            self.update_my_buttons(self.my_patient)
+        self.list_patients = list_patients
+        if self.list_patients:
+            self.update_list_patient(self.list_patients)
 
 
     def update_my_patient(self, patient):
