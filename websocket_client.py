@@ -5,7 +5,9 @@ from PySide6.QtCore import Signal, QThread
 
 
 class WebSocketClient(QThread):
-    new_patient = Signal(object)
+    # (liste_patients, revision) : la révision permet au thread principal
+    # d'écarter les messages périmés/dupliqués et de détecter un trou.
+    new_patient = Signal(object, object)
     new_notification = Signal(str)
     my_patient = Signal(object)
     change_paper = Signal(object)
@@ -138,7 +140,8 @@ class WebSocketClient(QThread):
                 data = json.loads(data)
             if isinstance(data["data"], str):
                 data["data"] = json.loads(data["data"])
-            self.new_patient.emit(data["data"])
+            revision = data.get("revision") if isinstance(data, dict) else None
+            self.new_patient.emit(data["data"], revision)
             self.my_patient.emit(data["data"])
 
         except json.JSONDecodeError as e:
@@ -157,7 +160,7 @@ class WebSocketClient(QThread):
             if data['flag'] == 'update_patient_list':
                 if isinstance(data["data"], str):
                     data["data"] = json.loads(data["data"])
-                self.new_patient.emit(data["data"])
+                self.new_patient.emit(data["data"], data.get("revision"))
             elif data['flag'] == 'my_patient':
                 self.my_patient.emit(data["data"])
         except json.JSONDecodeError as e:

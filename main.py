@@ -109,9 +109,9 @@ class LoadingScreen(QWidget):
         super().closeEvent(event)
 
 class StartupWorker(QThread):
-    """ Exécute en arrière-plan la séquence réseau de démarrage (token + données
-    initiales) pour ne pas geler le thread GUI pendant que le serveur répond. """
-    finished_startup = Signal(bool, object, object)  # connected, my_patient, list_patients
+    """ Exécute en arrière-plan la séquence réseau de démarrage (token + état
+    initial) pour ne pas geler le thread GUI pendant que le serveur répond. """
+    finished_startup = Signal(bool, object)  # connected, state (dict ou None)
 
     def __init__(self, main_window):
         super().__init__()
@@ -120,8 +120,7 @@ class StartupWorker(QThread):
     def run(self):
         mw = self.main_window
         connected = False
-        my_patient = None
-        list_patients = []
+        state = None
 
         try:
             mw.get_app_token()
@@ -132,10 +131,12 @@ class StartupWorker(QThread):
             connected = False
 
         if connected:
-            my_patient = mw.init_patient()
-            list_patients = mw.init_list_patients() or []
+            # Une seule snapshot atomique (patient en cours + liste + réglages +
+            # révision) au lieu de deux requêtes séparées qui pouvaient se
+            # chevaucher avant l'ouverture de Socket.IO (course de démarrage).
+            state = mw.init_state()
 
-        self.finished_startup.emit(connected, my_patient, list_patients)
+        self.finished_startup.emit(connected, state)
 
 
 class ResyncWorker(QThread):
@@ -147,7 +148,7 @@ class ResyncWorker(QThread):
     figé sur son dernier état connu jusqu'au prochain évènement poussé, qui
     peut ne jamais arriver si rien d'autre ne change côté serveur entretemps.
     """
-    finished_resync = Signal(object, object)  # my_patient, list_patients
+    finished_resync = Signal(object)  # state (dict ou None)
 
     def __init__(self, main_window):
         super().__init__()
@@ -155,9 +156,10 @@ class ResyncWorker(QThread):
 
     def run(self):
         mw = self.main_window
-        my_patient = mw.init_patient()
-        list_patients = mw.init_list_patients() or []
-        self.finished_resync.emit(my_patient, list_patients)
+        # Même snapshot atomique qu'au démarrage : on récupère l'état autoritatif
+        # complet (dont la révision) en une requête.
+        state = mw.init_state()
+        self.finished_resync.emit(state)
 
 
 class MainWindow(QMainWindow):
@@ -172,6 +174,11 @@ class MainWindow(QMainWindow):
     list_patients = None  # liste des patient qui sera chargée au démarrage puis mise à jour via SocketIO
     my_patient =  None
     counter_name = None
+    # Révision de l'état de la file connue localement. Toute diffusion Socket.IO
+    # de la liste porte une révision croissante : on écarte les messages dont la
+    # révision est <= à celle-ci (périmés/dupliqués) et on recharge l'état
+    # autoritatif si on détecte un trou. -1 = aucun état chargé pour l'instant.
+    queue_revision = -1
 
     def __init__(self):
         super().__init__()
@@ -219,14 +226,15 @@ class MainWindow(QMainWindow):
         self.startup_worker.finished_startup.connect(self._on_startup_ready)
         self.startup_worker.start()
 
-    def _on_startup_ready(self, connected, my_patient, list_patients):
+    def _on_startup_ready(self, connected, state):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
         self.connected = connected
-        self.my_patient = my_patient if connected else None
-        self.list_patients = list_patients if connected else []
 
-        if self.connected:
-            self.connexion_for_app_init()
+        if connected and state:
+            self._apply_state(state)
+        else:
+            self.my_patient = None
+            self.list_patients = []
 
         self.setup_ui()
 
@@ -871,6 +879,42 @@ class MainWindow(QMainWindow):
         self.socket_io_client.refresh_after_clear_patient_list.connect(self.refresh_after_clear_patient_list)
         self.socket_io_client.start()
 
+    def init_state(self):
+        """ Récupère l'état autoritatif complet du comptoir en une seule requête
+        (patient en cours + liste + réglages + révision). Utilisé au démarrage et
+        à chaque resynchronisation pour garantir un état cohérent, plutôt que
+        d'agréger plusieurs snapshots susceptibles de se contredire. """
+        url = f'{self.web_url}/api/counter/{self.counter_id}/state'
+        try:
+            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
+            if response.status_code == 200:
+                return response.json()
+            print("Échec récupération de l'état:", response.status_code)
+        except RequestException as e:
+            print(f"Connection lost: {e}")
+        return None
+
+    def _apply_state(self, state):
+        """ Applique une snapshot d'état autoritative aux champs de données (sans
+        toucher aux widgets : les appelants rafraîchissent l'UI selon le contexte
+        démarrage/resync). """
+        self.queue_revision = state.get("revision", self.queue_revision)
+        self.my_patient = state.get("current_patient")
+        self.list_patients = state.get("standing_list") or []
+        self.autocalling = "active" if state.get("autocalling") else "inactive"
+        self.add_paper = "active" if state.get("add_paper") else "inactive"
+        if state.get("counter_name"):
+            self.counter_name = state.get("counter_name")
+        if state.get("activities_staff"):
+            self.activities_staff = state["activities_staff"]
+
+    def _reload_state_async(self):
+        """ Recharge l'état autoritatif en arrière-plan (déclenché sur détection
+        d'un trou de révision). Réutilise ResyncWorker et son applicateur. """
+        self.resync_worker = ResyncWorker(self)
+        self.resync_worker.finished_resync.connect(self._on_resync_ready)
+        self.resync_worker.start()
+
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
         try:
@@ -921,15 +965,74 @@ class MainWindow(QMainWindow):
                 }, internal=True)
             self.connection_indicator.set_status("disconnected", reconnection_attempts)
 
-    def _on_resync_ready(self, my_patient, list_patients):
-        """ Applique l'état rattrapé par ResyncWorker après une reconnexion. """
-        if my_patient:
-            self.my_patient = my_patient
-            self.update_my_patient(self.my_patient)
-            self.update_my_buttons(self.my_patient)
-        self.list_patients = list_patients
-        if self.list_patients:
-            self.update_list_patient(self.list_patients)
+    def _on_resync_ready(self, state):
+        """ Applique l'état autoritatif rattrapé (reconnexion ou trou de révision)
+        et rafraîchit l'UI : patient courant, liste, papier, autocalling ET staff. """
+        if not state:
+            return
+        self._apply_state(state)
+
+        # Staff en premier : peut faire basculer entre l'écran de connexion et
+        # l'interface principale (donc reconstruire les widgets patient).
+        self._resync_staff(state.get("staff"))
+
+        # Si plus personne au comptoir, on est sur l'écran de connexion : il n'y
+        # a pas d'UI patient à rafraîchir.
+        if not (isinstance(self.staff_id, int) and self.staff_id):
+            return
+
+        # patient en cours + boutons associés
+        self.update_my_patient(self.my_patient)
+        self.update_my_buttons(self.my_patient)
+
+        # liste des patients (menus + widget)
+        self.update_patient_menu(self.list_patients)
+        self.update_list_patient(self.list_patients)
+        self.update_patient_widget()
+
+        # réglages (icônes autocalling / papier)
+        if hasattr(self, 'btn_auto_calling'):
+            self.btn_auto_calling.update_button_icon(self.autocalling)
+        if hasattr(self, 'btn_paper'):
+            self.btn_paper.update_button_icon(self.add_paper)
+
+    def _resync_staff(self, staff):
+        """ Réaligne l'affichage du staff sur l'état autoritatif (/state) lors
+        d'une resynchronisation, en n'agissant qu'en cas de changement réel.
+
+        Contrairement au flux de démarrage (handle_user_result), on ne fait ici
+        AUCUN appel serveur : la resync ne fait que refléter l'état, elle ne le
+        mutila pas. On évite aussi de reconstruire l'écran de connexion tant que
+        rien ne change, car deconnexion_interface() remplace le widget central.
+
+        staff : dict {id, name, ...} si quelqu'un est au comptoir, sinon None. """
+        # staff_id vaut un int > 0 si connecté, False/None sinon. isinstance
+        # + test de vérité écarte False/None/0 (bool est un int en Python).
+        current_id = self.staff_id if (isinstance(self.staff_id, int) and self.staff_id) else None
+        new_id = staff['id'] if staff else None
+
+        if new_id == current_id:
+            # Pas de changement de personne : on rafraîchit juste le libellé
+            # (utile si le nom du comptoir a changé), sans reconstruire l'UI.
+            if staff:
+                self.update_window_title(staff['name'])
+                self.update_staff_label(staff['name'])
+            return
+
+        if staff:
+            # Un (autre) staff est désormais au comptoir : on repasse sur
+            # l'interface principale si on était sur l'écran de connexion.
+            self.staff_id = staff['id']
+            self.update_window_title(staff['name'])
+            self.recreate_main_interface()
+            self.update_staff_label(staff['name'])
+        else:
+            # Le staff a été déconnecté à distance pendant la coupure : on
+            # reflète la déconnexion côté UI, SANS refaire l'appel serveur
+            # remove_staff (le serveur n'a déjà plus de staff).
+            self.staff_id = False
+            self.update_window_title("Connectez-vous !")
+            self.deconnexion_interface()
 
 
     def update_my_patient(self, patient):
@@ -1244,26 +1347,10 @@ class MainWindow(QMainWindow):
             self.loading_screen.close()
         super().closeEvent(event)
 
-    def connexion_for_app_init(self):
-        self.logger.info("Initialisation du bouton d'appel automatique...")
-        url = f'{self.web_url}/app/counter/init_app'
-        data = {'counter_id': self.counter_id}
-        self.init_thread = self.make_request_thread(url, method='POST', data=data)
-        self.init_thread.result.connect(self.handle_init_app)
-        self.init_thread.start()
-        
-    def handle_init_app(self, elapsed_time, response_text, status_code):
-        response_data = json.loads(response_text)
-        print("handle",response_data)
-        if status_code == 200:
-            self.autocalling = "active" if response_data['autocalling'] else "inactive"
-            self.add_paper = "active" if response_data['add_paper'] else "inactive"
-            self.counter_name = response_data['counter_name']
-            print("Activity staff", response_data['activities_staff'], len(response_data['activities_staff']))
-            # s'il y a des réponses pour les "activités staff" on remplace le None
-            if len(response_data['activities_staff']) > 0:
-                self.activities_staff = response_data['activities_staff']
-
+    # Note : l'ancien couple connexion_for_app_init()/handle_init_app() (requête
+    # /app/counter/init_app pour autocalling + papier + activités staff +
+    # nom du comptoir) a été supprimé : ces informations sont désormais fournies
+    # de façon atomique par /api/counter/<id>/state via _apply_state().
 
     def update_list_patient(self, patients):
         """ Mise à jour de la liste des patients pour le bouton 'Choix' """
@@ -1279,8 +1366,28 @@ class MainWindow(QMainWindow):
         except TypeError:
             print("Type error")
 
-    def new_patient(self, patient):
-        print("new_patient", patient)
+    def new_patient(self, patient, revision=None):
+        print("new_patient", patient, "revision", revision)
+
+        # Convergence via révision : Socket.IO est une notification, pas la
+        # source de vérité. On compare la révision reçue à celle connue.
+        if revision is not None:
+            if self.queue_revision is not None and self.queue_revision >= 0:
+                if revision <= self.queue_revision:
+                    # Message périmé ou dupliqué (ex. réordonnancement réseau) :
+                    # on a déjà un état au moins aussi récent, on l'ignore.
+                    print(f"new_patient ignoré (rev {revision} <= {self.queue_revision})")
+                    return
+                if revision > self.queue_revision + 1:
+                    # Trou : au moins un évènement a été manqué. On ne fait pas
+                    # confiance à ce seul message et on recharge l'état autoritatif.
+                    print(f"Trou de révision ({self.queue_revision} -> {revision}), rechargement de l'état")
+                    self.queue_revision = revision
+                    self._reload_state_async()
+                    return
+            # Établit (si pas encore de référence) ou avance la révision connue.
+            self.queue_revision = revision
+
         # mise à jour de self.patient
         self.list_patients = patient
         self.update_patient_menu(patient)
