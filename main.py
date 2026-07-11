@@ -6,7 +6,7 @@ import threading
 from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout, QFrame
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
 from PySide6.QtGui import QIcon, QAction, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
@@ -107,6 +107,35 @@ class LoadingScreen(QWidget):
             self.logger.removeHandler(self.ui_handler)
         super().closeEvent(event)
 
+class StartupWorker(QThread):
+    """ Exécute en arrière-plan la séquence réseau de démarrage (token + données
+    initiales) pour ne pas geler le thread GUI pendant que le serveur répond. """
+    finished_startup = Signal(bool, object)  # connected, list_patients
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+
+    def run(self):
+        mw = self.main_window
+        connected = False
+        list_patients = []
+
+        try:
+            mw.get_app_token()
+            # si on a un token, on se considère comme connecté
+            connected = True
+        except Exception as e:
+            print("Erreur lors de l'obtention du token :", e)
+            connected = False
+
+        if connected:
+            mw.init_patient()
+            list_patients = mw.init_list_patients() or []
+
+        self.finished_startup.emit(connected, list_patients)
+
+
 class MainWindow(QMainWindow):
 
     patient_data_received = Signal(object)
@@ -151,25 +180,30 @@ class MainWindow(QMainWindow):
 
         self.logger.info("Test de la connexion...")
         self.app_token = None
-        try:
-            self.get_app_token()
-            # si on a un token, on se considère comme connecté
-            self.connected = True
-            #self.loading_screen.update_last_line(" - OK ! Token obtenu")
-        except Exception as e:
-            print("Erreur lors de l'obtention du token :", e)
-            self.connected = False
-            #self.loading_screen.update_last_line(f"- Erreur : {e}")
-            
+        self.connected = False
+
+        # La séquence réseau de démarrage (token + patient courant + liste des
+        # patients) se fait en arrière-plan pour ne pas geler l'UI si le
+        # serveur est lent/injoignable. La suite de l'initialisation continue
+        # dans _on_startup_ready() une fois le résultat disponible.
+        self.startup_worker = StartupWorker(self)
+        self.startup_worker.finished_startup.connect(self._on_startup_ready)
+        self.startup_worker.start()
+
+    def _on_startup_ready(self, connected, list_patients):
+        """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
+        self.connected = connected
+        self.list_patients = list_patients if connected else []
+
         if self.connected:
             self.connexion_for_app_init()
 
         self.setup_ui()
 
         self.init_audio()
-        
+
         self.setup_user()
-        
+
         self.start_socket_io_client(self.web_url)
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
@@ -221,16 +255,8 @@ class MainWindow(QMainWindow):
 
         self.setup_systray()
 
-        if self.connected:
-            self.init_patient()   
-            if not self.list_patients:     
-                self.list_patients = self.init_list_patients()
-            print(self.list_patients)
-        else:
-            self.list_patients = []
-            #self.update_patient_widget()
-            #self.update_patient_menu(self.list_patients)
-
+        # self.list_patients a déjà été renseigné par _on_startup_ready()
+        # (récupéré en arrière-plan par StartupWorker) avant l'appel à setup_ui().
         print("PATIENT LISTE", self.list_patients)
 
         self.create_interface()
@@ -1468,6 +1494,8 @@ if __name__ == "__main__":
     #stylesheet = load_stylesheet("Incrypt.qss")
     #app.setStyleSheet(stylesheet)
     
+    # MainWindow.show() est appelé en interne une fois l'initialisation
+    # asynchrone terminée (_on_startup_ready), pas ici : l'appeler tout de
+    # suite afficherait une fenêtre encore vide pendant le chargement.
     window = MainWindow()
-    window.show()
     sys.exit(app.exec())

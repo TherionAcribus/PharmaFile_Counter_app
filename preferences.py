@@ -25,6 +25,26 @@ class TestConnectionWorker(QThread):
             self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
 
 
+class CountersWorker(QThread):
+    """ Récupère la liste des comptoirs en arrière-plan pour ne pas geler la
+    boîte de dialogue Préférences pendant l'appel réseau. """
+    result = Signal(bool, object)  # success, counters (list) ou message d'erreur (str)
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            response = requests.get(self.url, timeout=DEFAULT_TIMEOUT)
+            if response.status_code == 200:
+                self.result.emit(True, response.json())
+            else:
+                self.result.emit(False, f"Erreur de chargement des comptoirs: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            self.result.emit(False, f"Erreur: {e}")
+
+
 # Constants for UI texts and corresponding values
 BOTTOM_TEXT = "Bas"
 RIGHT_TEXT = "Droite"
@@ -482,15 +502,16 @@ class PreferencesDialog(QDialog):
 
     def load_counters(self):
         url = self.url_input.text() + '/api/counters'
-        try:
-            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                counters = response.json()
-                self.counters_loaded.emit(counters)
-            else:
-                self.status_label.setText(f"Erreur de chargement des comptoirs: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            self.status_label.setText(f"Erreur: {e}")
+        self.counters_worker = CountersWorker(url)
+        self.counters_worker.result.connect(self._on_counters_result)
+        self.counters_worker.start()
+
+    @Slot(bool, object)
+    def _on_counters_result(self, success, data):
+        if success:
+            self.counters_loaded.emit(data)
+        else:
+            self.status_label.setText(data)
 
     @Slot(list)
     def update_counters(self, counters):
