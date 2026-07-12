@@ -102,3 +102,48 @@ def test_stop_before_any_connection_is_safe(qapp):
     # stop() sans avoir démarré le thread : ne doit pas lever ni bloquer.
     assert ws.stop(timeout_ms=1000) is True
     assert not ws.isRunning()
+
+
+def test_builtin_reconnection_disabled(qapp):
+    # La reconnexion interne de python-socketio est désactivée : notre boucle
+    # est le seul mécanisme de reconnexion (pas de doublon).
+    ws = WebSocketClient(_make_parent())
+    assert ws.sio.reconnection is False
+
+
+class GuardSio(FailingSio):
+    """Vérifie qu'on n'appelle jamais connect() alors qu'on est déjà connecté."""
+
+    def __init__(self):
+        super().__init__()
+        self.connect_calls = 0
+        self.connected = False
+        self._release = threading.Event()
+        self.violation = False
+
+    def connect(self, url, headers=None):
+        if self.connected:
+            self.violation = True  # double connexion !
+        self.connected = True
+        self.connect_calls += 1
+
+    def wait(self):
+        # Retourne en laissant connected=True (drop anormal) pour exercer la garde
+        # anti double-connexion de run() à l'itération suivante.
+        self._release.wait(timeout=0.05)
+
+    def disconnect(self):
+        self.connected = False
+        self._release.set()
+        self.disconnected.set()
+
+
+def test_never_two_simultaneous_connections(qapp):
+    ws = WebSocketClient(_make_parent())
+    sio = GuardSio()
+    ws.sio = sio
+    ws.start()
+    threading.Event().wait(0.3)  # laisse quelques itérations de (re)connexion
+    ws.stop(timeout_ms=2000)
+    assert sio.violation is False        # connect() jamais appelé si déjà connecté
+    assert sio.connect_calls >= 1

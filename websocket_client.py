@@ -1,13 +1,33 @@
 import socketio
 import json
 import logging
+import random
 import threading
-import time
 from PySide6.QtCore import Signal, QThread
 
 from socket_auth import build_socket_auth_headers
 
 logger = logging.getLogger("appcomptoir.websocket")
+
+# Reconnexion : backoff exponentiel plafonné + jitter. La bibliothèque
+# python-socketio gère aussi une reconnexion automatique — on la DÉSACTIVE
+# (reconnection=False) pour ne pas la doubler avec notre boucle (sinon deux
+# mécanismes concurrents, risque de connexions simultanées).
+RECONNECT_BASE_DELAY = 1.0   # délai de base (s) pour la 1re tentative
+RECONNECT_MAX_DELAY = 30.0   # plafond (s)
+
+
+def compute_reconnect_delay(attempt, base=RECONNECT_BASE_DELAY,
+                            cap=RECONNECT_MAX_DELAY, rand=random.random):
+    """Délai avant la reconnexion n° ``attempt`` (>=1) : backoff exponentiel
+    plafonné avec jitter (« equal jitter »).
+
+    exp = min(cap, base * 2**(attempt-1)) ; délai = exp/2 + jitter dans [0, exp/2].
+    Garantit un minimum (exp/2) tout en dispersant les tentatives (jitter) et en
+    bornant la croissance (plafond) -> nombre de tentatives maîtrisé quand le
+    serveur est indisponible."""
+    exp = min(cap, base * (2 ** (max(1, attempt) - 1)))
+    return exp / 2 + (exp / 2) * rand()
 
 
 def _safe_origin(data):
@@ -57,7 +77,10 @@ class WebSocketClient(QThread):
         # exposé dans les Préférences ("Garder ouverte la fenêtre de log après
         # le démarrage"), pas systématiques en prod.
         debug = getattr(self.parent, "debug_window", False)
-        self.sio = socketio.Client(logger=debug, engineio_logger=debug)
+        # reconnection=False : notre boucle run() est le SEUL mécanisme de
+        # reconnexion (backoff/jitter/plafond, relecture du jeton, drapeau
+        # d'arrêt). Laisser la reconnexion interne active la doublerait.
+        self.sio = socketio.Client(reconnection=False, logger=debug, engineio_logger=debug)
         self.setup_socketio_events()
 
     def setup_socketio_events(self):
@@ -90,17 +113,26 @@ class WebSocketClient(QThread):
 
     def run(self):
         reconnection_attempts = 0
-        max_reconnection_delay = 30
-        initial_delay = 5
 
         while not self._stop.is_set():
             try:
                 if reconnection_attempts > 0:
-                    delay = min(initial_delay * reconnection_attempts, max_reconnection_delay)
-                    logger.info("Nouvelle tentative de connexion %d dans %ds", reconnection_attempts, delay)
+                    delay = compute_reconnect_delay(reconnection_attempts)
+                    logger.info("Nouvelle tentative de connexion %d dans %.1fs",
+                                reconnection_attempts, delay)
                     # Attente interruptible : stop() la débloque immédiatement.
                     if self._stop.wait(delay):
                         break
+
+                # Drapeau revérifié juste avant de (re)connecter.
+                if self._stop.is_set():
+                    break
+
+                # Garde anti double-connexion : jamais deux connexions simultanées.
+                # (Avec reconnection=False, sio est déconnecté après wait(), mais on
+                # s'en assure explicitement avant chaque nouvelle connexion.)
+                if self.sio.connected:
+                    self.sio.disconnect()
 
                 # Jeton relu à CHAQUE tentative : une reconnexion après
                 # renouvellement utilise automatiquement le nouveau jeton.
