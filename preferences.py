@@ -1,6 +1,9 @@
 import requests
 import os
+import logging
 from datetime import datetime
+
+logger = logging.getLogger("appcomptoir.preferences")
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from notification import CustomNotification
@@ -375,8 +378,6 @@ class PreferencesDialog(QDialog):
         self.notification_add_paper_checkbox.setChecked(settings.value("notification_add_paper", True, type=bool))
         self.notification_connection_checkbox.setChecked(settings.value("notification_connection", True, type=bool))
         self.notification_after_deconnection_spinbox.setValue(settings.value("notification_after_deconnection", 10, type=int))
-        print(settings.value("notification_after_deconnection"))
-        print(settings.value("notification_after_deconnection", 10, type=int))
         self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
@@ -446,8 +447,6 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
         settings.setValue("notification_volume", self.volume_slider.value())
-        print("SPIN", self.notification_after_deconnection_spinbox.value())
-        print("SAVE", settings.value("notification_after_deconnection"))
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        
@@ -464,7 +463,7 @@ class PreferencesDialog(QDialog):
         self.parent().show() 
 
         if url != old_url:
-            print("Redémarrage du client SSE")
+            logger.debug("URL modifiée, redémarrage du client de connexion")
             #2self.parent().start_sse_client(url)
             # TODO idem avec websocket
         
@@ -538,7 +537,7 @@ class PreferencesDialog(QDialog):
                 self.skin_combo.addItem(os.path.splitext(file)[0])
 
     def preview_skin(self, skin_name):
-        print(skin_name)
+        logger.debug("Aperçu du skin : %s", skin_name)
         if skin_name == "Pas de skin":
             # Supprime le skin en désactivant tous les styles QSS
             self.parent().setStyleSheet("")

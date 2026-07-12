@@ -1,6 +1,9 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QMetaObject, Slot
 import json
+import logging
+
+logger = logging.getLogger("appcomptoir.notification")
 
 
 class NotificationManager:
@@ -51,7 +54,6 @@ class CustomNotification(QDialog):
         self.format_data(data)
 
         font_size = font_size or self.parent().notification_font_size
-        print(font_size)
 
         self.setStyleSheet(f"""
             QDialog {{
@@ -113,16 +115,14 @@ class CustomNotification(QDialog):
         )
     
     def format_data(self, notification_data):
-        print("Notification recue :", notification_data)
-        print(type(notification_data))
         if not self.internal:
             try:
                 notification_data = json.loads(notification_data)
-                print("Notification data :", notification_data)
             except json.JSONDecodeError:
-                self.parent().logger.error("Failed to decode JSON data")
+                logger.error("Données de notification illisibles (JSON invalide)")
 
         self.origin = notification_data["origin"]
+        logger.debug("Notification affichée (origin=%s)", self.origin)
         self.message = notification_data["message"]
 
         # Définir des couleurs par défaut

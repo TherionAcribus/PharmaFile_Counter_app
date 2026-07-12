@@ -17,8 +17,14 @@ from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
 from connections import RequestThread, DEFAULT_TIMEOUT
-from my_logger import AppLogger
+from my_logger import AppLogger, register_secret
 from secret_store import load_secret
+
+import logging
+# Logger de module : propage vers les handlers configurés par AppLogger
+# (fichier tournant + masquage + fenêtre UI). À utiliser dans les classes qui
+# n'ont pas de self.logger (ex. AudioPlayer).
+logger = logging.getLogger("appcomptoir.main")
 
 # from line_profiler import profile
 def profile(func):
@@ -37,22 +43,22 @@ class AudioPlayer(QObject):
 
     def add_sound(self, name, file_path):
         self.sounds[name] = QUrl.fromLocalFile(file_path)
-        print(f"Son ajouté : {name} - {file_path}")
+        logger.debug("Son ajouté : %s", name)
 
     def play_sound(self, name):
         if name in self.sounds:
             self.player.setSource(self.sounds[name])
             self.player.play()
         else:
-            print(f"Son non trouvé : {name}")
+            logger.warning("Son non trouvé : %s", name)
 
     def set_volume(self, volume):
         self.audio_output.setVolume(volume / 100.0)
-        print(f"Volume réglé à : {volume}%")
+        logger.debug("Volume réglé à : %s%%", volume)
 
     @Slot(QMediaPlayer.Error, str)
     def handle_error(self, error, error_string):
-        print(f"Erreur de lecture : {error} - {error_string}")
+        logger.error("Erreur de lecture audio : %s - %s", error, error_string)
 
 
 def resource_path(relative_path):
@@ -128,7 +134,7 @@ class StartupWorker(QThread):
             # si on a un token, on se considère comme connecté
             connected = True
         except Exception as e:
-            print("Erreur lors de l'obtention du token :", e)
+            logger.error("Erreur lors de l'obtention du token : %s", e)
             connected = False
 
         if connected:
@@ -199,7 +205,8 @@ class MainWindow(QMainWindow):
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
 
-        self.logger = AppLogger.get_instance().get_logger()
+        self.app_logger = AppLogger.get_instance()
+        self.logger = self.app_logger.get_logger()
         self.logger.info("Initialisation de la session...")
         self.session = requests.Session()  # Session HTTP persistante
 
@@ -262,6 +269,8 @@ class MainWindow(QMainWindow):
         # Gestionnaire d'identifiants Windows), avec migration automatique de
         # l'ancienne valeur en clair éventuellement présente dans QSettings.
         self.app_secret = load_secret(settings)
+        # Masquage du secret dans tous les logs (défense en profondeur).
+        register_secret(self.app_secret)
         self.counter_id = settings.value("counter_id", "1")
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
@@ -285,6 +294,11 @@ class MainWindow(QMainWindow):
         self.patient_list_position_vertical = settings.value("patient_list_vertical_position", "bottom")
         self.patient_list_position_horizontal = settings.value("patient_list_horizontal_position", "right")
         self.debug_window = settings.value("debug_window", False, type=bool)
+        # Journalisation détaillée (DEBUG) seulement si la fenêtre de log est
+        # demandée ; sinon INFO (production). Les logs DEBUG ne sont donc pas
+        # actifs en usage normal.
+        if hasattr(self, "app_logger"):
+            self.app_logger.enable_debug(self.debug_window)
         self.selected_skin = settings.value("selected_skin", "")
 
     def setup_ui(self):
@@ -298,7 +312,8 @@ class MainWindow(QMainWindow):
 
         # self.list_patients a déjà été renseigné par _on_startup_ready()
         # (récupéré en arrière-plan par StartupWorker) avant l'appel à setup_ui().
-        print("PATIENT LISTE", self.list_patients)
+        self.logger.debug("Liste patients chargée (%s patients)",
+                          len(self.list_patients) if self.list_patients else 0)
 
         self.create_interface()
 
@@ -405,7 +420,7 @@ class MainWindow(QMainWindow):
 
     def on_action_wait(self):
         # Logique pour remettre le patient en attente
-        print("Patient remis en attente")
+        self.logger.debug("Patient remis en attente")
         url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
         self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
@@ -416,7 +431,7 @@ class MainWindow(QMainWindow):
         patient_id: si non fourni, utilise self.patient_id (patient en cours)
         """
         target_id = patient_id if patient_id is not None else self.patient_id
-        print(f"Patient {target_id} remis en attente pour l'activité {activity['name']} (ID: {activity['id']})")
+        self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
         url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
         self.thread = self.make_request_thread(url)
         self.thread.result.connect(self.handle_result)
@@ -447,7 +462,7 @@ class MainWindow(QMainWindow):
         
         # Si l'utilisateur clique sur "Oui"
         if msg_box.clickedButton() == bouton_oui:
-            print(f"Patient {target_id} supprimé")
+            self.logger.debug("Suppression du patient demandée")
             url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
             self.thread = self.make_request_thread(url)
             self.thread.result.connect(self.handle_result)
@@ -537,13 +552,12 @@ class MainWindow(QMainWindow):
         
     def trigger_paper_button(self):
         if hasattr(self, 'btn_paper'):
-            print("trigger_paper_button", self.btn_paper)
-            print("État actuel:", self.btn_paper.state)
+            self.logger.debug("trigger_paper_button (état=%s)", self.btn_paper.state)
             self.btn_paper.toggle_state()
 
     def update_paper_action_text(self, state):
         if hasattr(self, 'btn_paper'):
-            print("update texte", state)
+            self.logger.debug("Mise à jour texte action papier (état=%s)", state)
             if state == "active":
                 self.paper_action.setText("J'ai changé le papier")
             else:
@@ -567,14 +581,14 @@ class MainWindow(QMainWindow):
 
 
     def call_web_function_validate(self):
-        print("Call Web Function Validate")
+        self.logger.debug("Validation du patient (call_web_function_validate)")
         self.close_please_validate_notification()
         url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
         self.validate_my_patient(url)                    
 
 
     def validate_my_patient(self, url):
-        print("Validate My Patient")
+        self.logger.debug("Validation du patient en cours")
         self.close_please_validate_notification()
         if self.my_patient:
             self.btn_validate.set_busy(True)
@@ -594,7 +608,7 @@ class MainWindow(QMainWindow):
                     notification.close()
 
     def call_web_function_pause(self):
-        print("Call Web Function Pause")
+        self.logger.debug("Mise en pause du patient")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
         self.btn_pause.set_busy(True)
         self.thread = self.make_request_thread(url)
@@ -763,14 +777,13 @@ class MainWindow(QMainWindow):
         url = f'{self.web_url}/api/patients_list_for_pyside'
         try:
             response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
-            print(response.json())
             if response.status_code == 200:
-                print("Success:", response)
+                self.logger.debug("Liste des patients récupérée")
                 return response.json()
             else:
-                print("Failed to retrieve data:", response.status_code)
+                self.logger.warning("Échec de récupération de la liste (statut=%s)", response.status_code)
         except RequestException as e:
-            print(f"Connection lost: {e}")
+            self.logger.warning("Connexion perdue lors de la récupération de la liste : %s", e)
             return []
 
     def recall(self):
@@ -788,23 +801,18 @@ class MainWindow(QMainWindow):
 
     @Slot(float, str, int)
     def handle_result(self, elapsed_time, response_text, status_code):
-        print("MY RESPONSE", status_code, response_text)
+        self.logger.debug("Réponse action patient (statut=%s, %.3fs)", status_code, elapsed_time)
         if status_code == 200:
             try:
-                print("Success:", response_text)
                 response_data = json.loads(response_text)
                 self.update_my_patient(response_data)
                 self.update_my_buttons(response_data)
-                print("Notification : ", self.notification_current_patient)
                 if self.notification_current_patient:
-                    print("Notification OK")
                     message = f"Nouveau patient : {response_data['call_number']} pour '{response_data['activity']}'"
                     self.show_notification({"origin": "new_patient", "message": message}, internal=True)
-                
-                print()
 
             except json.JSONDecodeError as e:
-                print("Failed to decode JSON:", e)
+                self.logger.warning("Réponse illisible (JSON invalide) : %s", e)
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
         elif status_code == 204:
             self.update_my_patient(None)
@@ -817,44 +825,39 @@ class MainWindow(QMainWindow):
         elif status_code == 423:
             self.patient_already_taken()
         else:
-            print("Failed to retrieve data:", status_code)
-        print("Elapsed time:", elapsed_time)
+            self.logger.warning("Échec de l'action patient (statut=%s)", status_code)
 
     @Slot(float, str, int)
     def handle_user_result(self, elapsed_time, response_text, status_code):
-        # si staff au comptoir 
+        # si staff au comptoir
         if status_code == 200:
             try:
-                print("Success:", response_text)
                 response_data = json.loads(response_text)
                 self.staff_id = response_data["staff"]['id']
                 staff_name = response_data["staff"]['name']
                 # on modifie le titre
                 self.update_window_title(staff_name)
                 self.update_staff_label(staff_name)
-                
+
             except json.JSONDecodeError as e:
-                print("Failed to decode JSON:", e)
+                self.logger.warning("Réponse staff illisible (JSON invalide) : %s", e)
         # si personne au comptoir
         elif status_code == 204:
-            print("Success:", response_text)
-            print("No staff on counter")
+            self.logger.debug("Aucun staff sur le comptoir")
             # deconnexion
             self.disconnect_from_counter()
             self.staff_id = False
             # on modifie le titre
-            self.update_window_title("Connectez-vous !")            
+            self.update_window_title("Connectez-vous !")
             # on affiche l'interface de connexion
             self.deconnexion_interface()
         else:
-            print("Failed to retrieve data:", status_code)
-        print("Elapsed time:", elapsed_time)
+            self.logger.warning("Échec de récupération du staff (statut=%s)", status_code)
         
         
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
-        print(f"Staff name: {staff_name}")
-        self.setWindowTitle(f"PharmaFile - {self.counter_name} - {staff_name}")  
+        self.setWindowTitle(f"PharmaFile - {self.counter_name} - {staff_name}")
 
     def update_staff_label(self, staff_name):
         """ Met à jour le nom de l'équipier """
@@ -867,7 +870,6 @@ class MainWindow(QMainWindow):
 
     def start_socket_io_client(self, url):
         self.logger.info("Création de la connexion Socket.IO...")
-        print(f"Starting Socket.IO client with URL: {url}")
         self.socket_io_client = WebSocketClient(self, username=f"Counter {self.counter_id} App")
         self.socket_io_client.new_patient.connect(self.new_patient)
         self.socket_io_client.new_notification.connect(self.show_notification)
@@ -891,9 +893,9 @@ class MainWindow(QMainWindow):
             response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
             if response.status_code == 200:
                 return response.json()
-            print("Échec récupération de l'état:", response.status_code)
+            self.logger.warning("Échec de récupération de l'état (statut=%s)", response.status_code)
         except RequestException as e:
-            print(f"Connection lost: {e}")
+            self.logger.warning("Connexion perdue lors de la récupération de l'état : %s", e)
         return None
 
     def _apply_state(self, state):
@@ -921,19 +923,18 @@ class MainWindow(QMainWindow):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
         try:
             response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
-            print(response)
             if response.status_code == 200:
-                print("Success:", response.json())
+                self.logger.debug("Patient courant récupéré")
                 return response.json()
             else:
-                print("Failed to retrieve data:", response.status_code)
+                self.logger.warning("Échec de récupération du patient (statut=%s)", response.status_code)
                 return None
         except RequestException as e:
-            print(f"Connection lost: {e}")
+            self.logger.warning("Connexion perdue lors de la récupération du patient : %s", e)
             return None
 
     def patient_already_taken(self):
-        print("Patient Already Taken")
+        self.logger.debug("Patient déjà attribué à un autre comptoir")
         self.label_patient.setText("Patient déjà attribué")
         self.audio_player.play_sound("patient_taken")
 
@@ -1039,7 +1040,7 @@ class MainWindow(QMainWindow):
 
     def update_my_patient(self, patient):
         try:
-            print("Update My Patient", patient)
+            self.logger.debug("Mise à jour du patient en cours")
             if patient is None:
                 self.patient_id = None
                 self.label_patient.setText("Plus de patient")
@@ -1049,9 +1050,7 @@ class MainWindow(QMainWindow):
                 self.label_patient.setText("Pas de patient")
                 self._update_menu_actions(False)
             else:
-                print("Update My Patient new", patient, type(patient))
                 if patient["counter_id"] == self.counter_id:
-                    print(patient["id"], type(patient["id"]))
                     if patient["id"] is None:
                         self.patient_id = None
                         self.label_patient.setText("Pas de patient en cours")
@@ -1145,7 +1144,7 @@ class MainWindow(QMainWindow):
         self.deconnexion_interface()
 
     def deconnexion_interface(self):
-        print("deconnexion_interface")  
+        self.logger.debug("Affichage de l'interface de connexion")
         # Créer et définir le widget de connexion
         login_widget = self.create_login_widget()
         self.setCentralWidget(login_widget)
@@ -1174,9 +1173,7 @@ class MainWindow(QMainWindow):
 
     @Slot(float, str, int)
     def handle_disconnect_result(self, elapsed_time, response_text, status_code):
-        print("OK")
-        print(status_code)
-        print(response_text)
+        self.logger.debug("Réponse déconnexion (statut=%s)", status_code)
         if status_code == 200:
             # Remise à jour de la barre de titre
             self.update_window_title("Déconnecté")
@@ -1188,7 +1185,7 @@ class MainWindow(QMainWindow):
 
     def validate_login(self):
         if not self.app_token:
-            print("Pas de token valide")
+            self.logger.warning("Connexion impossible : pas de token valide")
             return
         
         initials = self.initials_input.text()
@@ -1204,8 +1201,7 @@ class MainWindow(QMainWindow):
 
     @Slot(float, str, int)
     def handle_login_result(self, elapsed_time, response_text, status_code):
-        print(status_code)
-        print(response_text)
+        self.logger.debug("Réponse connexion staff (statut=%s)", status_code)
         if status_code == 200:
             response_data = json.loads(response_text)
             staff_name = response_data["staff"]["name"]
@@ -1219,8 +1215,7 @@ class MainWindow(QMainWindow):
             # Mettre à jour l'interface si nécessaire
             self.init_patient()
         elif status_code == 204:
-            print("Success:", response_text)
-            print("Staff unknown")
+            self.logger.debug("Initiales inconnues")
             self.staff_id = False
             # Mettre à jour le label de connexion
             if hasattr(self, 'label_connexion'):
@@ -1278,7 +1273,7 @@ class MainWindow(QMainWindow):
         self.btn_pause.animateClick()
         
     def handle_deconnect_shortcut(self):
-        print("handle_deconnect_shortcut")
+        self.logger.debug("Raccourci de déconnexion déclenché")
         QMetaObject.invokeMethod(self, 'deconnection', Qt.QueuedConnection)
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
@@ -1300,7 +1295,11 @@ class MainWindow(QMainWindow):
         if response.status_code == 200:
             self.app_token = response.json()['token']
             self.session.headers['X-App-Token'] = self.app_token
-            print("Token obtenu :", self.app_token)
+            # Le jeton n'est JAMAIS journalisé. On l'enregistre auprès du filtre
+            # de masquage pour qu'il soit caviardé s'il apparaissait par mégarde
+            # dans un log (défense en profondeur).
+            register_secret(self.app_token)
+            self.logger.debug("Token applicatif obtenu et installé")
         else:
             self.app_token = None
             self.session.headers.pop('X-App-Token', None)
@@ -1313,7 +1312,7 @@ class MainWindow(QMainWindow):
             self.get_app_token()
             return True
         except Exception as e:
-            print("Échec du renouvellement du token :", e)
+            self.logger.warning("Échec du renouvellement du token : %s", e)
             return False
 
     def make_request_thread(self, url, method='GET', data=None, headers=None):
@@ -1359,17 +1358,17 @@ class MainWindow(QMainWindow):
         self.choose_patient_menu.clear()  # Clear the menu before updating
         try:
             for patient in patients:
-                print("patient entrée", patient)
                 language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
                 action_select_patient = QAction(f"{patient['call_number']} {language}- {patient['activity']}", self)
                 action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
                 self.choose_patient_menu.addAction(action_select_patient)
-            self.btn_choose_patient.setMenu(self.choose_patient_menu) 
+            self.btn_choose_patient.setMenu(self.choose_patient_menu)
         except TypeError:
-            print("Type error")
+            self.logger.warning("Liste de patients invalide (TypeError)")
 
     def new_patient(self, patient, revision=None):
-        print("new_patient", patient, "revision", revision)
+        self.logger.debug("new_patient reçu (revision=%s, %s patients)",
+                          revision, len(patient) if isinstance(patient, list) else "?")
 
         # Convergence via révision : Socket.IO est une notification, pas la
         # source de vérité. On compare la révision reçue à celle connue.
@@ -1378,12 +1377,13 @@ class MainWindow(QMainWindow):
                 if revision <= self.queue_revision:
                     # Message périmé ou dupliqué (ex. réordonnancement réseau) :
                     # on a déjà un état au moins aussi récent, on l'ignore.
-                    print(f"new_patient ignoré (rev {revision} <= {self.queue_revision})")
+                    self.logger.debug("new_patient ignoré (rev %s <= %s)", revision, self.queue_revision)
                     return
                 if revision > self.queue_revision + 1:
                     # Trou : au moins un évènement a été manqué. On ne fait pas
                     # confiance à ce seul message et on recharge l'état autoritatif.
-                    print(f"Trou de révision ({self.queue_revision} -> {revision}), rechargement de l'état")
+                    self.logger.info("Trou de révision (%s -> %s), rechargement de l'état",
+                                     self.queue_revision, revision)
                     self.queue_revision = revision
                     self._reload_state_async()
                     return
@@ -1426,7 +1426,6 @@ class MainWindow(QMainWindow):
 
         # Add new buttons for each patient
         for patient in self.list_patients:
-            print("patient", patient)
             button_text = patient['call_number']
             if patient['activity_is_staff']:
                 button_text += f" -> {patient['activity']}"
@@ -1482,26 +1481,25 @@ class MainWindow(QMainWindow):
         
     def change_paper_button(self, origin):
         """ Appelé lors d'une notification venant de l'imprimante via le serveur. Le but est de ne pas redéclencher une seconde notification """
-        print("youpiii")
+        self.logger.debug("Mise à jour du bouton papier (origin=%s)", origin)
         add_paper = "active" if origin in ["low_paper", "no_paper"] else "inactive"
         self.btn_paper.update_button_icon(add_paper)
 
     def refresh_after_clear_patient_list(self):
-        print("refresh_after_clear_patient_list")
+        self.logger.debug("Rafraîchissement après purge de la liste des patients")
         self.update_my_patient(None)
         self.update_my_buttons(None)
 
     def change_auto_calling(self, data):
         self.autocalling = "active" if data["data"]["autocalling"] else "inactive"
-        print(self.autocalling)
+        self.logger.debug("Auto-calling : %s", self.autocalling)
         self.btn_auto_calling.update_button_icon(self.autocalling)
 
     def update_auto_calling(self, data):
         """ Mise à jour de l'interface lors de l'autocalling (arrivé d'un patient)"""
-        print("update_auto_calling")
+        self.logger.debug("Mise à jour auto-calling (arrivée d'un patient)")
         patient = data["data"]["patient"]
         #patient["counter_id"] = self.counter_id
-        print(patient)
         self.update_my_patient(patient)
         self.update_my_buttons(patient)
         if self.notification_autocalling_new_patient:
@@ -1509,9 +1507,8 @@ class MainWindow(QMainWindow):
             self.show_notification({"origin": "autocalling", "message": message}, internal=True)
 
     def disconnect_user(self, data):
-        print("Totalement disconnect")
+        self.logger.info("Déconnexion du comptoir demandée par un autre poste")
         message = f'Vous avez déconnecté par {data["data"]["staff"]}'
-        self.logger.info(message)
         self.show_notification({"origin": "disconnect_by_user", "message": message}, internal=True)
         self.deconnexion_interface()
 
@@ -1641,10 +1638,10 @@ class ConnectionStatusIndicator(QWidget):
             if renderer.load(svg_path):
                 self.renderers[status] = renderer
             else:
-                print(f"Erreur lors du chargement de {filename}")
+                logger.warning("Erreur lors du chargement de %s", filename)
 
     def set_status(self, status, reconnection_attempts=None):
-        print("STATUS", status)
+        logger.debug("Indicateur de connexion : %s", status)
         try:
             if self.isVisible():
                 self.status = status

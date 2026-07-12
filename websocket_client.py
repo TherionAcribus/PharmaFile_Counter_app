@@ -1,7 +1,24 @@
 import socketio
 import json
+import logging
 import time
 from PySide6.QtCore import Signal, QThread
+
+logger = logging.getLogger("appcomptoir.websocket")
+
+
+def _safe_origin(data):
+    """Extrait l'origine (catégorie non sensible) d'une notification, pour les
+    logs, sans exposer le contenu (message, données patient)."""
+    try:
+        payload = data.get("data") if isinstance(data, dict) else None
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if isinstance(payload, dict):
+            return payload.get("origin", "?")
+    except Exception:
+        pass
+    return "?"
 
 
 class WebSocketClient(QThread):
@@ -60,19 +77,19 @@ class WebSocketClient(QThread):
             try:
                 if reconnection_attempts > 0:
                     delay = min(initial_delay * reconnection_attempts, max_reconnection_delay)
-                    print(f"Waiting {delay} seconds before reconnection attempt {reconnection_attempts}")
+                    logger.info("Nouvelle tentative de connexion %d dans %ds", reconnection_attempts, delay)
                     time.sleep(delay)
-                    
-                print(f"Attempting to connect to {self.web_url}/socket_app_counter")
+
+                logger.info("Connexion à %s/socket_app_counter", self.web_url)
                 self.sio.connect(f"{self.web_url}/socket_app_counter", headers=headers)
-                
-                print("Connection successful!")
+
+                logger.info("Connexion WebSocket établie")
                 reconnection_attempts = 0
                 self.sio.wait()
 
             except socketio.exceptions.ConnectionError as e:
                 reconnection_attempts += 1
-                print(f"Connection attempt {reconnection_attempts} failed: {str(e)}")
+                logger.warning("Échec de connexion (tentative %d) : %s", reconnection_attempts, e)
                 self.connection_lost.emit(reconnection_attempts)  # Émet le signal de déconnexion
 
     def stop(self):
@@ -81,15 +98,15 @@ class WebSocketClient(QThread):
         self.wait()
 
     def on_connect(self):
-        print('WebSocket connected')
+        logger.info("WebSocket connecté")
         self.ws_connection_status.emit(True, 0, True)
 
     def on_disconnect(self):
-        print('WebSocket disconnected')
-        self.connection_lost.emit(0) 
-        
+        logger.info("WebSocket déconnecté")
+        self.connection_lost.emit(0)
+
     def on_paper(self, data):
-        print("Received paper:", data)
+        logger.debug("Événement 'paper' reçu")
         self.change_paper.emit(data)
         
     def on_change_auto_calling(self, data):
@@ -101,20 +118,19 @@ class WebSocketClient(QThread):
             self.update_auto_calling.emit(data)
 
     def on_disconnect_user(self, data):
-        print("DISCONNECT")
-        print(data)
+        logger.debug("Événement 'disconnect_user' reçu")
         if self.parent.counter_id == int(data["data"]['counter_id']):
             self.disconnect_user.emit(data)
-    
+
     def on_notification(self, data):
-        print("Received notification:", data)
-        
+        logger.debug("Notification reçue (origin=%s)", _safe_origin(data))
+
         # Parser data["data"] si c'est une chaîne JSON
         if isinstance(data["data"], str):
             try:
                 notification_data = json.loads(data["data"])
             except json.JSONDecodeError:
-                print("Error parsing notification data")
+                logger.warning("Notification illisible (JSON invalide)")
                 return
         else:
             notification_data = data["data"]
@@ -132,25 +148,27 @@ class WebSocketClient(QThread):
             self.change_paper_button.emit(notification_data["origin"])
 
     def on_update_patient_list(self, data):
-        print('nouvelle liste de patients', data)
         try:
             if isinstance(data, str):
                 data = json.loads(data)
             if isinstance(data["data"], str):
                 data["data"] = json.loads(data["data"])
             revision = data.get("revision") if isinstance(data, dict) else None
-            self.new_patient.emit(data["data"], revision)
-            self.my_patient.emit(data["data"])
+            payload = data["data"]
+            logger.debug("Liste de patients reçue (%s patients, revision=%s)",
+                         len(payload) if isinstance(payload, list) else "?", revision)
+            self.new_patient.emit(payload, revision)
+            self.my_patient.emit(payload)
 
         except json.JSONDecodeError as e:
-            print(f"Failed to decode JSON: {e}")
+            logger.warning("Liste de patients illisible (JSON invalide) : %s", e)
 
     def on_refresh_after_clear_patient_list(self, data):
-        print('nouvelle liste de patients', data)
+        logger.debug("Rafraîchissement après purge de la liste des patients")
         self.refresh_after_clear_patient_list.emit(True)
-        
+
     def on_update(self, data):
-        print("Received update:", data)
+        logger.debug("Événement 'update' reçu")
         # Normalement cette partie peut être supprimée
         try:
             if isinstance(data, str):
@@ -162,6 +180,6 @@ class WebSocketClient(QThread):
             elif data['flag'] == 'my_patient':
                 self.my_patient.emit(data["data"])
         except json.JSONDecodeError as e:
-            print(f"Failed to decode JSON: {e}")
+            logger.warning("Événement 'update' illisible (JSON invalide) : %s", e)
             
 

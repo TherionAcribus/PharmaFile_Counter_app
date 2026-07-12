@@ -1,6 +1,9 @@
+import logging
 from PySide6.QtWidgets import QLineEdit
 from PySide6 import QtCore
 from PySide6.QtCore import Qt
+
+logger = logging.getLogger("appcomptoir.shortcut")
 
 # POUR l'instant ne fonctionne pas....
 # https://gist.github.com/Sl-Alex/20bace0271a59c8b6db446c3faacefb0
@@ -51,7 +54,7 @@ class ShortcutEdit(QLineEdit):
             key = event.key()
             modifiers = event.modifiers()
 
-            print(f"Event: {event.type()}, Key: {key}, Modifiers: {modifiers}")
+            logger.debug("Event: %s, Key: %s, Modifiers: %s", event.type(), key, modifiers)
 
             if event.type() == QtCore.QEvent.KeyPress:
                 if modifiers == Qt.NoModifier and key not in self.modkeyslist:
@@ -80,7 +83,7 @@ class ShortcutEdit(QLineEdit):
                         text += '+'
                     text += self.keymap[self.current_key]
 
-                print(f"Text: {text}")
+                logger.debug("Raccourci saisi : %s", text)
 
                 # Update the text and emit a signal if a key was pressed
                 self.setText(text)
