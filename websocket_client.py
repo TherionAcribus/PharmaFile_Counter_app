@@ -32,9 +32,7 @@ class WebSocketClient(QThread):
 
         # Logs verbeux (chaque ping/pong compris) réservés au mode debug déjà
         # exposé dans les Préférences ("Garder ouverte la fenêtre de log après
-        # le démarrage"), pas systématiques en prod -- même principe que côté
-        # borne (GestionFilePatientPyWeb/websocket_client.py, réglage
-        # websocket_debug).
+        # le démarrage"), pas systématiques en prod.
         debug = getattr(self.parent, "debug_window", False)
         self.sio = socketio.Client(logger=debug, engineio_logger=debug)
         self.setup_socketio_events()
