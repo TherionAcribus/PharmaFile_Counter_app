@@ -1,9 +1,9 @@
-import json
 import logging
 from PySide6.QtWidgets import QPushButton, QMainWindow, QMenu
 from PySide6.QtCore import QTimer, Signal, QSize, Qt
 from PySide6.QtGui import QIcon
-from connections import RequestThread
+
+from button_state import resolve_button_state
 
 logger = logging.getLogger("appcomptoir.buttons")
 
@@ -117,62 +117,64 @@ class IconeButton(DebounceButton):
         self.flask_url = flask_url
         self.tooltip_text = tooltip_text
         self.tooltip_inactive_text = tooltip_inactive_text
-        self.app_token = parent.app_token
-        self.session = parent.session
-        self.counter_id = parent.counter_id
+        # On garde une référence à la MainWindow pour faire passer toutes les
+        # requêtes par make_request_thread : le jeton courant est ajouté par la
+        # session au moment de l'appel (plus de copie périmée de app_token) et le
+        # renouvellement sur 401 (avec un seul rejeu) y est intégré.
+        self.main_window = parent
         self.is_always_visible = is_always_visible
         self.setFixedSize(50, 50)
         self.setIcon(QIcon(self.icon_path))
         self.setIconSize(QSize(50, 50))
         self.setStyleSheet("border: none;")
-        self.state = state  # inactive, active, waiting        
-        
+        self.state = state  # inactive, active, waiting
+        # État à restaurer si la requête échoue, pour ne jamais rester bloqué en
+        # "waiting" (le bouton redevient utilisable).
+        self._previous_state = state
+
         self.clicked.connect(self.toggle_state)
         self.update_button_icon()
 
     def toggle_state(self):
         logger.debug("toggle_state (état=%s)", self.state)
         if self.state == "inactive":
+            self._previous_state = "inactive"
             self.state = "waiting"
             self.update_button_icon()
             self.send_request("activate")
         elif self.state == "active":
+            self._previous_state = "active"
             self.state = "waiting"
             self.update_button_icon()
             self.send_request("deactivate")
-            
+
     def change_state(self, state):
         self.state = state
         self.update_button_icon()
-            
+
     def handle_response(self, elapsed_time, response_text, status_code):
         logger.debug("handle_response (statut=%s, %.3fs)", status_code, elapsed_time)
-        response_data = json.loads(response_text)
-        if status_code == 200:
-            if response_data["status"]:
-                self.state = "active"
-            else:
-                self.state = "inactive"
-            logger.debug("État mis à jour : %s", self.state)
-            self.update_button_icon()
-        else:
-            self.state = "waiting"
-            self.update_button_icon()
+        # resolve_button_state garantit que le bouton quitte "waiting" quel que
+        # soit le résultat (succès, corps inattendu, ou erreur).
+        self.state = resolve_button_state(status_code, response_text, self._previous_state)
+        if status_code != 200:
             logger.warning("Réponse en erreur du bouton (statut=%s)", status_code)
+        logger.debug("État mis à jour : %s", self.state)
+        self.update_button_icon()
 
-        if "paper" in self.flask_url:
-            main_window = self.parent().parent().parent()
-            if isinstance(main_window, QMainWindow):  # Vérifie si c'est bien une MainWindow
-                main_window.update_paper_action_text(self.state)
+        if "paper" in self.flask_url and isinstance(self.main_window, QMainWindow):
+            self.main_window.update_paper_action_text(self.state)
 
     def send_request(self, action):
         logger.debug("Envoi de la requête bouton (action=%s)", action)
         url = f"{self.flask_url}"
         data = {'action': action,
-                'counter_id': self.counter_id}
-        headers = {'X-App-Token': self.app_token}
+                'counter_id': self.main_window.counter_id}
 
-        self.request_thread = RequestThread(url, self.session, method='POST', data=data, headers=headers)
+        # make_request_thread : session partagée (jeton courant ajouté au moment
+        # de l'appel) + renouvellement automatique du jeton sur 401 avec un seul
+        # rejeu de la requête.
+        self.request_thread = self.main_window.make_request_thread(url, method='POST', data=data)
         self.request_thread.result.connect(self.handle_response)
         self.request_thread.start()
 
