@@ -67,3 +67,18 @@ def test_different_targets_run_concurrently():
     assert reg.add(object(), key="delete:1")
     assert reg.add(object(), key="delete:2")
     assert len(reg) == 2
+
+
+def test_snapshot_is_a_stable_copy():
+    # snapshot() sert à itérer les tâches actives à l'arrêt sans être gêné par
+    # les retraits concurrents (finished).
+    reg = TaskRegistry()
+    a, b = object(), object()
+    reg.add(a)
+    reg.add(b, key="k")
+    snap = reg.snapshot()
+    assert set(snap) == {a, b}
+    # Retirer après le snapshot ne modifie pas la copie déjà prise.
+    reg.remove(a)
+    assert set(snap) == {a, b}
+    assert len(reg) == 1

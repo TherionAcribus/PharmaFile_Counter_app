@@ -68,14 +68,15 @@ class RequestHandle(QObject):
 
 
 class _RequestSpec:
-    __slots__ = ("url", "method", "data", "headers", "idempotency_key")
+    __slots__ = ("url", "method", "data", "headers", "idempotency_key", "timeout")
 
-    def __init__(self, url, method, data, headers, idempotency_key):
+    def __init__(self, url, method, data, headers, idempotency_key, timeout=None):
         self.url = url
         self.method = method
         self.data = data
         self.headers = headers
         self.idempotency_key = idempotency_key
+        self.timeout = timeout  # surcharge le timeout par défaut si fourni
 
 
 class _Job:
@@ -118,23 +119,26 @@ class NetworkManager(QObject):
         self._session = requests.Session()
         self._session_lock = threading.Lock()  # protège l'écriture des en-têtes (jeton)
         self._queue = queue.Queue()
+        self._stopping = False
         self._worker = _NetworkWorker(self)
         self._worker.start()
 
     # ------------------------------------------------------------------ #
     # API publique (thread GUI et threads de fond)
     # ------------------------------------------------------------------ #
-    def make_handle(self, url, method="GET", data=None, headers=None, idempotency_key=None):
+    def make_handle(self, url, method="GET", data=None, headers=None,
+                    idempotency_key=None, timeout=None):
         """Crée un RequestHandle non démarré (compatibilité make_request_thread)."""
-        spec = _RequestSpec(url, method, data, headers, idempotency_key)
+        spec = _RequestSpec(url, method, data, headers, idempotency_key, timeout)
         return RequestHandle(self, spec)
 
     def request_blocking(self, url, method="GET", data=None, headers=None,
-                         idempotency_key=None, timeout_s=30):
+                         idempotency_key=None, timeout=None, timeout_s=30):
         """Exécute une requête et attend le résultat (threads de fond seulement).
 
-        Retourne ``(elapsed, text, status_code)``."""
-        spec = _RequestSpec(url, method, data, headers, idempotency_key)
+        ``timeout`` surcharge le timeout HTTP ; ``timeout_s`` borne l'attente du
+        résultat côté appelant. Retourne ``(elapsed, text, status_code)``."""
+        spec = _RequestSpec(url, method, data, headers, idempotency_key, timeout)
         job = _Job("request", spec=spec, event=threading.Event())
         self._queue.put(job)
         if not job.event.wait(timeout_s):
@@ -154,9 +158,18 @@ class NetworkManager(QObject):
         with self._session_lock:
             return self._session.headers.get("X-App-Token")
 
-    def stop(self):
+    def stop(self, timeout_ms=3000):
+        """Arrête le worker (idempotent) et attend au plus ``timeout_ms``.
+
+        Les jobs encore en file sont purgés et leurs attentes débloquées par le
+        worker (voir _drain_pending), pour ne jamais laisser un appelant bloquant
+        (StartupWorker/ResyncWorker) suspendu. Retourne True si le worker s'est
+        terminé dans le délai."""
+        if self._stopping:
+            return self._worker.wait(timeout_ms)
+        self._stopping = True
         self._queue.put(_STOP)
-        self._worker.wait(3000)
+        return self._worker.wait(timeout_ms)
 
     # ------------------------------------------------------------------ #
     # Interne — appelé depuis le thread appelant
@@ -171,6 +184,7 @@ class NetworkManager(QObject):
         while True:
             job = self._queue.get()
             if job is _STOP:
+                self._drain_pending()
                 break
             try:
                 if job.kind == "token":
@@ -181,6 +195,25 @@ class NetworkManager(QObject):
                 logger.exception("Erreur inattendue dans le worker réseau")
                 if job.event is not None:
                     job.event.set()
+
+    def _drain_pending(self):
+        """À l'arrêt : vide la file et débloque immédiatement les jobs restants
+        (résultat d'échec), pour qu'aucun appelant bloquant ne reste suspendu et
+        qu'aucun handle async n'attende indéfiniment son 'finished'."""
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if job is _STOP:
+                continue
+            if job.handle is not None:
+                job.handle.result.emit(0.0, "arrêt en cours", 0)
+                job.handle.finished.emit()
+            if job.event is not None:
+                job.result_box["result"] = (0.0, "arrêt en cours", 0)
+                job.result_box["token"] = None
+                job.event.set()
 
     def _handle_request_job(self, job):
         elapsed, text, status = self._execute(job.spec)
@@ -223,12 +256,13 @@ class NetworkManager(QObject):
         headers = dict(spec.headers) if spec.headers else {}
         if spec.idempotency_key:
             headers["X-Idempotency-Key"] = spec.idempotency_key
+        timeout = spec.timeout or self._timeout
         # Le jeton courant est porté par la session (posé sous verrou). La session
         # n'est lue/écrite que dans ce worker -> aucun accès concurrent.
         if spec.method == "GET":
-            return self._session.get(spec.url, headers=headers or None, timeout=self._timeout)
+            return self._session.get(spec.url, headers=headers or None, timeout=timeout)
         elif spec.method == "POST":
-            return self._session.post(spec.url, data=spec.data, headers=headers or None, timeout=self._timeout)
+            return self._session.post(spec.url, data=spec.data, headers=headers or None, timeout=timeout)
         raise ValueError(f"Méthode HTTP non supportée: {spec.method}")
 
     def _reauth(self):

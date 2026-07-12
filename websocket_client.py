@@ -1,6 +1,7 @@
 import socketio
 import json
 import logging
+import threading
 import time
 from PySide6.QtCore import Signal, QThread
 
@@ -43,6 +44,9 @@ class WebSocketClient(QThread):
         self.parent = parent
         self.username = username
         self.previously_connected = False
+        # Drapeau d'arrêt : la boucle de (re)connexion s'y réfère pour se
+        # terminer proprement au lieu de se reconnecter indéfiniment.
+        self._stop = threading.Event()
 
         # On garde l'URL HTTP/HTTPS d'origine et on laisse python-socketio
         # négocier le transport (polling puis montée en WebSocket). Forcer
@@ -89,12 +93,14 @@ class WebSocketClient(QThread):
         max_reconnection_delay = 30
         initial_delay = 5
 
-        while True:
+        while not self._stop.is_set():
             try:
                 if reconnection_attempts > 0:
                     delay = min(initial_delay * reconnection_attempts, max_reconnection_delay)
                     logger.info("Nouvelle tentative de connexion %d dans %ds", reconnection_attempts, delay)
-                    time.sleep(delay)
+                    # Attente interruptible : stop() la débloque immédiatement.
+                    if self._stop.wait(delay):
+                        break
 
                 # Jeton relu à CHAQUE tentative : une reconnexion après
                 # renouvellement utilise automatiquement le nouveau jeton.
@@ -104,9 +110,11 @@ class WebSocketClient(QThread):
 
                 logger.info("Connexion WebSocket établie")
                 reconnection_attempts = 0
-                self.sio.wait()
+                self.sio.wait()  # rend la main sur déconnexion (dont stop())
 
             except socketio.exceptions.ConnectionError as e:
+                if self._stop.is_set():
+                    break
                 reconnection_attempts += 1
                 logger.warning("Échec de connexion (tentative %d) : %s", reconnection_attempts, e)
                 self.connection_lost.emit(reconnection_attempts)  # Émet le signal de déconnexion
@@ -114,10 +122,19 @@ class WebSocketClient(QThread):
                 # on le renouvelle pour que la prochaine tentative soit valide.
                 self._refresh_token_if_possible()
 
-    def stop(self):
-        self.sio.disconnect()
+        logger.info("Boucle WebSocket terminée")
+
+    def stop(self, timeout_ms=3000):
+        """Arrêt propre et borné : lève le drapeau, déconnecte Socket.IO (ce qui
+        débloque sio.wait()), puis attend la fin du thread au plus timeout_ms.
+        Retourne True si le thread s'est bien terminé dans le délai."""
+        self._stop.set()
+        try:
+            self.sio.disconnect()
+        except Exception as e:
+            logger.debug("Déconnexion Socket.IO à l'arrêt : %s", e)
         self.quit()
-        self.wait()
+        return self.wait(timeout_ms)
 
     def on_connect(self):
         logger.info("WebSocket connecté")

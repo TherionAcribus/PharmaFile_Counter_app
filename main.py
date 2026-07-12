@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 import uuid
 import threading
 import keyboard
@@ -181,6 +182,10 @@ class MainWindow(QMainWindow):
     shortcut_pause = Signal()
     shortcut_recall = Signal()
     shortcut_deconnect = Signal()
+
+    # Passe à True au tout début de la fermeture : bloque toute nouvelle action
+    # réseau et évite la réentrance de closeEvent.
+    shutting_down = False
 
     patient_id = None
     staff_id = None
@@ -1386,7 +1391,10 @@ class MainWindow(QMainWindow):
           seconde action identique tant que la première est en cours).
         - ``busy_button`` : passé en état occupé au lancement et rétabli à la fin
           (le rétablissement est branché AVANT start() -> pas de course).
-        Retourne le handle, ou None si l'action a été refusée (doublon). """
+        Retourne le handle, ou None si l'action a été refusée (doublon/arrêt). """
+        if self.shutting_down:
+            self.logger.debug("Action ignorée (arrêt en cours) : %s", key)
+            return None
         if self._tasks.is_active(key):
             self.logger.debug("Action ignorée (déjà en cours) : %s", key)
             return None
@@ -1432,16 +1440,77 @@ class MainWindow(QMainWindow):
         self.audio_player.set_volume(self.sound_volume) 
 
     def closeEvent(self, event):
-        self.logger.info("Fermeture de l'App")
+        # Arrêt propre, ordonné et BORNÉ dans le temps. Chaque étape a un délai
+        # maximal : la fermeture est toujours acceptée in fine (l'app ne reste
+        # jamais bloquée), tout en libérant le comptoir côté serveur et en
+        # arrêtant explicitement WebSocket, workers, réseau, timers et raccourcis.
+        if self.shutting_down:
+            event.accept()
+            return
+        self.shutting_down = True
+        self.logger.info("Fermeture de l'App : arrêt propre en cours")
 
-        # déconnection du comptoir
-        self.logger.info("Déconnexion du comptoir suite à la fermeture de l'App")
-        self.disconnect_from_counter()
-        
-        # Fermeture de la fenêtre secondaire quand la fenêtre principale est fermée
+        # 1. Plus aucune nouvelle action déclenchée par les raccourcis clavier.
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception as e:
+            self.logger.debug("unhook_all_hotkeys à l'arrêt : %s", e)
+
+        # 2. Arrêt des timers.
+        if hasattr(self, 'call_timer'):
+            self.call_timer.stop()
+
+        # 3. Arrêt du WebSocket (drapeau + disconnect + attente bornée). Empêche
+        #    aussi le déclenchement de nouveaux ResyncWorker.
+        if getattr(self, 'socket_io_client', None):
+            self.socket_io_client.stop(timeout_ms=3000)
+
+        # 4. Libération du comptoir côté serveur : déconnexion HTTP bornée.
+        self._release_counter_blocking()
+
+        # 5. Arrêt du gestionnaire réseau (worker unique) : purge la file et
+        #    débloque les appels bloquants éventuels des workers.
+        if hasattr(self, 'network_manager'):
+            self.network_manager.stop(timeout_ms=3000)
+
+        # 6. Attente bornée des workers encore actifs (StartupWorker/ResyncWorker),
+        #    désormais débloqués, avant destruction -> pas de "QThread: Destroyed".
+        self._wait_active_workers(total_timeout_ms=2000)
+
+        # 7. Fenêtre de chargement.
         if self.loading_screen:
             self.loading_screen.close()
+
+        event.accept()
         super().closeEvent(event)
+
+    def _release_counter_blocking(self):
+        """ Envoie la déconnexion du comptoir (remove_staff) et attend au plus
+        quelques secondes (timeout HTTP court + attente courte). Bornée : si le
+        serveur ne répond pas, on continue la fermeture. """
+        if not hasattr(self, 'network_manager'):
+            return
+        url = f'{self.web_url}/app/counter/remove_staff'
+        data = {'counter_id': self.counter_id}
+        try:
+            _elapsed, _text, status = self.network_manager.request_blocking(
+                url, method='POST', data=data, timeout=(2, 3), timeout_s=4)
+            if status == 200:
+                self.logger.info("Comptoir libéré côté serveur")
+            else:
+                self.logger.warning("Libération du comptoir : statut %s", status)
+        except Exception as e:
+            self.logger.warning("Libération du comptoir échouée : %s", e)
+
+    def _wait_active_workers(self, total_timeout_ms=2000):
+        """ Attend (borné) la fin des QThread encore actifs avant destruction, en
+        partageant un budget de temps global. """
+        deadline = time.monotonic() + total_timeout_ms / 1000.0
+        for task in self._tasks.snapshot():
+            if isinstance(task, QThread) and task.isRunning():
+                remaining = int(max(0.0, deadline - time.monotonic()) * 1000)
+                if not task.wait(remaining or 1):
+                    self.logger.warning("Un worker n'a pas terminé dans le délai d'arrêt")
 
     # Note : l'ancien couple connexion_for_app_init()/handle_init_app() (requête
     # /app/counter/init_app pour autocalling + papier + activités staff +

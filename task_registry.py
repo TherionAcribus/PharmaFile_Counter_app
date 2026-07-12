@@ -36,6 +36,11 @@ class TaskRegistry:
     def active_keys(self):
         return set(self._keys)
 
+    def snapshot(self):
+        """Copie des tâches actives (pour itérer sans risque, ex: attente à
+        l'arrêt de l'application)."""
+        return list(self._tasks)
+
     def __len__(self):
         return len(self._tasks)
 
