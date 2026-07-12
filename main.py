@@ -17,6 +17,7 @@ from notification import CustomNotification
 from connections import NetworkManager
 from my_logger import AppLogger, register_secret
 from secret_store import load_secret
+from task_registry import TaskRegistry
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -235,13 +236,22 @@ class MainWindow(QMainWindow):
         self.network_manager.token_refreshed.connect(self._on_token_refreshed)
         self.network_manager.token_failed.connect(self._on_token_failed)
 
+        # Registre des tâches réseau actives. Conserve une référence forte à
+        # chaque RequestHandle/worker tant qu'il n'est pas terminé, pour ne plus
+        # écraser un self.thread encore actif (perte de suivi, signaux 'result'/
+        # 'finished' perdus, "QThread: Destroyed while thread is still running").
+        # Empêche aussi une seconde action identique (même clé) tant que la
+        # première est en cours.
+        self._tasks = TaskRegistry()
+
         # La séquence réseau de démarrage (token + patient courant + liste des
         # patients) se fait en arrière-plan pour ne pas geler l'UI si le
         # serveur est lent/injoignable. La suite de l'initialisation continue
         # dans _on_startup_ready() une fois le résultat disponible.
-        self.startup_worker = StartupWorker(self)
-        self.startup_worker.finished_startup.connect(self._on_startup_ready)
-        self.startup_worker.start()
+        worker = StartupWorker(self)
+        worker.finished_startup.connect(self._on_startup_ready)
+        self._track_worker(worker)
+        worker.start()
 
     def _on_startup_ready(self, connected, state):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
@@ -431,9 +441,7 @@ class MainWindow(QMainWindow):
         # Logique pour remettre le patient en attente
         self.logger.debug("Patient remis en attente")
         url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
-        self.thread = self.make_request_thread(url)
-        self.thread.result.connect(self.handle_result)
-        self.thread.start()
+        self._submit(url, on_result=self.handle_result, key=f"put_standing:{self.patient_id}")
 
     def on_action_wait_for(self, activity, patient_id=None):
         """
@@ -442,9 +450,7 @@ class MainWindow(QMainWindow):
         target_id = patient_id if patient_id is not None else self.patient_id
         self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
         url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
-        self.thread = self.make_request_thread(url)
-        self.thread.result.connect(self.handle_result)
-        self.thread.start()
+        self._submit(url, on_result=self.handle_result, key=f"put_standing:{target_id}")
 
     def on_action_validate(self, patient_id):
         url = f'{self.web_url}/api/counter/validate_patient/{patient_id}'
@@ -473,9 +479,7 @@ class MainWindow(QMainWindow):
         if msg_box.clickedButton() == bouton_oui:
             self.logger.debug("Suppression du patient demandée")
             url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
-            self.thread = self.make_request_thread(url)
-            self.thread.result.connect(self.handle_result)
-            self.thread.start()
+            self._submit(url, on_result=self.handle_result, key=f"delete:{target_id}")
 
     def _create_main_button_container(self):
         self.main_button_container = QWidget()
@@ -580,11 +584,8 @@ class MainWindow(QMainWindow):
         # fois. La clé est portée par le gestionnaire réseau (spec.idempotency_key),
         # donc le rejeu interne après 401 réutilise bien la même valeur.
         headers = {'X-Idempotency-Key': str(uuid.uuid4())}
-        self.btn_next.set_busy(True)
-        self.thread = self.make_request_thread(url, headers=headers)
-        self.thread.result.connect(self.handle_result)
-        self.thread.finished.connect(lambda: self.btn_next.set_busy(False))
-        self.thread.start()
+        self._submit(url, headers=headers, on_result=self.handle_result,
+                     key="validate_and_call_next", busy_button=self.btn_next)
         self.update_my_buttons(self.my_patient)
         self.close_please_validate_notification()
 
@@ -600,11 +601,8 @@ class MainWindow(QMainWindow):
         self.logger.debug("Validation du patient en cours")
         self.close_please_validate_notification()
         if self.my_patient:
-            self.btn_validate.set_busy(True)
-            self.thread = self.make_request_thread(url)
-            self.thread.result.connect(self.handle_result)
-            self.thread.finished.connect(lambda: self.btn_validate.set_busy(False))
-            self.thread.start()
+            self._submit(url, on_result=self.handle_result,
+                         key="validate", busy_button=self.btn_validate)
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
             self.update_my_buttons(self.my_patient)
@@ -619,11 +617,8 @@ class MainWindow(QMainWindow):
     def call_web_function_pause(self):
         self.logger.debug("Mise en pause du patient")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        self.btn_pause.set_busy(True)
-        self.thread = self.make_request_thread(url)
-        self.thread.result.connect(self.handle_result)
-        self.thread.finished.connect(lambda: self.btn_pause.set_busy(False))
-        self.thread.start()
+        self._submit(url, on_result=self.handle_result,
+                     key="pause", busy_button=self.btn_pause)
 
     @profile
     def _create_choose_patient_button(self):
@@ -797,16 +792,13 @@ class MainWindow(QMainWindow):
 
     def recall(self):
         url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
-        self.request_thread = self.make_request_thread(url, method='POST')
-        self.request_thread.start()
+        self._submit(url, method='POST', key="recall")
 
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
         self.logger.info("Paramétrage de l'utilisateur...")
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
-        self.user_thread = self.make_request_thread(url, method='GET')
-        self.user_thread.result.connect(self.handle_user_result)
-        self.user_thread.start()
+        self._submit(url, method='GET', on_result=self.handle_user_result, key="setup_user")
 
     @Slot(float, str, int)
     def handle_result(self, elapsed_time, response_text, status_code):
@@ -925,9 +917,10 @@ class MainWindow(QMainWindow):
     def _reload_state_async(self):
         """ Recharge l'état autoritatif en arrière-plan (déclenché sur détection
         d'un trou de révision). Réutilise ResyncWorker et son applicateur. """
-        self.resync_worker = ResyncWorker(self)
-        self.resync_worker.finished_resync.connect(self._on_resync_ready)
-        self.resync_worker.start()
+        worker = ResyncWorker(self)
+        worker.finished_resync.connect(self._on_resync_ready)
+        self._track_worker(worker)
+        worker.start()
 
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
@@ -963,9 +956,10 @@ class MainWindow(QMainWindow):
                 # l'état courant au lieu de compter sur le prochain évènement
                 # poussé par le serveur.
                 self.socket_was_disconnected = False
-                self.resync_worker = ResyncWorker(self)
-                self.resync_worker.finished_resync.connect(self._on_resync_ready)
-                self.resync_worker.start()
+                worker = ResyncWorker(self)
+                worker.finished_resync.connect(self._on_resync_ready)
+                self._track_worker(worker)
+                worker.start()
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
             self.socket_was_disconnected = True
@@ -1169,9 +1163,8 @@ class MainWindow(QMainWindow):
         # Deconnexion sur le serveur
         url = f'{self.web_url}/app/counter/remove_staff'
         data = {'counter_id': self.counter_id}
-        self.disconnect_thread = self.make_request_thread(url, method='POST', data=data)
-        self.disconnect_thread.result.connect(self.handle_disconnect_result)
-        self.disconnect_thread.start()
+        self._submit(url, method='POST', data=data,
+                     on_result=self.handle_disconnect_result, key="disconnect")
 
     def enable_initials_input(self):
         """ Permet d'activer le champ des initiales lors de l'initialisation + focus
@@ -1204,9 +1197,8 @@ class MainWindow(QMainWindow):
             url = f'{self.web_url}/app/counter/update_staff'
             data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": cb_deconnexion_on_all, "app": True}
 
-            self.login_thread = self.make_request_thread(url, method='POST', data=data)
-            self.login_thread.result.connect(self.handle_login_result)
-            self.login_thread.start()
+            self._submit(url, method='POST', data=data,
+                         on_result=self.handle_login_result, key="login")
 
     @Slot(float, str, int)
     def handle_login_result(self, elapsed_time, response_text, status_code):
@@ -1287,9 +1279,8 @@ class MainWindow(QMainWindow):
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-            self.thread = self.make_request_thread(url)
-            self.thread.result.connect(self.handle_result)
-            self.thread.start()
+            self._submit(url, on_result=self.handle_result,
+                         key=f"call_specific:{patient_select_id}")
 
 
     def _on_token_refreshed(self, token):
@@ -1341,6 +1332,48 @@ class MainWindow(QMainWindow):
             idempotency_key = headers.pop("X-Idempotency-Key")
         return self.network_manager.make_handle(url, method=method, data=data,
                                                 headers=headers, idempotency_key=idempotency_key)
+
+    def _submit(self, url, method='GET', data=None, headers=None,
+                on_result=None, key=None, busy_button=None):
+        """ Crée, suit et démarre une requête réseau de façon sûre.
+
+        - Conserve une référence forte au handle jusqu'à ``finished`` (le handle
+          n'est plus écrasé dans un self.thread partagé -> plus de perte de suivi
+          ni de signal perdu).
+        - ``key`` : si fournie et déjà active, la requête est refusée (interdit une
+          seconde action identique tant que la première est en cours).
+        - ``busy_button`` : passé en état occupé au lancement et rétabli à la fin
+          (le rétablissement est branché AVANT start() -> pas de course).
+        Retourne le handle, ou None si l'action a été refusée (doublon). """
+        if self._tasks.is_active(key):
+            self.logger.debug("Action ignorée (déjà en cours) : %s", key)
+            return None
+
+        handle = self.make_request_thread(url, method=method, data=data, headers=headers)
+        self._tasks.add(handle, key)
+        if busy_button is not None:
+            busy_button.set_busy(True)
+        if on_result is not None:
+            handle.result.connect(on_result)
+
+        def _cleanup():
+            self._tasks.remove(handle, key)
+            if busy_button is not None:
+                busy_button.set_busy(False)
+
+        # Branché avant start() : même si le worker répond très vite, le nettoyage
+        # (et le rétablissement du bouton) ne peut pas être manqué.
+        handle.finished.connect(_cleanup)
+        handle.start()
+        return handle
+
+    def _track_worker(self, worker):
+        """ Garde une référence à un QThread (StartupWorker/ResyncWorker) jusqu'à
+        sa fin, pour ne pas le détruire prématurément s'il est encore en cours
+        ("QThread: Destroyed while thread is still running"). """
+        self._tasks.add(worker)
+        worker.finished.connect(lambda: self._tasks.remove(worker))
+        return worker
 
     def apply_preferences(self):
         self.load_preferences()
