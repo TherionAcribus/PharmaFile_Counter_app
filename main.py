@@ -468,7 +468,7 @@ class MainWindow(QMainWindow):
         # Logique pour remettre le patient en attente
         self.logger.debug("Patient remis en attente")
         url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
-        self._submit(url, on_result=self.handle_result, key=f"put_standing:{self.patient_id}")
+        self._submit(url, method='POST', on_result=self.handle_result, key=f"put_standing:{self.patient_id}")
 
     def on_action_wait_for(self, activity, patient_id=None):
         """
@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
         target_id = patient_id if patient_id is not None else self.patient_id
         self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
         url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
-        self._submit(url, on_result=self.handle_result, key=f"put_standing:{target_id}")
+        self._submit(url, method='POST', on_result=self.handle_result, key=f"put_standing:{target_id}")
 
     def on_action_validate(self, patient_id):
         url = f'{self.web_url}/api/counter/validate_patient/{patient_id}'
@@ -506,7 +506,7 @@ class MainWindow(QMainWindow):
         if msg_box.clickedButton() == bouton_oui:
             self.logger.debug("Suppression du patient demandée")
             url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
-            self._submit(url, on_result=self.handle_result, key=f"delete:{target_id}")
+            self._submit(url, method='POST', on_result=self.handle_result, key=f"delete:{target_id}")
 
     def _create_main_button_container(self):
         self.main_button_container = QWidget()
@@ -611,7 +611,7 @@ class MainWindow(QMainWindow):
         # fois. La clé est portée par le gestionnaire réseau (spec.idempotency_key),
         # donc le rejeu interne après 401 réutilise bien la même valeur.
         headers = {'X-Idempotency-Key': str(uuid.uuid4())}
-        self._submit(url, headers=headers, on_result=self.handle_result,
+        self._submit(url, method='POST', headers=headers, on_result=self.handle_result,
                      key="validate_and_call_next", busy_button=self.btn_next)
         self.update_my_buttons(self.my_patient)
         self.close_please_validate_notification()
@@ -628,7 +628,7 @@ class MainWindow(QMainWindow):
         self.logger.debug("Validation du patient en cours")
         self.close_please_validate_notification()
         if self.my_patient:
-            self._submit(url, on_result=self.handle_result,
+            self._submit(url, method='POST', on_result=self.handle_result,
                          key="validate", busy_button=self.btn_validate)
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
@@ -644,7 +644,7 @@ class MainWindow(QMainWindow):
     def call_web_function_pause(self):
         self.logger.debug("Mise en pause du patient")
         url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        self._submit(url, on_result=self.handle_result,
+        self._submit(url, method='POST', on_result=self.handle_result,
                      key="pause", busy_button=self.btn_pause)
 
     @profile
@@ -1354,7 +1354,7 @@ class MainWindow(QMainWindow):
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-            self._submit(url, on_result=self.handle_result,
+            self._submit(url, method='POST', on_result=self.handle_result,
                          key=f"call_specific:{patient_select_id}")
 
 
