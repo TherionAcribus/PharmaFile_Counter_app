@@ -2,9 +2,7 @@ import sys
 import os
 import json
 import uuid
-import requests
 import threading
-from requests.exceptions import RequestException
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout, QFrame
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
@@ -16,7 +14,7 @@ from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
-from connections import RequestThread, DEFAULT_TIMEOUT
+from connections import NetworkManager
 from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 
@@ -208,7 +206,6 @@ class MainWindow(QMainWindow):
         self.app_logger = AppLogger.get_instance()
         self.logger = self.app_logger.get_logger()
         self.logger.info("Initialisation de la session...")
-        self.session = requests.Session()  # Session HTTP persistante
 
         self.activities_staff = None  # pour être en global
 
@@ -225,6 +222,18 @@ class MainWindow(QMainWindow):
         self.logger.info("Test de la connexion...")
         self.app_token = None
         self.connected = False
+
+        # Gestionnaire réseau centralisé : un unique worker possède la seule
+        # requests.Session (plus d'accès concurrent depuis plusieurs threads),
+        # et centralise jeton, timeout, format d'erreur, renouvellement sur 401
+        # et idempotence. Les providers lisent web_url/app_secret à la volée
+        # (rechargés dans load_preferences).
+        self.network_manager = NetworkManager(
+            token_url_provider=lambda: f"{self.web_url}/api/get_app_token",
+            secret_provider=lambda: self.app_secret,
+        )
+        self.network_manager.token_refreshed.connect(self._on_token_refreshed)
+        self.network_manager.token_failed.connect(self._on_token_failed)
 
         # La séquence réseau de démarrage (token + patient courant + liste des
         # patients) se fait en arrière-plan pour ne pas geler l'UI si le
@@ -568,8 +577,8 @@ class MainWindow(QMainWindow):
         # Clé d'idempotence : une nouvelle par action utilisateur. Si la requête
         # est renvoyée (relance réseau, ou relance automatique après un 401),
         # le serveur reconnaît la même clé et ne fait pas avancer la file deux
-        # fois. La clé est portée par le RequestThread, donc la relance interne
-        # après 401 réutilise bien la même valeur.
+        # fois. La clé est portée par le gestionnaire réseau (spec.idempotency_key),
+        # donc le rejeu interne après 401 réutilise bien la même valeur.
         headers = {'X-Idempotency-Key': str(uuid.uuid4())}
         self.btn_next.set_busy(True)
         self.thread = self.make_request_thread(url, headers=headers)
@@ -775,16 +784,16 @@ class MainWindow(QMainWindow):
 
     def init_list_patients(self):
         url = f'{self.web_url}/api/patients_list_for_pyside'
-        try:
-            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                self.logger.debug("Liste des patients récupérée")
-                return response.json()
-            else:
-                self.logger.warning("Échec de récupération de la liste (statut=%s)", response.status_code)
-        except RequestException as e:
-            self.logger.warning("Connexion perdue lors de la récupération de la liste : %s", e)
-            return []
+        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
+        if status == 200:
+            self.logger.debug("Liste des patients récupérée")
+            try:
+                return json.loads(text)
+            except (ValueError, TypeError):
+                self.logger.warning("Liste des patients illisible (JSON invalide)")
+                return []
+        self.logger.warning("Échec de récupération de la liste (statut=%s)", status)
+        return []
 
     def recall(self):
         url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
@@ -889,13 +898,14 @@ class MainWindow(QMainWindow):
         à chaque resynchronisation pour garantir un état cohérent, plutôt que
         d'agréger plusieurs snapshots susceptibles de se contredire. """
         url = f'{self.web_url}/api/counter/{self.counter_id}/state'
-        try:
-            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                return response.json()
-            self.logger.warning("Échec de récupération de l'état (statut=%s)", response.status_code)
-        except RequestException as e:
-            self.logger.warning("Connexion perdue lors de la récupération de l'état : %s", e)
+        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
+        if status == 200:
+            try:
+                return json.loads(text)
+            except (ValueError, TypeError):
+                self.logger.warning("État illisible (JSON invalide)")
+                return None
+        self.logger.warning("Échec de récupération de l'état (statut=%s)", status)
         return None
 
     def _apply_state(self, state):
@@ -921,17 +931,16 @@ class MainWindow(QMainWindow):
 
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
-        try:
-            response = self.session.get(url, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                self.logger.debug("Patient courant récupéré")
-                return response.json()
-            else:
-                self.logger.warning("Échec de récupération du patient (statut=%s)", response.status_code)
+        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
+        if status == 200:
+            self.logger.debug("Patient courant récupéré")
+            try:
+                return json.loads(text)
+            except (ValueError, TypeError):
+                self.logger.warning("Patient courant illisible (JSON invalide)")
                 return None
-        except RequestException as e:
-            self.logger.warning("Connexion perdue lors de la récupération du patient : %s", e)
-            return None
+        self.logger.warning("Échec de récupération du patient (statut=%s)", status)
+        return None
 
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
@@ -1283,31 +1292,36 @@ class MainWindow(QMainWindow):
             self.thread.start()
 
 
+    def _on_token_refreshed(self, token):
+        """ Synchronise self.app_token quand le gestionnaire réseau renouvelle le
+        jeton (utilisé par le WebSocket et la connexion staff). Le jeton n'est
+        jamais journalisé ; on l'enregistre pour masquage (défense en profondeur). """
+        self.app_token = token
+        register_secret(token)
+
+    def _on_token_failed(self):
+        self.app_token = None
+
     def get_app_token(self):
-        """ Récupère un token applicatif et l'installe sur la session HTTP
-        partagée, pour que toutes les requêtes (GET et POST) l'envoient
-        automatiquement. Lève une exception si l'authentification échoue,
-        pour que l'appelant (démarrage, renouvellement) le sache clairement
-        plutôt que de continuer comme si de rien n'était. """
-        url = f'{self.web_url}/api/get_app_token'
-        data = {'app_secret': self.app_secret}
-        response = self.session.post(url, data=data, timeout=DEFAULT_TIMEOUT)
-        if response.status_code == 200:
-            self.app_token = response.json()['token']
-            self.session.headers['X-App-Token'] = self.app_token
-            # Le jeton n'est JAMAIS journalisé. On l'enregistre auprès du filtre
-            # de masquage pour qu'il soit caviardé s'il apparaissait par mégarde
-            # dans un log (défense en profondeur).
-            register_secret(self.app_token)
-            self.logger.debug("Token applicatif obtenu et installé")
-        else:
+        """ Récupère un token applicatif via le gestionnaire réseau (qui l'installe
+        sur sa session pour que toutes les requêtes l'envoient automatiquement).
+        Lève une exception si l'authentification échoue, pour que l'appelant
+        (démarrage, renouvellement) le sache clairement.
+
+        À appeler depuis un thread de fond (StartupWorker) : bloque le temps de la
+        requête. """
+        token = self.network_manager.fetch_token_blocking()
+        if not token:
             self.app_token = None
-            self.session.headers.pop('X-App-Token', None)
-            raise RuntimeError(f"Échec de l'obtention du token (statut {response.status_code})")
+            raise RuntimeError("Échec de l'obtention du token")
+        # _on_token_refreshed a déjà (ou va) mettre self.app_token à jour via le
+        # signal ; on le pose aussi ici pour ne pas dépendre de l'ordonnancement.
+        self.app_token = token
+        register_secret(token)
 
     def try_refresh_app_token(self):
-        """ Variante de get_app_token() qui ne lève pas d'exception : à utiliser
-        comme reauth_callback par RequestThread quand une requête reçoit un 401. """
+        """ Variante de get_app_token() qui ne lève pas d'exception (à utiliser
+        avant une reconnexion WebSocket). """
         try:
             self.get_app_token()
             return True
@@ -1316,11 +1330,17 @@ class MainWindow(QMainWindow):
             return False
 
     def make_request_thread(self, url, method='GET', data=None, headers=None):
-        """ Fabrique de RequestThread partagée : garantit que le token
-        applicatif (porté par self.session) est renouvelé automatiquement
-        si le serveur répond 401. """
-        return RequestThread(url, self.session, method=method, data=data, headers=headers,
-                              reauth_callback=self.try_refresh_app_token)
+        """ Crée un RequestHandle via le gestionnaire réseau centralisé : la
+        requête est traitée par l'unique worker (jeton courant ajouté au moment de
+        l'appel, timeout, renouvellement sur 401 avec un seul rejeu). L'appelant
+        connecte ``result``/``finished`` puis appelle ``start()`` (comme avant). """
+        idempotency_key = None
+        if headers and "X-Idempotency-Key" in headers:
+            # On passe la clé d'idempotence par le canal dédié du gestionnaire.
+            headers = dict(headers)
+            idempotency_key = headers.pop("X-Idempotency-Key")
+        return self.network_manager.make_handle(url, method=method, data=data,
+                                                headers=headers, idempotency_key=idempotency_key)
 
     def apply_preferences(self):
         self.load_preferences()
@@ -1588,6 +1608,9 @@ class MainWindow(QMainWindow):
         self.trayIcon3.show()
 
     def cleanup_systray(self):
+        # Arrêt propre du worker réseau (fermeture de l'App)
+        if hasattr(self, 'network_manager'):
+            self.network_manager.stop()
         # Supprime les icônes de la barre d'état système (fermeture de l'App)
         if hasattr(self, 'trayIcon1'):
             self.trayIcon1.setVisible(False)

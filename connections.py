@@ -1,59 +1,271 @@
+"""Gestionnaire réseau centralisé de l'App comptoir.
+
+Un unique worker (thread dédié) possède la SEULE ``requests.Session`` et traite
+une file de requêtes en série. Cela élimine tout accès concurrent à la session
+(et à ses en-têtes, dont le jeton) et centralise :
+
+- l'ajout du jeton applicatif (porté par la session, posé sous verrou) ;
+- le timeout de chaque requête ;
+- le format uniforme des résultats/erreurs : ``(elapsed, text, status_code)``,
+  ``status_code == 0`` pour une erreur réseau ;
+- le renouvellement du jeton sur 401 avec un seul rejeu ;
+- l'idempotence (en-tête ``X-Idempotency-Key`` par requête).
+
+Deux modes d'utilisation :
+- asynchrone (thread GUI) : ``make_handle(...)`` -> ``RequestHandle`` dont le
+  signal ``result(elapsed, text, status)`` est émis vers le thread appelant ;
+  ``.start()`` met la requête en file (compatible avec l'ancien RequestThread) ;
+- bloquant (threads de fond : démarrage, resync) : ``request_blocking(...)`` et
+  ``fetch_token_blocking(...)`` attendent le worker et renvoient le résultat.
+  Ne JAMAIS les appeler depuis le worker lui-même (interblocage) ni, en pratique,
+  depuis le thread GUI (il bloquerait).
+"""
+
 import logging
+import queue
+import threading
 import time
 import uuid
-from PySide6.QtCore import QThread, Signal
+
+import requests
 from requests.exceptions import RequestException
+from PySide6.QtCore import QObject, QThread, Signal
+
+from net_core import perform_with_reauth
 
 logger = logging.getLogger("appcomptoir.connections")
 
 # (connect_timeout, read_timeout) en secondes. Evite qu'une requête reste
-# bloquée indéfiniment quand le serveur ou le réseau ne répond plus
-# (proxy/box qui coupe silencieusement, serveur qui ne répond plus, etc.)
+# bloquée indéfiniment quand le serveur ou le réseau ne répond plus.
 DEFAULT_TIMEOUT = (5, 10)
 
+# Sentinelle d'arrêt du worker.
+_STOP = object()
 
-class RequestThread(QThread):
+
+class RequestHandle(QObject):
+    """Résultat asynchrone d'une requête.
+
+    ``result`` a la même signature que l'ancien ``RequestThread.result`` afin que
+    les gestionnaires existants se connectent sans changement. ``finished`` est
+    émis juste après (pour réinitialiser un état de bouton, etc.).
+    """
     result = Signal(float, str, int)
+    finished = Signal()
 
-    def __init__(self, url, session, method='GET', data=None, headers=None, timeout=DEFAULT_TIMEOUT, reauth_callback=None):
+    def __init__(self, manager, spec):
         super().__init__()
+        self._manager = manager
+        self._spec = spec
+        self._started = False
+
+    def start(self):
+        """Met la requête en file (idempotent). Compatible avec l'ancien usage
+        ``handle.result.connect(...); handle.start()``."""
+        if not self._started:
+            self._started = True
+            self._manager._enqueue(self, self._spec)
+
+
+class _RequestSpec:
+    __slots__ = ("url", "method", "data", "headers", "idempotency_key")
+
+    def __init__(self, url, method, data, headers, idempotency_key):
         self.url = url
-        self.session = session
         self.method = method
         self.data = data
         self.headers = headers
-        self.timeout = timeout
-        # Appelé (sans argument, retourne un bool) si le serveur répond 401.
-        # Doit renouveler le token sur la session partagée. La requête est
-        # alors rejouée une fois avec le nouveau token.
-        self.reauth_callback = reauth_callback
+        self.idempotency_key = idempotency_key
 
-    def _send(self):
-        if self.method == 'GET':
-            return self.session.get(self.url, headers=self.headers, timeout=self.timeout)
-        elif self.method == 'POST':
-            return self.session.post(self.url, data=self.data, headers=self.headers, timeout=self.timeout)
-        else:
-            raise ValueError(f"Méthode HTTP non supportée: {self.method}")
+
+class _Job:
+    """Élément de file : soit une requête (handle async ou event bloquant), soit
+    un renouvellement de jeton."""
+    __slots__ = ("kind", "spec", "handle", "event", "result_box")
+
+    def __init__(self, kind, spec=None, handle=None, event=None):
+        self.kind = kind            # "request" | "token"
+        self.spec = spec
+        self.handle = handle        # RequestHandle si async, sinon None
+        self.event = event          # threading.Event si bloquant
+        self.result_box = {}        # rempli pour les jobs bloquants
+
+
+class _NetworkWorker(QThread):
+    def __init__(self, manager):
+        super().__init__()
+        self._manager = manager
 
     def run(self):
-        # Identifiant de corrélation : permet de relier, dans les logs, le début
-        # de la requête, l'éventuelle ré-authentification et l'erreur finale,
-        # sans exposer d'URL/donnée sensible. La réponse (corps) n'est jamais
-        # journalisée ici (peut contenir des données patient).
-        cid = uuid.uuid4().hex[:8]
-        logger.debug("[cid=%s] %s %s", cid, self.method, self.url)
-        start_time = time.time()
-        try:
-            response = self._send()
-            if response.status_code == 401 and self.reauth_callback and self.reauth_callback():
-                logger.info("[cid=%s] 401 reçu, ré-authentification puis nouvel essai", cid)
-                response = self._send()
+        self._manager._run_loop()
 
-            elapsed_time = time.time() - start_time
-            logger.debug("[cid=%s] réponse %s en %.3fs", cid, response.status_code, elapsed_time)
-            self.result.emit(elapsed_time, response.text, response.status_code)
+
+class NetworkManager(QObject):
+    """Gestionnaire réseau centralisé (voir docstring du module)."""
+
+    # Émis (vers le thread GUI) après un renouvellement de jeton réussi, pour que
+    # la fenêtre principale mette à jour son app_token (WebSocket, login...).
+    token_refreshed = Signal(str)
+    token_failed = Signal()
+
+    def __init__(self, token_url_provider, secret_provider,
+                 timeout=DEFAULT_TIMEOUT, parent=None):
+        super().__init__(parent)
+        self._token_url_provider = token_url_provider
+        self._secret_provider = secret_provider
+        self._timeout = timeout
+
+        self._session = requests.Session()
+        self._session_lock = threading.Lock()  # protège l'écriture des en-têtes (jeton)
+        self._queue = queue.Queue()
+        self._worker = _NetworkWorker(self)
+        self._worker.start()
+
+    # ------------------------------------------------------------------ #
+    # API publique (thread GUI et threads de fond)
+    # ------------------------------------------------------------------ #
+    def make_handle(self, url, method="GET", data=None, headers=None, idempotency_key=None):
+        """Crée un RequestHandle non démarré (compatibilité make_request_thread)."""
+        spec = _RequestSpec(url, method, data, headers, idempotency_key)
+        return RequestHandle(self, spec)
+
+    def request_blocking(self, url, method="GET", data=None, headers=None,
+                         idempotency_key=None, timeout_s=30):
+        """Exécute une requête et attend le résultat (threads de fond seulement).
+
+        Retourne ``(elapsed, text, status_code)``."""
+        spec = _RequestSpec(url, method, data, headers, idempotency_key)
+        job = _Job("request", spec=spec, event=threading.Event())
+        self._queue.put(job)
+        if not job.event.wait(timeout_s):
+            return (0.0, "timeout interne du gestionnaire réseau", 0)
+        return job.result_box.get("result", (0.0, "résultat indisponible", 0))
+
+    def fetch_token_blocking(self, timeout_s=30):
+        """Renouvelle le jeton et attend (threads de fond). Retourne le jeton ou
+        None."""
+        job = _Job("token", event=threading.Event())
+        self._queue.put(job)
+        if not job.event.wait(timeout_s):
+            return None
+        return job.result_box.get("token")
+
+    def current_token(self):
+        with self._session_lock:
+            return self._session.headers.get("X-App-Token")
+
+    def stop(self):
+        self._queue.put(_STOP)
+        self._worker.wait(3000)
+
+    # ------------------------------------------------------------------ #
+    # Interne — appelé depuis le thread appelant
+    # ------------------------------------------------------------------ #
+    def _enqueue(self, handle, spec):
+        self._queue.put(_Job("request", spec=spec, handle=handle))
+
+    # ------------------------------------------------------------------ #
+    # Interne — TOUT ce qui suit s'exécute DANS le worker
+    # ------------------------------------------------------------------ #
+    def _run_loop(self):
+        while True:
+            job = self._queue.get()
+            if job is _STOP:
+                break
+            try:
+                if job.kind == "token":
+                    self._handle_token_job(job)
+                else:
+                    self._handle_request_job(job)
+            except Exception:  # garde-fou : le worker ne doit jamais mourir
+                logger.exception("Erreur inattendue dans le worker réseau")
+                if job.event is not None:
+                    job.event.set()
+
+    def _handle_request_job(self, job):
+        elapsed, text, status = self._execute(job.spec)
+        if job.handle is not None:
+            job.handle.result.emit(elapsed, text, status)
+            job.handle.finished.emit()
+        if job.event is not None:
+            job.result_box["result"] = (elapsed, text, status)
+            job.event.set()
+
+    def _handle_token_job(self, job):
+        token = self._do_token_fetch()
+        if job.event is not None:
+            job.result_box["token"] = token
+            job.event.set()
+
+    def _execute(self, spec):
+        cid = uuid.uuid4().hex[:8]
+        start = time.time()
+        try:
+            text, status = perform_with_reauth(
+                send=lambda: self._send(spec),
+                reauth=self._reauth,
+            )
+            elapsed = time.time() - start
+            logger.debug("[cid=%s] %s %s -> %s en %.3fs", cid, spec.method, spec.url, status, elapsed)
+            return (elapsed, text, status)
         except RequestException as e:
-            elapsed_time = time.time() - start_time
-            logger.warning("[cid=%s] échec réseau après %.3fs : %s", cid, elapsed_time, e)
-            self.result.emit(elapsed_time, str(e), 0)
+            elapsed = time.time() - start
+            logger.warning("[cid=%s] échec réseau après %.3fs : %s", cid, elapsed, e)
+            return (elapsed, str(e), 0)
+        except Exception as e:
+            # Garde-fou : un résultat est TOUJOURS renvoyé (status 0) pour que le
+            # handle async émette et que l'appelant (ex: bouton) quitte "waiting".
+            elapsed = time.time() - start
+            logger.exception("[cid=%s] erreur inattendue de requête", cid)
+            return (elapsed, str(e), 0)
+
+    def _send(self, spec):
+        headers = dict(spec.headers) if spec.headers else {}
+        if spec.idempotency_key:
+            headers["X-Idempotency-Key"] = spec.idempotency_key
+        # Le jeton courant est porté par la session (posé sous verrou). La session
+        # n'est lue/écrite que dans ce worker -> aucun accès concurrent.
+        if spec.method == "GET":
+            return self._session.get(spec.url, headers=headers or None, timeout=self._timeout)
+        elif spec.method == "POST":
+            return self._session.post(spec.url, data=spec.data, headers=headers or None, timeout=self._timeout)
+        raise ValueError(f"Méthode HTTP non supportée: {spec.method}")
+
+    def _reauth(self):
+        """Renouvellement du jeton déclenché par un 401 (dans le worker)."""
+        logger.info("401 reçu -> renouvellement du jeton puis rejeu unique")
+        return self._do_token_fetch() is not None
+
+    def _do_token_fetch(self):
+        """POST le secret applicatif pour obtenir un jeton, met à jour la session
+        et notifie le thread GUI. Retourne le jeton (str) ou None. Exécuté dans le
+        worker uniquement."""
+        url = self._token_url_provider()
+        secret = self._secret_provider()
+        try:
+            resp = self._session.post(url, data={"app_secret": secret}, timeout=self._timeout)
+        except RequestException as e:
+            logger.warning("Échec réseau lors de l'obtention du jeton : %s", e)
+            self.token_failed.emit()
+            return None
+
+        if resp.status_code == 200:
+            try:
+                token = resp.json().get("token")
+            except ValueError:
+                token = None
+            with self._session_lock:
+                if token:
+                    self._session.headers["X-App-Token"] = token
+                else:
+                    self._session.headers.pop("X-App-Token", None)
+            if token:
+                self.token_refreshed.emit(token)
+                logger.debug("Jeton applicatif obtenu et installé")
+                return token
+
+        with self._session_lock:
+            self._session.headers.pop("X-App-Token", None)
+        logger.warning("Obtention du jeton refusée (statut %s)", resp.status_code)
+        self.token_failed.emit()
+        return None
