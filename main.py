@@ -19,6 +19,7 @@ from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
+from counter_id_utils import coerce_counter_id
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -274,6 +275,11 @@ class MainWindow(QMainWindow):
         # patients) se fait en arrière-plan pour ne pas geler l'UI si le
         # serveur est lent/injoignable. La suite de l'initialisation continue
         # dans _on_startup_ready() une fois le résultat disponible.
+        self._start_startup_sequence()
+
+    def _start_startup_sequence(self):
+        """ (Re)lance la séquence réseau de démarrage en arrière-plan. Rappelée
+        après (re)configuration d'un comptoir valide. """
         worker = StartupWorker(self)
         worker.finished_startup.connect(self._on_startup_ready)
         self._track_worker(worker)
@@ -282,6 +288,15 @@ class MainWindow(QMainWindow):
     def _on_startup_ready(self, connected, state):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
         self.connected = connected
+
+        # Identifiant de comptoir invalide (1er démarrage sans config, valeur
+        # corrompue…) : on N'entre PAS en mode comptoir et on ouvre l'écran de
+        # configuration. Sans un counter_id entier valide, toutes les
+        # comparaisons/URL seraient incohérentes.
+        if self.counter_id is None:
+            self.logger.error("counter_id invalide : ouverture de l'écran de configuration.")
+            self._require_valid_counter_id()
+            return
 
         if connected and state:
             self._apply_state(state)
@@ -305,6 +320,30 @@ class MainWindow(QMainWindow):
         if not self.debug_window:
             self.loading_screen.close()
 
+    def _require_valid_counter_id(self):
+        """ Ouvre l'écran de configuration tant qu'aucun comptoir valide n'est
+        défini. Une fois un counter_id entier valide enregistré, on relance la
+        séquence de démarrage ; si l'utilisateur annule, on ne peut pas démarrer
+        le mode comptoir et on quitte proprement. """
+        if self.loading_screen:
+            self.loading_screen.close()
+        try:
+            dialog = PreferencesDialog(self)
+            accepted = dialog.exec()
+        except Exception as e:
+            self.logger.error("Écran de configuration indisponible : %s", e)
+            accepted = False
+
+        if accepted:
+            self.load_preferences()
+            if self.counter_id is not None:
+                self.logger.info("Comptoir configuré (id=%s), démarrage.", self.counter_id)
+                self._start_startup_sequence()
+                return
+
+        self.logger.error("Aucun comptoir valide configuré : arrêt de l'application.")
+        QApplication.instance().quit()
+
     def load_preferences(self):
         self.logger.info("Initialisation des préférences...")
         
@@ -316,7 +355,11 @@ class MainWindow(QMainWindow):
         self.app_secret = load_secret(settings)
         # Masquage du secret dans tous les logs (défense en profondeur).
         register_secret(self.app_secret)
-        self.counter_id = settings.value("counter_id", "1")
+        # counter_id normalisé en entier strictement positif (ou None si invalide).
+        # QSettings peut renvoyer une chaîne ("1") ; le serveur utilise des
+        # entiers. On garantit un seul type dans toute l'app pour que les
+        # comparaisons (WebSocket, patient["counter_id"]...) soient cohérentes.
+        self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
         self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")

@@ -6,6 +6,7 @@ import threading
 from PySide6.QtCore import Signal, QThread
 
 from socket_auth import build_socket_auth_headers
+from counter_id_utils import coerce_counter_id
 
 logger = logging.getLogger("appcomptoir.websocket")
 
@@ -180,17 +181,25 @@ class WebSocketClient(QThread):
         logger.debug("Événement 'paper' reçu")
         self.change_paper.emit(data)
         
+    def _event_targets_this_counter(self, data):
+        """ True si l'évènement cible ce comptoir. Comparaison entière robuste :
+        le serveur peut envoyer counter_id en int ou en chaîne ; parent.counter_id
+        est déjà normalisé en entier. """
+        payload = data.get("data") if isinstance(data, dict) else None
+        cid = payload.get("counter_id") if isinstance(payload, dict) else None
+        return coerce_counter_id(cid) == self.parent.counter_id
+
     def on_change_auto_calling(self, data):
-        if self.parent.counter_id == int(data["data"]['counter_id']):
+        if self._event_targets_this_counter(data):
             self.change_auto_calling.emit(data)
 
     def on_update_auto_calling(self, data):
-        if self.parent.counter_id == int(data["data"]['counter_id']):
+        if self._event_targets_this_counter(data):
             self.update_auto_calling.emit(data)
 
     def on_disconnect_user(self, data):
         logger.debug("Événement 'disconnect_user' reçu")
-        if self.parent.counter_id == int(data["data"]['counter_id']):
+        if self._event_targets_this_counter(data):
             self.disconnect_user.emit(data)
 
     def on_notification(self, data):
@@ -207,11 +216,13 @@ class WebSocketClient(QThread):
             notification_data = data["data"]
 
         # si on affiche à tous ou si on affiche seulement pour le counter
-        if (
-            not data["flag"] or  # Cas où tout le monde peut voir la notification
-            data["flag"] == self.parent.counter_id or  # Cas où le counter_id correspond directement
-            (isinstance(data["flag"], list) and self.parent.counter_id in data["flag"])  # Cas où flag est une liste et contient le counter_id
-        ):
+        # (comparaison entière robuste : flag peut être un id, une liste d'ids,
+        # en int ou en chaîne selon le serveur)
+        flag = data["flag"]
+        targets_all = not flag
+        targets_this = coerce_counter_id(flag) == self.parent.counter_id
+        targets_in_list = isinstance(flag, list) and self.parent.counter_id in [coerce_counter_id(f) for f in flag]
+        if targets_all or targets_this or targets_in_list:
             self.new_notification.emit(data['data'])
         
         # si la notification concerne le papier, mettre à jour le bouton

@@ -9,6 +9,7 @@ from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from notification import CustomNotification
 from connections import DEFAULT_TIMEOUT
 from secret_store import load_secret, save_secret
+from counter_id_utils import coerce_counter_id
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -361,8 +362,9 @@ class PreferencesDialog(QDialog):
         settings = QSettings()
         self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
         self.app_secret_input.setText(load_secret(settings))
-        self.counter_id = settings.value("counter_id", None)
-        self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
+        self.counter_id = coerce_counter_id(settings.value("counter_id", None))
+        label = f"{self.counter_id} - Chargement en cours..." if self.counter_id else "Sélectionnez un comptoir..."
+        self.counter_combobox.addItem(label, self.counter_id)
         vertical_position = settings.value("patient_list_vertical_position", "bottom")
         horizontal_position = settings.value("patient_list_horizontal_position", "right")
         
@@ -409,7 +411,9 @@ class PreferencesDialog(QDialog):
     def save_preferences(self):
         url = self.url_input.text()
         app_secret = self.app_secret_input.text()
-        counter_id = self.counter_combobox.currentData()
+        # counter_id normalisé en entier strictement positif (cohérent avec le
+        # serveur et avec les comparaisons de l'app).
+        counter_id = coerce_counter_id(self.counter_combobox.currentData())
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
         validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
         recall_shortcut = self.get_shortcut_text(self.recall_shortcut_input)
@@ -419,8 +423,8 @@ class PreferencesDialog(QDialog):
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
             return
-        if not counter_id:
-            QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir")
+        if counter_id is None:
+            QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
 
         settings = QSettings()
