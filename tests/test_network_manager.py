@@ -3,7 +3,7 @@
 Exécutés avec le vrai PySide6 (venv App_Comptoir) : worker QThread + file + signaux.
 On remplace la ``requests.Session`` interne par une fausse session pour ne pas
 faire d'I/O réseau, tout en exerçant la vraie mécanique (file, worker, 401/rejeu,
-timeout par requête, purge à l'arrêt, obtention de jeton).
+timeout par requête, purge à l'arrêt, obtention de jeton, NetResult).
 """
 
 import os
@@ -18,6 +18,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
 
 import connections  # noqa: E402
 from connections import NetworkManager, DEFAULT_TIMEOUT, _Job, _RequestSpec  # noqa: E402
+from net_result import NetResult  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -27,9 +28,10 @@ def qapp():
 
 
 class FakeResp:
-    def __init__(self, status, text="", json_data=None):
+    def __init__(self, status, text="", json_data=None, content_type="application/json"):
         self.status_code = status
         self.text = text
+        self.headers = {"Content-Type": content_type} if content_type else {}
         self._json = json_data
 
     def json(self):
@@ -39,9 +41,6 @@ class FakeResp:
 
 
 class FakeSession:
-    """Imite requests.Session : enregistre les appels et rend des réponses
-    programmées. ``get_responses``/``post_responses`` sont des listes consommées."""
-
     def __init__(self, get_responses=None, post_responses=None):
         self.headers = {}
         self.calls = []
@@ -73,21 +72,29 @@ def mgr_factory(qapp):
         m.stop()
 
 
-def test_request_blocking_success(mgr_factory):
-    m = mgr_factory(FakeSession(get_responses=[FakeResp(200, "ok")]))
-    elapsed, text, status = m.request_blocking("http://srv/a", timeout_s=5)
-    assert (text, status) == ("ok", 200)
-    assert elapsed >= 0.0
+def test_request_blocking_returns_netresult(mgr_factory):
+    m = mgr_factory(FakeSession(get_responses=[FakeResp(200, '{"ok": true}')]))
+    res = m.request_blocking("http://srv/a", timeout_s=5)
+    assert isinstance(res, NetResult)
+    assert res.status == 200 and res.success is True
+    assert res.data == {"ok": True}   # décodé car content-type JSON
+
+
+def test_html_response_does_not_crash_and_data_is_none(mgr_factory):
+    m = mgr_factory(FakeSession(get_responses=[
+        FakeResp(200, "<html>oops</html>", content_type="text/html")]))
+    res = m.request_blocking("http://srv/a", timeout_s=5)
+    assert res.status == 200
+    assert res.data is None            # pas de décodage d'un corps HTML
 
 
 def test_401_triggers_single_reauth_and_one_retry(mgr_factory):
-    # 1er envoi 401 -> renouvellement du jeton -> rejeu unique 200.
     m = mgr_factory(FakeSession(
-        get_responses=[FakeResp(401, "no"), FakeResp(200, "ok")],
+        get_responses=[FakeResp(401, "no"), FakeResp(200, '{"ok": 1}')],
         post_responses=[FakeResp(200, json_data={"token": "newtok"})],  # /token
     ))
-    _e, text, status = m.request_blocking("http://srv/a", timeout_s=5)
-    assert (text, status) == ("ok", 200)
+    res = m.request_blocking("http://srv/a", timeout_s=5)
+    assert res.status == 200
     gets = [c for c in m._session.calls if c[0] == "GET"]
     posts = [c for c in m._session.calls if c[0] == "POST"]
     assert len(gets) == 2      # 1 essai + 1 rejeu
@@ -99,7 +106,6 @@ def test_timeout_override_reaches_session(mgr_factory):
     m = mgr_factory(FakeSession(get_responses=[FakeResp(200, "ok"), FakeResp(200, "ok")]))
     m.request_blocking("http://srv/a", timeout=(1, 2), timeout_s=5)
     assert m._session.calls[0][2] == (1, 2)
-    # Sans surcharge -> timeout par défaut.
     m.request_blocking("http://srv/a", timeout_s=5)
     assert m._session.calls[1][2] == DEFAULT_TIMEOUT
 
@@ -109,61 +115,73 @@ def test_idempotency_key_added_as_header(mgr_factory):
     m.request_blocking("http://srv/a", method="POST", data={"x": 1},
                        idempotency_key="abc-123", timeout_s=5)
     post = [c for c in m._session.calls if c[0] == "POST"][0]
-    headers = post[4]
-    assert headers.get("X-Idempotency-Key") == "abc-123"
+    assert post[4].get("X-Idempotency-Key") == "abc-123"
 
 
-def test_network_error_uniform_format(mgr_factory):
+def test_network_error_uniform_netresult(mgr_factory):
     class BoomSession(FakeSession):
         def get(self, url, headers=None, timeout=None):
             raise connections.RequestException("boom")
     m = mgr_factory(BoomSession())
-    elapsed, text, status = m.request_blocking("http://srv/a", timeout_s=5)
-    assert status == 0
-    assert "boom" in text
+    res = m.request_blocking("http://srv/a", timeout_s=5)
+    assert res.status == 0 and res.is_timeout is True
+    assert "boom" in res.detail
+    assert res.message  # message utilisateur non vide
+
+
+def test_distinct_user_messages_per_status(mgr_factory):
+    cases = {401: "http://srv/401", 403: "http://srv/403", 423: "http://srv/423",
+             500: "http://srv/500"}
+    m = mgr_factory(FakeSession(get_responses=[
+        FakeResp(401, "a"), FakeResp(200, "{}"),  # 401 -> reauth -> re-send (200)
+    ], post_responses=[FakeResp(200, json_data={"token": "t"})]))
+    # 401 aboutit à un rejeu ; on teste plutôt le mapping directement :
+    from net_result import user_message_for_status
+    msgs = {s: user_message_for_status(s) for s in (0, 401, 403, 409, 423, 500)}
+    assert len({msgs[401], msgs[403], msgs[423], msgs[500], msgs[0]}) == 5  # tous distincts
+    assert msgs[409] == msgs[423]  # 409 et 423 partagent le même message
 
 
 def test_fetch_token_blocking_sets_session_header_and_returns_token(mgr_factory):
     m = mgr_factory(FakeSession(post_responses=[FakeResp(200, json_data={"token": "TOK42"})]))
-    tok = m.fetch_token_blocking(timeout_s=5)
-    assert tok == "TOK42"
+    assert m.fetch_token_blocking(timeout_s=5) == "TOK42"
     assert m.current_token() == "TOK42"
 
 
 def test_fetch_token_blocking_failure_clears_token(mgr_factory):
     m = mgr_factory(FakeSession(post_responses=[FakeResp(401, "denied")]))
     m._session.headers["X-App-Token"] = "old"
-    tok = m.fetch_token_blocking(timeout_s=5)
-    assert tok is None
+    assert m.fetch_token_blocking(timeout_s=5) is None
     assert m.current_token() is None
 
 
-def test_async_handle_emits_result_then_finished(mgr_factory):
-    m = mgr_factory(FakeSession(get_responses=[FakeResp(200, "ok")]))
+def test_async_handle_emits_netresult_then_finished(mgr_factory):
+    m = mgr_factory(FakeSession(get_responses=[FakeResp(200, '{"v": 1}')]))
     events = []
     h = m.make_handle("http://srv/a", method="GET")
     loop = QEventLoop()
-    h.result.connect(lambda e, t, s: events.append(("result", t, s)))
+    h.result.connect(lambda r: events.append(("result", r.status, r.data)))
     h.finished.connect(lambda: (events.append(("finished",)), loop.quit()))
     h.start()
     QTimer.singleShot(3000, loop.quit)
     loop.exec()
-    assert ("result", "ok", 200) in events
+    assert ("result", 200, {"v": 1}) in events
     assert ("finished",) in events
 
 
 def test_drain_pending_unblocks_waiting_jobs(mgr_factory):
     m = mgr_factory(FakeSession())
-    m.stop()  # arrête le worker : on contrôle la file à la main
+    m.stop()
     job = _Job("request", spec=_RequestSpec("u", "GET", None, None, None),
                event=threading.Event())
     m._queue.put(job)
-    m._drain_pending()  # simule la purge faite par le worker sur _STOP
+    m._drain_pending()
     assert job.event.is_set()
-    assert job.result_box["result"][2] == 0  # status 0 = échec "arrêt en cours"
+    res = job.result_box["result"]
+    assert isinstance(res, NetResult) and res.status == 0
 
 
 def test_stop_is_idempotent(mgr_factory):
     m = mgr_factory(FakeSession())
-    assert m.stop() in (True, False)   # 1er arrêt
-    assert m.stop() in (True, False)   # 2e arrêt : ne lève pas, ne bloque pas
+    assert m.stop() in (True, False)
+    assert m.stop() in (True, False)

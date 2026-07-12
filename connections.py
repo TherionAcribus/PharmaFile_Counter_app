@@ -6,17 +6,17 @@ une file de requêtes en série. Cela élimine tout accès concurrent à la sess
 
 - l'ajout du jeton applicatif (porté par la session, posé sous verrou) ;
 - le timeout de chaque requête ;
-- le format uniforme des résultats/erreurs : ``(elapsed, text, status_code)``,
-  ``status_code == 0`` pour une erreur réseau ;
+- un résultat homogène ``NetResult`` (statut, données JSON éventuelles, message
+  utilisateur, détail technique) ; ``status == 0`` pour une erreur réseau/timeout ;
 - le renouvellement du jeton sur 401 avec un seul rejeu ;
 - l'idempotence (en-tête ``X-Idempotency-Key`` par requête).
 
 Deux modes d'utilisation :
 - asynchrone (thread GUI) : ``make_handle(...)`` -> ``RequestHandle`` dont le
-  signal ``result(elapsed, text, status)`` est émis vers le thread appelant ;
-  ``.start()`` met la requête en file (compatible avec l'ancien RequestThread) ;
-- bloquant (threads de fond : démarrage, resync) : ``request_blocking(...)`` et
-  ``fetch_token_blocking(...)`` attendent le worker et renvoient le résultat.
+  signal ``result(NetResult)`` est émis vers le thread appelant ; ``.start()``
+  met la requête en file ;
+- bloquant (threads de fond : démarrage, resync) : ``request_blocking(...)`` (rend
+  un ``NetResult``) et ``fetch_token_blocking(...)`` attendent le worker.
   Ne JAMAIS les appeler depuis le worker lui-même (interblocage) ni, en pratique,
   depuis le thread GUI (il bloquerait).
 """
@@ -32,6 +32,7 @@ from requests.exceptions import RequestException
 from PySide6.QtCore import QObject, QThread, Signal
 
 from net_core import perform_with_reauth
+from net_result import NetResult
 
 logger = logging.getLogger("appcomptoir.connections")
 
@@ -46,11 +47,12 @@ _STOP = object()
 class RequestHandle(QObject):
     """Résultat asynchrone d'une requête.
 
-    ``result`` a la même signature que l'ancien ``RequestThread.result`` afin que
-    les gestionnaires existants se connectent sans changement. ``finished`` est
-    émis juste après (pour réinitialiser un état de bouton, etc.).
+    ``result`` porte un ``NetResult`` (issue homogène : statut, données JSON
+    éventuelles, message utilisateur, détail technique). ``finished`` est émis
+    juste après (pour toujours libérer l'état occupé d'un bouton, y compris en
+    cas d'erreur).
     """
-    result = Signal(float, str, int)
+    result = Signal(object)   # NetResult
     finished = Signal()
 
     def __init__(self, manager, spec):
@@ -137,13 +139,13 @@ class NetworkManager(QObject):
         """Exécute une requête et attend le résultat (threads de fond seulement).
 
         ``timeout`` surcharge le timeout HTTP ; ``timeout_s`` borne l'attente du
-        résultat côté appelant. Retourne ``(elapsed, text, status_code)``."""
+        résultat côté appelant. Retourne un ``NetResult``."""
         spec = _RequestSpec(url, method, data, headers, idempotency_key, timeout)
         job = _Job("request", spec=spec, event=threading.Event())
         self._queue.put(job)
         if not job.event.wait(timeout_s):
-            return (0.0, "timeout interne du gestionnaire réseau", 0)
-        return job.result_box.get("result", (0.0, "résultat indisponible", 0))
+            return NetResult.network_error("timeout interne du gestionnaire réseau")
+        return job.result_box.get("result", NetResult.network_error("résultat indisponible"))
 
     def fetch_token_blocking(self, timeout_s=30):
         """Renouvelle le jeton et attend (threads de fond). Retourne le jeton ou
@@ -207,21 +209,22 @@ class NetworkManager(QObject):
                 break
             if job is _STOP:
                 continue
+            aborted = NetResult.network_error("arrêt en cours")
             if job.handle is not None:
-                job.handle.result.emit(0.0, "arrêt en cours", 0)
+                job.handle.result.emit(aborted)
                 job.handle.finished.emit()
             if job.event is not None:
-                job.result_box["result"] = (0.0, "arrêt en cours", 0)
+                job.result_box["result"] = aborted
                 job.result_box["token"] = None
                 job.event.set()
 
     def _handle_request_job(self, job):
-        elapsed, text, status = self._execute(job.spec)
+        result = self._execute(job.spec)
         if job.handle is not None:
-            job.handle.result.emit(elapsed, text, status)
+            job.handle.result.emit(result)
             job.handle.finished.emit()
         if job.event is not None:
-            job.result_box["result"] = (elapsed, text, status)
+            job.result_box["result"] = result
             job.event.set()
 
     def _handle_token_job(self, job):
@@ -231,26 +234,31 @@ class NetworkManager(QObject):
             job.event.set()
 
     def _execute(self, spec):
+        """Exécute la requête et renvoie TOUJOURS un NetResult (jamais d'exception
+        propagée) : le handle async émet donc toujours, et un bouton quitte
+        toujours l'état « attente »."""
         cid = uuid.uuid4().hex[:8]
         start = time.time()
         try:
-            text, status = perform_with_reauth(
+            resp = perform_with_reauth(
                 send=lambda: self._send(spec),
                 reauth=self._reauth,
             )
             elapsed = time.time() - start
-            logger.debug("[cid=%s] %s %s -> %s en %.3fs", cid, spec.method, spec.url, status, elapsed)
-            return (elapsed, text, status)
+            content_type = resp.headers.get("Content-Type") if getattr(resp, "headers", None) else None
+            logger.debug("[cid=%s] %s %s -> %s en %.3fs", cid, spec.method, spec.url,
+                         resp.status_code, elapsed)
+            # Le JSON n'est décodé que si le content-type est compatible ; sinon
+            # data reste None (réponse HTML/vide/malformée -> pas de crash).
+            return NetResult.from_response(resp.status_code, resp.text, content_type)
         except RequestException as e:
             elapsed = time.time() - start
             logger.warning("[cid=%s] échec réseau après %.3fs : %s", cid, elapsed, e)
-            return (elapsed, str(e), 0)
+            return NetResult.network_error(str(e))
         except Exception as e:
-            # Garde-fou : un résultat est TOUJOURS renvoyé (status 0) pour que le
-            # handle async émette et que l'appelant (ex: bouton) quitte "waiting".
             elapsed = time.time() - start
             logger.exception("[cid=%s] erreur inattendue de requête", cid)
-            return (elapsed, str(e), 0)
+            return NetResult.network_error(str(e))
 
     def _send(self, spec):
         headers = dict(spec.headers) if spec.headers else {}

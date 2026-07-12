@@ -152,13 +152,14 @@ class IconeButton(DebounceButton):
         self.state = state
         self.update_button_icon()
 
-    def handle_response(self, elapsed_time, response_text, status_code):
-        logger.debug("handle_response (statut=%s, %.3fs)", status_code, elapsed_time)
+    def handle_response(self, result):
+        logger.debug("handle_response (statut=%s)", result.status)
         # resolve_button_state garantit que le bouton quitte "waiting" quel que
         # soit le résultat (succès, corps inattendu, ou erreur).
-        self.state = resolve_button_state(status_code, response_text, self._previous_state)
-        if status_code != 200:
-            logger.warning("Réponse en erreur du bouton (statut=%s)", status_code)
+        self.state = resolve_button_state(result.status, result.data, self._previous_state)
+        if not result.success:
+            logger.warning("Réponse en erreur du bouton (statut=%s) : %s",
+                           result.status, result.detail)
         logger.debug("État mis à jour : %s", self.state)
         self.update_button_icon()
 

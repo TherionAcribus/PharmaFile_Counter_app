@@ -1,6 +1,5 @@
 import sys
 import os
-import json
 import time
 import uuid
 import threading
@@ -806,15 +805,11 @@ class MainWindow(QMainWindow):
 
     def init_list_patients(self):
         url = f'{self.web_url}/api/patients_list_for_pyside'
-        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
-        if status == 200:
+        result = self.network_manager.request_blocking(url, method='GET')
+        if result.status == 200 and isinstance(result.data, list):
             self.logger.debug("Liste des patients récupérée")
-            try:
-                return json.loads(text)
-            except (ValueError, TypeError):
-                self.logger.warning("Liste des patients illisible (JSON invalide)")
-                return []
-        self.logger.warning("Échec de récupération de la liste (statut=%s)", status)
+            return result.data
+        self.logger.warning("Échec de récupération de la liste (statut=%s)", result.status)
         return []
 
     def recall(self):
@@ -827,50 +822,57 @@ class MainWindow(QMainWindow):
         url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
         self._submit(url, method='GET', on_result=self.handle_user_result, key="setup_user")
 
-    @Slot(float, str, int)
-    def handle_result(self, elapsed_time, response_text, status_code):
-        self.logger.debug("Réponse action patient (statut=%s, %.3fs)", status_code, elapsed_time)
-        if status_code == 200:
-            try:
-                response_data = json.loads(response_text)
-                self.update_my_patient(response_data)
-                self.update_my_buttons(response_data)
-                if self.notification_current_patient:
-                    message = f"Nouveau patient : {response_data['call_number']} pour '{response_data['activity']}'"
-                    self.show_notification({"origin": "new_patient", "message": message}, internal=True)
+    def _notify_network_error(self, result):
+        """ Affiche un message utilisateur court (distinct selon le statut :
+        401/403/409-423/5xx/timeout) et journalise le détail technique. Le détail
+        n'est jamais montré à l'utilisateur. """
+        if result.message and getattr(self, "notification_connection", True):
+            self.show_notification({"origin": "connection", "message": result.message}, internal=True)
+        if result.detail:
+            self.logger.warning("Erreur réseau (statut=%s) : %s", result.status, result.detail)
 
-            except json.JSONDecodeError as e:
-                self.logger.warning("Réponse illisible (JSON invalide) : %s", e)
+    @Slot(object)
+    def handle_result(self, result):
+        self.logger.debug("Réponse action patient (statut=%s)", result.status)
+        status = result.status
+        if status == 200:
+            data = result.data
+            if isinstance(data, dict):
+                self.update_my_patient(data)
+                self.update_my_buttons(data)
+                if self.notification_current_patient and data.get("call_number"):
+                    message = f"Nouveau patient : {data['call_number']} pour '{data.get('activity', '')}'"
+                    self.show_notification({"origin": "new_patient", "message": message}, internal=True)
+            else:
+                self.logger.warning("Réponse 200 sans JSON exploitable")
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
-        elif status_code == 204:
+        elif status == 204:
             self.update_my_patient(None)
         # utiliser pour supprimer ou remettre un patient en attente
-        elif status_code == 201:
+        elif status == 201:
             self.update_my_patient(False)
             patient = {"counter_id": self.counter_id, "id": None}
             self.update_my_buttons(patient)
-        # 423 = patient déjà pris par un autre comptoir
-        elif status_code == 423:
+        # 423 = patient déjà pris par un autre comptoir (message dédié via l'UI)
+        elif status == 423:
             self.patient_already_taken()
         else:
-            self.logger.warning("Échec de l'action patient (statut=%s)", status_code)
+            self._notify_network_error(result)
 
-    @Slot(float, str, int)
-    def handle_user_result(self, elapsed_time, response_text, status_code):
+    @Slot(object)
+    def handle_user_result(self, result):
         # si staff au comptoir
-        if status_code == 200:
+        if result.status == 200:
+            data = result.data
             try:
-                response_data = json.loads(response_text)
-                self.staff_id = response_data["staff"]['id']
-                staff_name = response_data["staff"]['name']
-                # on modifie le titre
+                self.staff_id = data["staff"]["id"]
+                staff_name = data["staff"]["name"]
                 self.update_window_title(staff_name)
                 self.update_staff_label(staff_name)
-
-            except json.JSONDecodeError as e:
-                self.logger.warning("Réponse staff illisible (JSON invalide) : %s", e)
+            except (TypeError, KeyError):
+                self.logger.warning("Réponse staff inexploitable")
         # si personne au comptoir
-        elif status_code == 204:
+        elif result.status == 204:
             self.logger.debug("Aucun staff sur le comptoir")
             # deconnexion
             self.disconnect_from_counter()
@@ -880,7 +882,7 @@ class MainWindow(QMainWindow):
             # on affiche l'interface de connexion
             self.deconnexion_interface()
         else:
-            self.logger.warning("Échec de récupération du staff (statut=%s)", status_code)
+            self._notify_network_error(result)
         
         
     def update_window_title(self, staff_name):
@@ -917,14 +919,10 @@ class MainWindow(QMainWindow):
         à chaque resynchronisation pour garantir un état cohérent, plutôt que
         d'agréger plusieurs snapshots susceptibles de se contredire. """
         url = f'{self.web_url}/api/counter/{self.counter_id}/state'
-        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
-        if status == 200:
-            try:
-                return json.loads(text)
-            except (ValueError, TypeError):
-                self.logger.warning("État illisible (JSON invalide)")
-                return None
-        self.logger.warning("Échec de récupération de l'état (statut=%s)", status)
+        result = self.network_manager.request_blocking(url, method='GET')
+        if result.status == 200 and isinstance(result.data, dict):
+            return result.data
+        self.logger.warning("Échec de récupération de l'état (statut=%s)", result.status)
         return None
 
     def _apply_state(self, state):
@@ -960,15 +958,11 @@ class MainWindow(QMainWindow):
 
     def init_patient(self):
         url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
-        elapsed, text, status = self.network_manager.request_blocking(url, method='GET')
-        if status == 200:
+        result = self.network_manager.request_blocking(url, method='GET')
+        if result.status == 200 and isinstance(result.data, dict):
             self.logger.debug("Patient courant récupéré")
-            try:
-                return json.loads(text)
-            except (ValueError, TypeError):
-                self.logger.warning("Patient courant illisible (JSON invalide)")
-                return None
-        self.logger.warning("Échec de récupération du patient (statut=%s)", status)
+            return result.data
+        self.logger.warning("Échec de récupération du patient (statut=%s)", result.status)
         return None
 
     def patient_already_taken(self):
@@ -1222,16 +1216,16 @@ class MainWindow(QMainWindow):
         # Donner le focus au champ des initiales
         self.initials_input.setFocus()
 
-    @Slot(float, str, int)
-    def handle_disconnect_result(self, elapsed_time, response_text, status_code):
-        self.logger.debug("Réponse déconnexion (statut=%s)", status_code)
-        if status_code == 200:
+    @Slot(object)
+    def handle_disconnect_result(self, result):
+        self.logger.debug("Réponse déconnexion (statut=%s)", result.status)
+        if result.status == 200:
             # Remise à jour de la barre de titre
             self.update_window_title("Déconnecté")
             # Mise à jour de l'id staff
             self.staff_id = None
         else:
-            # Afficher un message d'erreur
+            self.logger.warning("Échec de la déconnexion : %s", result.detail)
             QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
 
     def validate_login(self):
@@ -1249,29 +1243,33 @@ class MainWindow(QMainWindow):
             self._submit(url, method='POST', data=data,
                          on_result=self.handle_login_result, key="login")
 
-    @Slot(float, str, int)
-    def handle_login_result(self, elapsed_time, response_text, status_code):
-        self.logger.debug("Réponse connexion staff (statut=%s)", status_code)
-        if status_code == 200:
-            response_data = json.loads(response_text)
-            staff_name = response_data["staff"]["name"]
+    @Slot(object)
+    def handle_login_result(self, result):
+        self.logger.debug("Réponse connexion staff (statut=%s)", result.status)
+        if result.status == 200:
+            data = result.data
+            try:
+                staff_name = data["staff"]["name"]
+                self.staff_id = data["staff"]["id"]
+            except (TypeError, KeyError):
+                self.logger.warning("Réponse de connexion inexploitable")
+                QMessageBox.warning(self, "Erreur de connexion", "Réponse inattendue du serveur.")
+                return
             # Mise à jour de la barre de titre
             self.update_window_title(staff_name)
-            # Mise à jour de l'id staff
-            self.staff_id = response_data["staff"]["id"]
             # Recréer l'interface principale1
             self.recreate_main_interface()
             self.update_staff_label(staff_name)
             # Mettre à jour l'interface si nécessaire
             self.init_patient()
-        elif status_code == 204:
+        elif result.status == 204:
             self.logger.debug("Initiales inconnues")
             self.staff_id = False
             # Mettre à jour le label de connexion
             if hasattr(self, 'label_connexion'):
-                self.label_connexion.setText("Initiales incorrectes ! ")            
+                self.label_connexion.setText("Initiales incorrectes ! ")
         else:
-            # Afficher un message d'erreur
+            self.logger.warning("Échec de la connexion staff : %s", result.detail)
             QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
     
     def recreate_main_interface(self):
@@ -1521,12 +1519,12 @@ class MainWindow(QMainWindow):
         url = f'{self.web_url}/app/counter/remove_staff'
         data = {'counter_id': self.counter_id}
         try:
-            _elapsed, _text, status = self.network_manager.request_blocking(
+            result = self.network_manager.request_blocking(
                 url, method='POST', data=data, timeout=(2, 3), timeout_s=4)
-            if status == 200:
+            if result.status == 200:
                 self.logger.info("Comptoir libéré côté serveur")
             else:
-                self.logger.warning("Libération du comptoir : statut %s", status)
+                self.logger.warning("Libération du comptoir : statut %s", result.status)
         except Exception as e:
             self.logger.warning("Libération du comptoir échouée : %s", e)
 

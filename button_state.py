@@ -5,22 +5,19 @@ garantir un invariant clé : après une réponse serveur, le bouton ne doit JAMA
 rester bloqué dans l'état transitoire "waiting".
 """
 
-import json
 
-
-def resolve_button_state(status_code, response_text, previous_state):
+def resolve_button_state(status_code, data, previous_state):
     """Détermine le nouvel état d'un IconeButton d'après la réponse serveur.
 
-    - 200 avec un corps JSON ``{"status": bool}`` -> "active" / "inactive" ;
-    - 200 mais corps inattendu, OU toute autre réponse (401 après échec de
-      renouvellement du jeton, 5xx, erreur réseau ``status=0``...) -> on restaure
+    ``data`` est le JSON déjà décodé par le gestionnaire réseau (ou None si la
+    réponse n'était pas du JSON exploitable).
+
+    - 200 avec ``data == {"status": bool, ...}`` -> "active" / "inactive" ;
+    - 200 mais ``data`` absent/inattendu, OU toute autre réponse (401 après échec
+      de renouvellement, 5xx, erreur réseau ``status=0``...) -> on restaure
       ``previous_state`` afin que le bouton quitte "waiting" et redevienne
       utilisable, même en cas d'erreur.
     """
-    if status_code == 200:
-        try:
-            data = json.loads(response_text)
-            return "active" if data["status"] else "inactive"
-        except (ValueError, KeyError, TypeError):
-            return previous_state
+    if status_code == 200 and isinstance(data, dict) and "status" in data:
+        return "active" if data["status"] else "inactive"
     return previous_state

@@ -36,8 +36,8 @@ class Sender:
 def test_success_no_reauth():
     send = Sender([FakeResponse(200, "ok")])
     reauth_calls = []
-    text, status = perform_with_reauth(send, lambda: reauth_calls.append(1) or True)
-    assert (text, status) == ("ok", 200)
+    resp = perform_with_reauth(send, lambda: reauth_calls.append(1) or True)
+    assert (resp.text, resp.status_code) == ("ok", 200)
     assert send.calls == 1
     assert reauth_calls == []  # jamais appelé si pas de 401
 
@@ -45,15 +45,15 @@ def test_success_no_reauth():
 def test_401_then_reauth_then_retry_success():
     send = Sender([FakeResponse(401, "no"), FakeResponse(200, "ok")])
     reauth = lambda: True
-    text, status = perform_with_reauth(send, reauth)
-    assert (text, status) == ("ok", 200)
+    resp = perform_with_reauth(send, reauth)
+    assert (resp.text, resp.status_code) == ("ok", 200)
     assert send.calls == 2  # exactement un rejeu
 
 
 def test_401_reauth_fails_no_retry():
     send = Sender([FakeResponse(401, "no")])
-    text, status = perform_with_reauth(send, lambda: False)
-    assert status == 401
+    resp = perform_with_reauth(send, lambda: False)
+    assert resp.status_code == 401
     assert send.calls == 1  # pas de rejeu si le renouvellement échoue
 
 
@@ -66,14 +66,14 @@ def test_401_twice_only_one_retry():
         reauth_count["n"] += 1
         return True
 
-    text, status = perform_with_reauth(send, reauth)
-    assert status == 401
+    resp = perform_with_reauth(send, reauth)
+    assert resp.status_code == 401
     assert send.calls == 2         # 1 essai + 1 rejeu, pas plus
     assert reauth_count["n"] == 1  # un seul renouvellement
 
 
 def test_non_401_error_not_retried():
     send = Sender([FakeResponse(500, "boom")])
-    text, status = perform_with_reauth(send, lambda: True)
-    assert (text, status) == ("boom", 500)
+    resp = perform_with_reauth(send, lambda: True)
+    assert (resp.text, resp.status_code) == ("boom", 500)
     assert send.calls == 1
