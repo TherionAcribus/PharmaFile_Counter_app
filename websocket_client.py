@@ -4,6 +4,8 @@ import logging
 import time
 from PySide6.QtCore import Signal, QThread
 
+from socket_auth import build_socket_auth_headers
+
 logger = logging.getLogger("appcomptoir.websocket")
 
 
@@ -42,10 +44,10 @@ class WebSocketClient(QThread):
         self.username = username
         self.previously_connected = False
 
-        if "https" in self.parent.web_url:
-            self.web_url = self.parent.web_url.replace("https", "wss")
-        else:
-            self.web_url = self.parent.web_url.replace("http", "ws")
+        # On garde l'URL HTTP/HTTPS d'origine et on laisse python-socketio
+        # négocier le transport (polling puis montée en WebSocket). Forcer
+        # ws://wss:// manuellement est inutile et fragile.
+        self.web_url = self.parent.web_url
 
         # Logs verbeux (chaque ping/pong compris) réservés au mode debug déjà
         # exposé dans les Préférences ("Garder ouverte la fenêtre de log après
@@ -67,8 +69,22 @@ class WebSocketClient(QThread):
         self.sio.on('update_patient_list', self.on_update_patient_list, namespace='/socket_app_counter')
         self.sio.on('refresh_after_clear_patient_list', self.on_refresh_after_clear_patient_list, namespace='/socket_app_counter')
 
+    def _current_token(self):
+        return getattr(self.parent, "app_token", None)
+
+    def _refresh_token_if_possible(self):
+        """Tente de renouveler le jeton applicatif avant une reconnexion.
+
+        Utile quand la connexion a été refusée parce que le jeton avait expiré :
+        la tentative suivante présentera alors un jeton frais."""
+        refresh = getattr(self.parent, "try_refresh_app_token", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception as e:
+                logger.warning("Renouvellement du jeton avant reconnexion échoué : %s", e)
+
     def run(self):
-        headers = {'username': self.username}
         reconnection_attempts = 0
         max_reconnection_delay = 30
         initial_delay = 5
@@ -80,6 +96,9 @@ class WebSocketClient(QThread):
                     logger.info("Nouvelle tentative de connexion %d dans %ds", reconnection_attempts, delay)
                     time.sleep(delay)
 
+                # Jeton relu à CHAQUE tentative : une reconnexion après
+                # renouvellement utilise automatiquement le nouveau jeton.
+                headers = build_socket_auth_headers(self.username, self._current_token())
                 logger.info("Connexion à %s/socket_app_counter", self.web_url)
                 self.sio.connect(f"{self.web_url}/socket_app_counter", headers=headers)
 
@@ -91,6 +110,9 @@ class WebSocketClient(QThread):
                 reconnection_attempts += 1
                 logger.warning("Échec de connexion (tentative %d) : %s", reconnection_attempts, e)
                 self.connection_lost.emit(reconnection_attempts)  # Émet le signal de déconnexion
+                # La connexion a pu être refusée pour cause de jeton expiré :
+                # on le renouvelle pour que la prochaine tentative soit valide.
+                self._refresh_token_if_possible()
 
     def stop(self):
         self.sio.disconnect()
