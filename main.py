@@ -19,6 +19,7 @@ from connections import NetworkManager
 from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 from task_registry import TaskRegistry
+from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -259,6 +260,11 @@ class MainWindow(QMainWindow):
         # Empêche aussi une seconde action identique (même clé) tant que la
         # première est en cours.
         self._tasks = TaskRegistry()
+
+        # Coalescing des resynchronisations : une seule resync réseau active à la
+        # fois ; les demandes reçues pendant une resync sont fusionnées en une
+        # seule relance (pas de rafale de ResyncWorker).
+        self._resync = ResyncCoordinator()
 
         # Connexion (UNE seule fois) des signaux de raccourci à leurs actions
         # GUI, indépendamment des ré-enregistrements de hotkeys clavier faits à
@@ -935,9 +941,18 @@ class MainWindow(QMainWindow):
         if state.get("activities_staff"):
             self.activities_staff = state["activities_staff"]
 
-    def _reload_state_async(self):
-        """ Recharge l'état autoritatif en arrière-plan (déclenché sur détection
-        d'un trou de révision). Réutilise ResyncWorker et son applicateur. """
+    def _request_resync(self):
+        """ Déclenche une resynchronisation de l'état autoritatif en garantissant
+        qu'UNE SEULE resync réseau est active à la fois.
+
+        Si une resync est déjà en cours, on mémorise seulement qu'une nouvelle
+        passe est demandée (coalescing) : une rafale d'évènements ou de
+        reconnexions ne crée donc pas une rafale de ResyncWorker. La passe en
+        attente est relancée une seule fois à la fin (cf. _on_resync_ready). """
+        if self.shutting_down:
+            return
+        if not self._resync.request():
+            return  # une resync est déjà active : demande mémorisée
         worker = ResyncWorker(self)
         worker.finished_resync.connect(self._on_resync_ready)
         self._track_worker(worker)
@@ -975,12 +990,9 @@ class MainWindow(QMainWindow):
             if self.socket_was_disconnected:
                 # On a réellement perdu la connexion à un moment : rattrape
                 # l'état courant au lieu de compter sur le prochain évènement
-                # poussé par le serveur.
+                # poussé par le serveur. Coalescing : une seule resync à la fois.
                 self.socket_was_disconnected = False
-                worker = ResyncWorker(self)
-                worker.finished_resync.connect(self._on_resync_ready)
-                self._track_worker(worker)
-                worker.start()
+                self._request_resync()
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
             self.socket_was_disconnected = True
@@ -994,9 +1006,25 @@ class MainWindow(QMainWindow):
 
     def _on_resync_ready(self, state):
         """ Applique l'état autoritatif rattrapé (reconnexion ou trou de révision)
-        et rafraîchit l'UI : patient courant, liste, papier, autocalling ET staff. """
-        if not state:
-            return
+        et rafraîchit l'UI. Libère le verrou de resync et relance UNE passe si une
+        a été demandée entretemps. Un snapshot périmé (révision plus ancienne que
+        l'état connu) n'est jamais appliqué. """
+        relaunch = self._resync.finish()
+        try:
+            if state and snapshot_is_fresh(state.get("revision"), self.queue_revision):
+                self._apply_resync_state(state)
+            elif state:
+                self.logger.debug("Snapshot resync périmé ignoré (rev %s < %s)",
+                                  state.get("revision"), self.queue_revision)
+        finally:
+            # Coalescing : relance unique si des passes ont été demandées pendant
+            # la resync, pour converger vers l'état le plus récent.
+            if relaunch and not self.shutting_down:
+                self._request_resync()
+
+    def _apply_resync_state(self, state):
+        """ Applique effectivement la snapshot et rafraîchit l'UI (patient courant,
+        liste, papier, autocalling ET staff). """
         self._apply_state(state)
 
         # Staff en premier : peut faire basculer entre l'écran de connexion et
@@ -1549,7 +1577,7 @@ class MainWindow(QMainWindow):
                     self.logger.info("Trou de révision (%s -> %s), rechargement de l'état",
                                      self.queue_revision, revision)
                     self.queue_revision = revision
-                    self._reload_state_async()
+                    self._request_resync()
                     return
             # Établit (si pas encore de référence) ou avance la révision connue.
             self.queue_revision = revision
