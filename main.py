@@ -1085,36 +1085,61 @@ class MainWindow(QMainWindow):
 
 
     def update_my_patient(self, patient):
+        self.logger.debug("Mise à jour du patient en cours")
+
+        # Cas « pas de patient » explicites (None / False) : état sûr, sans action.
+        if patient is None:
+            self.patient_id = None
+            self.label_patient.setText("Plus de patient")
+            self._update_menu_actions(False)
+            return
+        if patient is False:
+            self.patient_id = None
+            self.label_patient.setText("Pas de patient")
+            self._update_menu_actions(False)
+            return
+
+        # À partir d'ici on attend un dict patient. On valide explicitement la
+        # structure et on ne capture QUE les exceptions attendues (clé manquante,
+        # mauvais type), au lieu d'un except générique qui masquait l'erreur.
+        if not isinstance(patient, dict):
+            self._on_invalid_patient(patient)
+            return
+
         try:
-            self.logger.debug("Mise à jour du patient en cours")
-            if patient is None:
+            # Patient d'un autre comptoir : rien à afficher ici (état inchangé).
+            if patient["counter_id"] != self.counter_id:
+                return
+
+            if patient["id"] is None:
                 self.patient_id = None
-                self.label_patient.setText("Plus de patient")
+                self.label_patient.setText("Pas de patient en cours")
                 self._update_menu_actions(False)
-            elif patient is False:
-                self.patient_id = None
-                self.label_patient.setText("Pas de patient")
-                self._update_menu_actions(False)
-            else:
-                if patient["counter_id"] == self.counter_id:
-                    if patient["id"] is None:
-                        self.patient_id = None
-                        self.label_patient.setText("Pas de patient en cours")
-                        self._update_menu_actions(False)
-                    else:
-                        self.patient_id = patient["id"]
-                        status = patient["status"]
-                        if status == "calling":
-                            status_text = "En appel"
-                        elif status == "ongoing":
-                            status_text = "Au comptoir"
-                        else:
-                            status_text = "????"
-                        language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
-                        self.label_patient.setText(f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
-                        self._update_menu_actions(True)  # Active les actions car il y a un patient
-        except:
-            self._update_
+                return
+
+            self.patient_id = patient["id"]
+            status_text = {"calling": "En appel", "ongoing": "Au comptoir"}.get(patient["status"], "????")
+            language_code = patient["language_code"]
+            language = f" ({language_code}) ".upper() if language_code != "fr" else ""
+            self.label_patient.setText(
+                f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
+            self._update_menu_actions(True)  # Active les actions car il y a un patient
+        except (KeyError, TypeError) as e:
+            self._on_invalid_patient(patient, error=e)
+
+    def _on_invalid_patient(self, patient, error=None):
+        """ Données patient incomplètes/invalides : on remet l'interface dans un
+        état sûr (aucune action patient possible) et on journalise le détail
+        technique — l'erreur originale reste visible dans les logs — sans crasher
+        ni exposer le détail à l'utilisateur. """
+        self.patient_id = None
+        self._update_menu_actions(False)
+        self.label_patient.setText("Données patient indisponibles")
+        if error is not None:
+            # Appelé depuis un except : journalise la trace de l'erreur originale.
+            self.logger.exception("Donnée patient invalide : %s", error)
+        else:
+            self.logger.error("Donnée patient invalide (type %s)", type(patient).__name__)
 
     def update_my_buttons(self, patient):
         #TEMPORAIRE
