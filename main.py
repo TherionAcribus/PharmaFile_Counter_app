@@ -5,7 +5,7 @@ import uuid
 import threading
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout, QFrame
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QMetaObject, QCoreApplication, QFile, QTextStream, QObject, QDateTime
+from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
 from PySide6.QtGui import QIcon, QAction, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
@@ -171,6 +171,17 @@ class ResyncWorker(QThread):
 class MainWindow(QMainWindow):
 
     patient_data_received = Signal(object)
+
+    # Signaux de raccourci clavier. Les callbacks de la bibliothèque `keyboard`
+    # s'exécutent hors du thread graphique : ils se contentent d'ÉMETTRE ces
+    # signaux (émission thread-safe). Les slots connectés en QueuedConnection
+    # exécutent l'action (manipulation de widgets) dans le thread GUI.
+    shortcut_next = Signal()
+    shortcut_validate = Signal()
+    shortcut_pause = Signal()
+    shortcut_recall = Signal()
+    shortcut_deconnect = Signal()
+
     patient_id = None
     staff_id = None
     activities_staff = None  # les activités "Staff" pour renvoyer un patient vers quelqu'un
@@ -243,6 +254,11 @@ class MainWindow(QMainWindow):
         # Empêche aussi une seconde action identique (même clé) tant que la
         # première est en cours.
         self._tasks = TaskRegistry()
+
+        # Connexion (UNE seule fois) des signaux de raccourci à leurs actions
+        # GUI, indépendamment des ré-enregistrements de hotkeys clavier faits à
+        # chaque changement de préférences.
+        self._connect_shortcut_signals()
 
         # La séquence réseau de démarrage (token + patient courant + liste des
         # patients) se fait en arrière-plan pour ne pas geler l'UI si le
@@ -1254,28 +1270,54 @@ class MainWindow(QMainWindow):
         # nouveau hook sur les anciens et une pression déclenchait l'action
         # autant de fois que de hooks accumulés.
         keyboard.unhook_all_hotkeys()
-        keyboard.add_hotkey(self.next_patient_shortcut, self.handle_next_patient_shortcut)
-        keyboard.add_hotkey(self.validate_patient_shortcut, self.handle_validate_shortcut)
-        keyboard.add_hotkey(self.pause_shortcut, self.handle_pause_shortcut)
-        keyboard.add_hotkey(self.recall_shortcut, self.recall)
-        keyboard.add_hotkey(self.deconnect_shortcut, self.handle_deconnect_shortcut)
+        # Les callbacks keyboard s'exécutent hors du thread GUI : ils ne font
+        # QU'ÉMETTRE un signal Qt. Aucune manipulation de widget ici. Émettre un
+        # signal depuis un thread externe est sûr ; la QueuedConnection délègue
+        # l'action au thread graphique.
+        keyboard.add_hotkey(self.next_patient_shortcut, self.shortcut_next.emit)
+        keyboard.add_hotkey(self.validate_patient_shortcut, self.shortcut_validate.emit)
+        keyboard.add_hotkey(self.pause_shortcut, self.shortcut_pause.emit)
+        keyboard.add_hotkey(self.recall_shortcut, self.shortcut_recall.emit)
+        keyboard.add_hotkey(self.deconnect_shortcut, self.shortcut_deconnect.emit)
 
-    def handle_next_patient_shortcut(self):
+    def _connect_shortcut_signals(self):
+        """ Connecte les signaux de raccourci à leurs actions dans le thread GUI.
+        Fait une seule fois (dans __init__) : la QueuedConnection garantit que les
+        slots (manipulation de widgets) s'exécutent dans le thread graphique,
+        jamais dans le thread de la bibliothèque keyboard. """
+        self.shortcut_next.connect(self._on_shortcut_next, Qt.QueuedConnection)
+        self.shortcut_validate.connect(self._on_shortcut_validate, Qt.QueuedConnection)
+        self.shortcut_pause.connect(self._on_shortcut_pause, Qt.QueuedConnection)
+        self.shortcut_recall.connect(self._on_shortcut_recall, Qt.QueuedConnection)
+        self.shortcut_deconnect.connect(self._on_shortcut_deconnect, Qt.QueuedConnection)
+
+    @Slot()
+    def _on_shortcut_next(self):
         # Ne fait que simuler le clic : le bouton est déjà connecté à
         # call_web_function_validate_and_call_next() (cf. _create_main_button_container).
         # Appeler la fonction ici en plus déclenchait l'action deux fois par
         # pression, ce qui pouvait faire avancer la file de deux patients.
-        self.btn_next.animateClick()
+        if hasattr(self, 'btn_next'):
+            self.btn_next.animateClick()
 
-    def handle_validate_shortcut(self):
-        self.btn_validate.animateClick()
+    @Slot()
+    def _on_shortcut_validate(self):
+        if hasattr(self, 'btn_validate'):
+            self.btn_validate.animateClick()
 
-    def handle_pause_shortcut(self):
-        self.btn_pause.animateClick()
-        
-    def handle_deconnect_shortcut(self):
+    @Slot()
+    def _on_shortcut_pause(self):
+        if hasattr(self, 'btn_pause'):
+            self.btn_pause.animateClick()
+
+    @Slot()
+    def _on_shortcut_recall(self):
+        self.recall()
+
+    @Slot()
+    def _on_shortcut_deconnect(self):
         self.logger.debug("Raccourci de déconnexion déclenché")
-        QMetaObject.invokeMethod(self, 'deconnection', Qt.QueuedConnection)
+        self.deconnection()
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
