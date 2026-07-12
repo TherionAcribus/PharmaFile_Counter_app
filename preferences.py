@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from notification import CustomNotification
 from connections import DEFAULT_TIMEOUT
+from secret_store import load_secret, save_secret
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -162,19 +163,6 @@ class PreferencesDialog(QDialog):
         self.status_label.setFixedWidth(400)
         self.connexion_layout.addWidget(self.status_label)
         
-        self.username_label = QLabel("Nom d'utilisateur:", self.connexion_page)
-        self.connexion_layout.addWidget(self.username_label)
-        
-        self.username_input = QLineEdit()
-        self.connexion_layout.addWidget(self.username_input)
-        
-        self.password_label = QLabel("Mot de passe:", self.connexion_page)
-        self.connexion_layout.addWidget(self.password_label)
-        
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.connexion_layout.addWidget(self.password_input)
-
         self.app_secret_label = QLabel("Secret applicatif (doit correspondre à APP_SECRET côté serveur):", self.connexion_page)
         self.connexion_layout.addWidget(self.app_secret_label)
 
@@ -369,9 +357,7 @@ class PreferencesDialog(QDialog):
     def load_preferences(self):
         settings = QSettings()
         self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
-        self.username_input.setText(settings.value("username", "admin"))
-        self.password_input.setText(settings.value("password", "admin"))
-        self.app_secret_input.setText(settings.value("app_secret", ""))
+        self.app_secret_input.setText(load_secret(settings))
         self.counter_id = settings.value("counter_id", None)
         self.counter_combobox.addItem(str(self.counter_id) + " - Chargement en cours...", self.counter_id)
         vertical_position = settings.value("patient_list_vertical_position", "bottom")
@@ -421,8 +407,6 @@ class PreferencesDialog(QDialog):
 
     def save_preferences(self):
         url = self.url_input.text()
-        username = self.username_input.text()
-        password = self.password_input.text()
         app_secret = self.app_secret_input.text()
         counter_id = self.counter_combobox.currentData()
         next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
@@ -437,16 +421,13 @@ class PreferencesDialog(QDialog):
         if not counter_id:
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir")
             return
-        if not username or not password:
-            QMessageBox.warning(self, "Erreur", "Le nom d'utilisateur et le mot de passe ne peuvent pas être vides")
-            return
-        
+
         settings = QSettings()
         old_url = settings.value("web_url")
         settings.setValue("web_url", url)
-        settings.setValue("username", username)
-        settings.setValue("password", password)
-        settings.setValue("app_secret", app_secret)
+        # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
+        # dans QSettings. save_secret efface aussi toute copie en clair héritée.
+        save_secret(settings, app_secret)
         settings.setValue("counter_id", counter_id)
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)

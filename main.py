@@ -18,6 +18,7 @@ from buttons import DebounceButton, IconeButton, PatientButton
 from notification import CustomNotification
 from connections import RequestThread, DEFAULT_TIMEOUT
 from my_logger import AppLogger
+from secret_store import load_secret
 
 # from line_profiler import profile
 def profile(func):
@@ -257,9 +258,10 @@ class MainWindow(QMainWindow):
         
         settings = QSettings()
         self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
-        self.username = settings.value("username", "admin")
-        self.password = settings.value("password", "admin")
-        self.app_secret = settings.value("app_secret", "")
+        # Le secret applicatif est lu depuis le magasin sécurisé (keyring /
+        # Gestionnaire d'identifiants Windows), avec migration automatique de
+        # l'ancienne valeur en clair éventuellement présente dans QSettings.
+        self.app_secret = load_secret(settings)
         self.counter_id = settings.value("counter_id", "1")
         self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
         self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
