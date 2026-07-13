@@ -6,7 +6,7 @@ import threading
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
-from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication
+from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication, QShortcut, QKeySequence
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
 
@@ -27,6 +27,11 @@ from window_geometry import resolve_target_geometry
 from panel_layout import (
     VERTICAL, HORIZONTAL, DEFAULT_PANEL_THICKNESS, DEFAULT_SNAP_THRESHOLD,
     clamp_thickness, compact_panel_geometry, nearest_vertical_side, snap_to_edges,
+)
+from shortcut_config import (
+    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE, ACTIONS,
+    ACTION_LABELS, SENSITIVE_ACTIONS, normalize_mode,
+    to_keyboard_hotkey, to_qt_key_sequence,
 )
 
 import logging
@@ -182,15 +187,18 @@ class MainWindow(QMainWindow):
 
     patient_data_received = Signal(object)
 
-    # Signaux de raccourci clavier. Les callbacks de la bibliothèque `keyboard`
-    # s'exécutent hors du thread graphique : ils se contentent d'ÉMETTRE ces
-    # signaux (émission thread-safe). Les slots connectés en QueuedConnection
-    # exécutent l'action (manipulation de widgets) dans le thread GUI.
-    shortcut_next = Signal()
-    shortcut_validate = Signal()
-    shortcut_pause = Signal()
-    shortcut_recall = Signal()
-    shortcut_deconnect = Signal()
+    # Signal de raccourci clavier (point 27). Les callbacks de la bibliothèque
+    # `keyboard` (mode global) s'exécutent HORS du thread graphique : ils se
+    # contentent d'ÉMETTRE ce signal avec le nom de l'action (émission
+    # thread-safe). Les QShortcut (mode premier plan) l'émettent depuis le thread
+    # GUI. L'unique slot _dispatch_shortcut, connecté en QueuedConnection, exécute
+    # l'action (confirmation éventuelle, retour visuel, clic bouton) dans le
+    # thread GUI. Un seul mécanisme est actif à la fois selon le mode -> jamais de
+    # double déclenchement.
+    shortcut_triggered = Signal(str)
+    # Émis (depuis le thread d'enregistrement keyboard) si Windows/keyboard refuse
+    # un ou plusieurs raccourcis, pour en avertir l'utilisateur dans le thread GUI.
+    shortcut_registration_failed = Signal(object)
 
     # Passe à True au tout début de la fermeture : bloque toute nouvelle action
     # réseau et évite la réentrance de closeEvent.
@@ -417,6 +425,13 @@ class MainWindow(QMainWindow):
         self.pause_shortcut = self._load_shortcut(settings, "pause_shortcut")
         self.recall_shortcut = self._load_shortcut(settings, "recall_shortcut")
         self.deconnect_shortcut = self._load_shortcut(settings, "deconnect_shortcut")
+        # Mode des raccourcis (point 27) : désactivés / actifs au premier plan /
+        # globaux. Défaut = global (comportement historique). + confirmation
+        # facultative des actions sensibles et retour visuel de l'action.
+        self.shortcut_mode = normalize_mode(settings.value("shortcut_mode", DEFAULT_MODE))
+        self.confirm_sensitive_shortcuts = settings.value(
+            "confirm_sensitive_shortcuts", False, type=bool)
+        self.shortcut_feedback = settings.value("shortcut_feedback", True, type=bool)
         self.notification_current_patient = settings.value("notification_current_patient", True, type=bool)
         self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
@@ -1716,64 +1731,182 @@ class MainWindow(QMainWindow):
         dialog.preferences_updated.connect(self.apply_preferences)
         dialog.exec()
 
-    def setup_global_shortcut(self):
-        self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
-        self.shortcut_thread.start()
+    def _shortcut_items(self):
+        """ Couples (action, texte du raccourci) dans un ordre stable. """
+        texts = {
+            "next": self.next_patient_shortcut,
+            "validate": self.validate_patient_shortcut,
+            "pause": self.pause_shortcut,
+            "recall": self.recall_shortcut,
+            "deconnect": self.deconnect_shortcut,
+        }
+        return [(action, texts[action]) for action in ACTIONS]
 
-    def setup_shortcuts(self):
-        # Retire les raccourcis précédemment enregistrés avant d'en ajouter de
-        # nouveaux : sans ça, chaque changement de préférences empilait un
-        # nouveau hook sur les anciens et une pression déclenchait l'action
-        # autant de fois que de hooks accumulés.
-        keyboard.unhook_all_hotkeys()
-        # Les callbacks keyboard s'exécutent hors du thread GUI : ils ne font
-        # QU'ÉMETTRE un signal Qt. Aucune manipulation de widget ici. Émettre un
-        # signal depuis un thread externe est sûr ; la QueuedConnection délègue
-        # l'action au thread graphique.
-        keyboard.add_hotkey(self.next_patient_shortcut, self.shortcut_next.emit)
-        keyboard.add_hotkey(self.validate_patient_shortcut, self.shortcut_validate.emit)
-        keyboard.add_hotkey(self.pause_shortcut, self.shortcut_pause.emit)
-        keyboard.add_hotkey(self.recall_shortcut, self.shortcut_recall.emit)
-        keyboard.add_hotkey(self.deconnect_shortcut, self.shortcut_deconnect.emit)
+    def setup_global_shortcut(self):
+        """ (Ré)installe les raccourcis selon le mode courant. Nom conservé car
+        appelé au démarrage (setup_ui) et après changement de préférences. """
+        self._install_shortcuts()
+
+    def _install_shortcuts(self):
+        """ Retire tous les raccourcis existants (hooks keyboard + QShortcut) puis
+        installe le mécanisme correspondant au mode : aucun (désactivés), QShortcut
+        actifs au premier plan, ou hooks globaux. Un SEUL mécanisme est actif à la
+        fois -> pas de double déclenchement. """
+        self._remove_all_shortcuts()
+        mode = getattr(self, "shortcut_mode", DEFAULT_MODE)
+        if mode == MODE_DISABLED:
+            self.logger.info("Raccourcis clavier désactivés.")
+            return
+        if mode == MODE_FOCUSED:
+            self._install_focused_shortcuts()
+        else:
+            self._install_global_shortcuts()
+
+    def _remove_all_shortcuts(self):
+        """ Désinstalle hooks keyboard globaux ET QShortcut premier plan. Retirer
+        les anciens avant d'ajouter évite l'empilement de hooks (une pression
+        déclenchait l'action autant de fois que de hooks accumulés). """
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception as e:
+            self.logger.debug("unhook_all_hotkeys : %s", e)
+        for sc in getattr(self, "_qshortcuts", []):
+            try:
+                sc.setEnabled(False)
+                sc.deleteLater()
+            except RuntimeError:
+                pass
+        self._qshortcuts = []
+
+    def _install_focused_shortcuts(self):
+        """ Mode « premier plan » : QShortcut avec contexte ApplicationShortcut ->
+        n'agissent que lorsqu'une fenêtre de PharmaFile est active. Aucun hook
+        système : pas de conflit avec le progiciel quand l'utilisateur travaille
+        ailleurs. """
+        self._qshortcuts = []
+        for action, text in self._shortcut_items():
+            seq = to_qt_key_sequence(text)
+            if not seq:
+                continue
+            shortcut = QShortcut(QKeySequence(seq), self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(lambda a=action: self.shortcut_triggered.emit(a))
+            self._qshortcuts.append(shortcut)
+        self.logger.info("Raccourcis actifs au premier plan (%s installés).",
+                         len(self._qshortcuts))
+
+    def _install_global_shortcuts(self):
+        """ Mode « global » : hooks système via la bibliothèque keyboard. Comme
+        l'installation peut être un peu lente, elle se fait en arrière-plan ; les
+        échecs (touche invalide, refus de Windows) sont collectés et signalés au
+        thread GUI. """
+        self._shortcut_thread = threading.Thread(
+            target=self._register_global_hotkeys, daemon=True)
+        self._shortcut_thread.start()
+
+    def _register_global_hotkeys(self):
+        """ Enregistre chaque raccourci global (hors thread GUI). Chaque callback
+        ne fait QU'ÉMETTRE le signal (thread-safe) ; aucune manipulation de widget
+        ici. Les échecs sont remontés via shortcut_registration_failed. """
+        failures = []
+        installed = 0
+        for action, text in self._shortcut_items():
+            hotkey = to_keyboard_hotkey(text)
+            if not hotkey:
+                continue
+            try:
+                keyboard.add_hotkey(hotkey, self._emit_shortcut, args=(action,))
+                installed += 1
+            except Exception as e:
+                # Touche inconnue ou refus de l'OS : on n'interrompt pas les
+                # autres, on collecte pour avertir l'utilisateur.
+                self.logger.warning("Raccourci '%s' (%s) refusé : %s", action, text, e)
+                failures.append((ACTION_LABELS.get(action, action), text, str(e)))
+        self.logger.info("Raccourcis globaux installés (%s).", installed)
+        if failures:
+            self.shortcut_registration_failed.emit(failures)
+
+    def _emit_shortcut(self, action):
+        """ Callback keyboard (hors thread GUI) : émission thread-safe uniquement. """
+        self.shortcut_triggered.emit(action)
 
     def _connect_shortcut_signals(self):
-        """ Connecte les signaux de raccourci à leurs actions dans le thread GUI.
-        Fait une seule fois (dans __init__) : la QueuedConnection garantit que les
-        slots (manipulation de widgets) s'exécutent dans le thread graphique,
-        jamais dans le thread de la bibliothèque keyboard. """
-        self.shortcut_next.connect(self._on_shortcut_next, Qt.QueuedConnection)
-        self.shortcut_validate.connect(self._on_shortcut_validate, Qt.QueuedConnection)
-        self.shortcut_pause.connect(self._on_shortcut_pause, Qt.QueuedConnection)
-        self.shortcut_recall.connect(self._on_shortcut_recall, Qt.QueuedConnection)
-        self.shortcut_deconnect.connect(self._on_shortcut_deconnect, Qt.QueuedConnection)
+        """ Connecte (UNE seule fois, dans __init__) le signal de raccourci à son
+        unique slot de traitement et le signal d'échec à l'avertissement. La
+        QueuedConnection garantit que le traitement (manipulation de widgets)
+        s'exécute dans le thread graphique, jamais dans le thread keyboard. """
+        self.shortcut_triggered.connect(self._dispatch_shortcut, Qt.QueuedConnection)
+        self.shortcut_registration_failed.connect(
+            self._warn_shortcut_failures, Qt.QueuedConnection)
 
-    @Slot()
-    def _on_shortcut_next(self):
-        # Ne fait que simuler le clic : le bouton est déjà connecté à
-        # call_web_function_validate_and_call_next() (cf. _create_main_button_container).
-        # Appeler la fonction ici en plus déclenchait l'action deux fois par
-        # pression, ce qui pouvait faire avancer la file de deux patients.
-        if hasattr(self, 'btn_next'):
-            self.btn_next.animateClick()
+    @Slot(str)
+    def _dispatch_shortcut(self, action):
+        """ Point d'entrée unique de toute action déclenchée par raccourci (mode
+        global ou premier plan), exécuté dans le thread GUI : confirmation
+        éventuelle des actions sensibles, retour visuel bref, puis exécution. """
+        label = ACTION_LABELS.get(action, action)
+        # Confirmation facultative des actions sensibles (ex. déconnexion).
+        if action in SENSITIVE_ACTIONS and getattr(self, "confirm_sensitive_shortcuts", False):
+            if not self._confirm_sensitive_action(label):
+                self.logger.debug("Action sensible '%s' annulée par l'utilisateur", action)
+                return
+        # Affiche brièvement quelle action a été déclenchée.
+        if getattr(self, "shortcut_feedback", False):
+            self._show_shortcut_feedback(label)
+        self._perform_shortcut_action(action)
 
-    @Slot()
-    def _on_shortcut_validate(self):
-        if hasattr(self, 'btn_validate'):
-            self.btn_validate.animateClick()
+    def _perform_shortcut_action(self, action):
+        """ Exécute l'action. Pour next/validate/pause, on simule le CLIC du bouton
+        (déjà connecté à la bonne fonction + anti-rebond) : appeler la fonction en
+        plus déclencherait l'action deux fois. Gardes hasattr : sans effet sur
+        l'écran de connexion (boutons absents). """
+        if action == "next":
+            if hasattr(self, 'btn_next'):
+                self.btn_next.animateClick()
+        elif action == "validate":
+            if hasattr(self, 'btn_validate'):
+                self.btn_validate.animateClick()
+        elif action == "pause":
+            if hasattr(self, 'btn_pause'):
+                self.btn_pause.animateClick()
+        elif action == "recall":
+            self.recall()
+        elif action == "deconnect":
+            self.logger.debug("Raccourci de déconnexion déclenché")
+            self.deconnection()
 
-    @Slot()
-    def _on_shortcut_pause(self):
-        if hasattr(self, 'btn_pause'):
-            self.btn_pause.animateClick()
+    def _confirm_sensitive_action(self, label):
+        """ Demande confirmation avant une action sensible déclenchée par raccourci.
+        Retourne True si l'utilisateur confirme. """
+        box = QMessageBox(self)
+        box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Confirmer l'action")
+        box.setText(f"Confirmer l'action « {label} » déclenchée par raccourci ?")
+        yes = box.addButton("Oui", QMessageBox.YesRole)
+        box.addButton("Non", QMessageBox.NoRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        return box.clickedButton() is yes
 
-    @Slot()
-    def _on_shortcut_recall(self):
-        self.recall()
+    def _show_shortcut_feedback(self, label):
+        """ Notification brève indiquant l'action déclenchée. force=True : ce retour
+        a sa propre préférence (shortcut_feedback), indépendante du filtre général
+        des notifications. """
+        self.show_notification(
+            {"origin": "shortcut_feedback", "message": f"Raccourci : {label}"},
+            internal=True, force=True)
 
-    @Slot()
-    def _on_shortcut_deconnect(self):
-        self.logger.debug("Raccourci de déconnexion déclenché")
-        self.deconnection()
+    @Slot(object)
+    def _warn_shortcut_failures(self, failures):
+        """ Avertit l'utilisateur quand Windows/keyboard a refusé un ou plusieurs
+        raccourcis globaux (touche invalide, combinaison réservée…). """
+        lines = "\n".join(f"• {label} ({text})" for label, text, _err in failures)
+        QMessageBox.warning(
+            self, "Raccourcis non enregistrés",
+            "Windows a refusé l'enregistrement de ces raccourcis globaux :\n\n"
+            f"{lines}\n\nModifiez-les dans les préférences ou passez en mode "
+            "« actifs au premier plan ».")
         
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
             url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'

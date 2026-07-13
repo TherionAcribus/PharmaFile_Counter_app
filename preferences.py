@@ -14,6 +14,10 @@ from panel_layout import (
     MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
     clamp_thickness,
 )
+from shortcut_config import (
+    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE,
+    ACTION_LABELS, normalize_mode, find_duplicate_shortcuts,
+)
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -215,7 +219,30 @@ class PreferencesDialog(QDialog):
         self.raccourcis_page = QWidget()
         self.raccourcis_layout = QVBoxLayout()
         self.raccourcis_page.setLayout(self.raccourcis_layout)
-        
+
+        # --- Mode des raccourcis (point 27) ---
+        self.shortcut_mode_label = QLabel("Mode des raccourcis:", self.raccourcis_page)
+        self.raccourcis_layout.addWidget(self.shortcut_mode_label)
+        self.shortcut_mode_combo = QComboBox(self.raccourcis_page)
+        # (libellé affiché, valeur enregistrée)
+        self.shortcut_mode_options = [
+            ("Désactivés", MODE_DISABLED),
+            ("Actifs seulement si PharmaFile est au premier plan", MODE_FOCUSED),
+            ("Globaux (tout le système)", MODE_GLOBAL),
+        ]
+        for label, value in self.shortcut_mode_options:
+            self.shortcut_mode_combo.addItem(label, value)
+        self.raccourcis_layout.addWidget(self.shortcut_mode_combo)
+
+        self.confirm_sensitive_checkbox = QCheckBox(
+            "Confirmer les actions sensibles (déconnexion) déclenchées par raccourci",
+            self.raccourcis_page)
+        self.raccourcis_layout.addWidget(self.confirm_sensitive_checkbox)
+
+        self.shortcut_feedback_checkbox = QCheckBox(
+            "Afficher brièvement l'action déclenchée par raccourci", self.raccourcis_page)
+        self.raccourcis_layout.addWidget(self.shortcut_feedback_checkbox)
+
         self.next_patient_shortcut_label = QLabel("Raccourci - Patient suivant:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.next_patient_shortcut_label)
         
@@ -420,6 +447,15 @@ class PreferencesDialog(QDialog):
         self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input)
         self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input)
 
+        # Mode des raccourcis + options (point 27).
+        mode = normalize_mode(settings.value("shortcut_mode", DEFAULT_MODE))
+        mode_index = self.shortcut_mode_combo.findData(mode)
+        self.shortcut_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        self.confirm_sensitive_checkbox.setChecked(
+            settings.value("confirm_sensitive_shortcuts", False, type=bool))
+        self.shortcut_feedback_checkbox.setChecked(
+            settings.value("shortcut_feedback", True, type=bool))
+
         self.show_current_patient_checkbox.setChecked(settings.value("notification_current_patient", False, type=bool))
         self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
         self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
@@ -480,6 +516,27 @@ class PreferencesDialog(QDialog):
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
 
+        # Détection des doublons de raccourcis (point 27) : deux actions ne peuvent
+        # pas utiliser la même combinaison (comparaison indépendante de l'ordre et
+        # de la casse des modificateurs). On refuse d'enregistrer si conflit.
+        shortcut_map = {
+            "next": next_patient_shortcut,
+            "validate": validate_patient_shortcut,
+            "pause": pause_shortcut,
+            "recall": recall_shortcut,
+            "deconnect": deconnect_shortcut,
+        }
+        duplicates = find_duplicate_shortcuts(shortcut_map)
+        if duplicates:
+            conflicts = "\n".join(
+                "• " + " / ".join(ACTION_LABELS.get(a, a) for a in actions)
+                for actions in duplicates.values())
+            QMessageBox.warning(
+                self, "Raccourcis en conflit",
+                "Plusieurs actions utilisent la même combinaison :\n\n"
+                f"{conflicts}\n\nAttribuez une combinaison distincte à chacune.")
+            return
+
         settings = QSettings()
         settings.setValue("web_url", url)
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
@@ -491,6 +548,9 @@ class PreferencesDialog(QDialog):
         settings.setValue("pause_shortcut", pause_shortcut)
         settings.setValue('recall_shortcut', recall_shortcut)
         settings.setValue("deconnect_shortcut", deconnect_shortcut)
+        settings.setValue("shortcut_mode", self.shortcut_mode_combo.currentData())
+        settings.setValue("confirm_sensitive_shortcuts", self.confirm_sensitive_checkbox.isChecked())
+        settings.setValue("shortcut_feedback", self.shortcut_feedback_checkbox.isChecked())
         
         # notifications
         settings.setValue("notification_current_patient", self.show_current_patient_checkbox.isChecked())
