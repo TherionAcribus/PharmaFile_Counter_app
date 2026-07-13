@@ -22,9 +22,15 @@ def _win(url="http://a", secret="s", counter=1):
         web_url=url, app_secret=secret, counter_id=counter,
         logger=logging.getLogger("test.apply_prefs"),
         calls={"reconnect": 0, "shortcut": 0},
+        # Attributs de disposition lus par apply_preferences (point 25) : inchangés
+        # par les load_preferences simulés ci-dessous, donc old_layout == new_layout.
+        horizontal_mode=False, compact_mode=False, panel_thickness=300,
+        display_patient_list=False, patient_list_position_vertical="bottom",
+        patient_list_position_horizontal="right", staff_id=None,
     )
     w.setup_global_shortcut = lambda: w.calls.__setitem__("shortcut", w.calls["shortcut"] + 1)
     w._reconnect_services = lambda: w.calls.__setitem__("reconnect", w.calls["reconnect"] + 1)
+    w.isVisible = lambda: False
     w.apply_preferences = types.MethodType(main.MainWindow.apply_preferences, w)
     return w
 

@@ -10,6 +10,10 @@ from connections import DEFAULT_TIMEOUT
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
+from panel_layout import (
+    MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
+    clamp_thickness,
+)
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -110,6 +114,24 @@ class PreferencesDialog(QDialog):
 
         self.horizontal_mode = QCheckBox("Orientation verticale", self.general_page)
         self.general_layout.addWidget(self.horizontal_mode)
+
+        # --- Mode panneau compact (point 25) ---
+        # Panneau étroit docké sur un bord (colonne verticale ou barre
+        # horizontale) plutôt qu'une fenêtre générique.
+        self.compact_mode_checkbox = QCheckBox("Mode panneau compact (docké sur un bord)", self.general_page)
+        self.general_layout.addWidget(self.compact_mode_checkbox)
+
+        self.panel_snap_checkbox = QCheckBox("Magnétisme aux bords de l'écran", self.general_page)
+        self.general_layout.addWidget(self.panel_snap_checkbox)
+
+        self.panel_thickness_layout = QHBoxLayout()
+        self.panel_thickness_label = QLabel("Épaisseur du panneau (px):", self.general_page)
+        self.panel_thickness_spinbox = QSpinBox(self.general_page)
+        self.panel_thickness_spinbox.setRange(MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS)
+        self.panel_thickness_spinbox.setSingleStep(10)
+        self.panel_thickness_layout.addWidget(self.panel_thickness_label)
+        self.panel_thickness_layout.addWidget(self.panel_thickness_spinbox)
+        self.general_layout.addLayout(self.panel_thickness_layout)
 
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
@@ -414,6 +436,10 @@ class PreferencesDialog(QDialog):
 
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
         self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
+        self.compact_mode_checkbox.setChecked(settings.value("compact_mode", False, type=bool))
+        self.panel_snap_checkbox.setChecked(settings.value("panel_snap", True, type=bool))
+        self.panel_thickness_spinbox.setValue(
+            clamp_thickness(settings.value("panel_thickness", DEFAULT_PANEL_THICKNESS)))
         self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
         self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
@@ -480,7 +506,10 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_volume", self.volume_slider.value())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
-        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())        
+        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
+        settings.setValue("compact_mode", self.compact_mode_checkbox.isChecked())
+        settings.setValue("panel_snap", self.panel_snap_checkbox.isChecked())
+        settings.setValue("panel_thickness", self.panel_thickness_spinbox.value())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
         settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])

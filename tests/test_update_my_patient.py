@@ -22,9 +22,13 @@ import main  # noqa: E402
 class FakeLabel:
     def __init__(self):
         self.text = None
+        self.tooltip = None
 
     def setText(self, t):
         self.text = t
+
+    def setToolTip(self, t):
+        self.tooltip = t
 
 
 class FakeWindow:

@@ -24,6 +24,10 @@ from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
 from preferences_diff import needs_service_reconnect
 from window_geometry import resolve_target_geometry
+from panel_layout import (
+    VERTICAL, HORIZONTAL, DEFAULT_PANEL_THICKNESS, DEFAULT_SNAP_THRESHOLD,
+    clamp_thickness, compact_panel_geometry, nearest_vertical_side, snap_to_edges,
+)
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -218,6 +222,18 @@ class MainWindow(QMainWindow):
         self.disconnect_timer = QTimer(self)  # Timer créé dans le thread principal
         self.disconnect_timer.setSingleShot(True)
         self.disconnect_timer.timeout.connect(self._handle_disconnection_timeout)
+
+        # Magnétisme aux bords (point 25) : on n'aimante pas à chaque pixel du
+        # glissement (ce qui « lutterait » contre la souris), mais peu après que
+        # l'utilisateur a relâché. Un timer débouncé, redémarré à chaque moveEvent,
+        # ne déclenche l'aimantation qu'une fois le déplacement terminé.
+        self._snap_timer = QTimer(self)
+        self._snap_timer.setSingleShot(True)
+        self._snap_timer.timeout.connect(self._apply_edge_snap)
+        # Vrai pendant qu'on repositionne la fenêtre par programme (application du
+        # mode panneau / aimantation) : évite que le moveEvent induit ne relance
+        # le timer de magnétisme en boucle.
+        self._applying_panel = False
         self.current_reconnection_attempts = 0
         self.disconnect_notification_shown = False
         # Distinct de disconnect_notification_shown (qui dépend du réglage
@@ -334,6 +350,11 @@ class MainWindow(QMainWindow):
         self.show()
         self.ensure_visible_on_screen()
 
+        # Mode panneau compact : docke la fenêtre après show() (la géométrie de
+        # cadre n'est fiable qu'une fois affichée), après la restauration/visibilité.
+        if self.compact_mode:
+            self.apply_panel_mode()
+
         self.alert_if_not_connected()
 
         if not self.debug_window:
@@ -411,6 +432,15 @@ class MainWindow(QMainWindow):
 
         self.always_on_top = settings.value("always_on_top", False, type=bool)
         self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
+        # Mode panneau compact (point 25) : panneau étroit docké sur un bord
+        # plutôt qu'une fenêtre générique. En mode vertical, colonne étroite ; en
+        # mode horizontal, barre fine au-dessus du progiciel.
+        self.compact_mode = settings.value("compact_mode", False, type=bool)
+        # Magnétisme aux bords de l'écran lors d'un déplacement manuel.
+        self.panel_snap = settings.value("panel_snap", True, type=bool)
+        # Épaisseur du panneau (largeur en vertical, hauteur en horizontal), bornée.
+        self.panel_thickness = clamp_thickness(
+            settings.value("panel_thickness", DEFAULT_PANEL_THICKNESS))
         self.display_patient_list = settings.value("display_patient_list", False, type=bool)
         self.patient_list_position_vertical = settings.value("patient_list_vertical_position", "bottom")
         self.patient_list_position_horizontal = settings.value("patient_list_horizontal_position", "right")
@@ -488,6 +518,33 @@ class MainWindow(QMainWindow):
             self.main_layout.addStretch(1)
         else:
             self.main_layout.addStretch(1)
+
+        # Mode panneau compact : resserre les marges/espacements et priorise
+        # visuellement les éléments essentiels dans une petite zone (point 25).
+        self._apply_compact_styling()
+
+    def _apply_compact_styling(self):
+        """Adapte l'interface au mode panneau compact.
+
+        On resserre marges et espacements pour tenir dans une petite zone, et on
+        garantit une hauteur minimale confortable aux boutons essentiels (Suivant/
+        Valider/Pause) pour qu'aucun ne soit tronqué et qu'ils restent lisibles.
+        En mode normal, on rétablit des valeurs standard (au cas où on quitte le
+        mode compact sans reconstruire depuis zéro)."""
+        compact = getattr(self, "compact_mode", False)
+        margin = 4 if compact else 9
+        spacing = 4 if compact else 6
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.main_layout.setSpacing(spacing)
+        if hasattr(self, "main_button_layout"):
+            self.main_button_layout.setSpacing(spacing)
+        # Hauteur minimale des boutons essentiels : lisibles et cliquables même
+        # dans un panneau étroit, sans être tronqués.
+        min_h = 44 if compact else 0
+        for name in ("btn_next", "btn_validate", "btn_pause"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setMinimumHeight(min_h)
 
     def _create_name(self):
         self.label_staff = QLabel("")
@@ -762,8 +819,9 @@ class MainWindow(QMainWindow):
 
         actions = [
             ("Relancer l'appel ", self.recall_shortcut, self.recall),
-            (None, None, self.paper_action), 
+            (None, None, self.paper_action),
             ("Changer l'orientation", None, self.toggle_orientation),
+            ("Basculer le mode compact", None, self.toggle_compact_mode),
             ("Deconnexion ", self.deconnect_shortcut, self.deconnection),
             ("Préférences", None, self.show_preferences_dialog),
             ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
@@ -864,6 +922,93 @@ class MainWindow(QMainWindow):
         self.resize(default_w, default_h)
         self.move(x, y)
         self.logger.info("Position de la fenêtre réinitialisée (écran principal)")
+
+    # --- Mode panneau compact (point 25) ---------------------------------
+
+    def _current_screen_avail(self):
+        """Zone utile de l'écran courant de la fenêtre (ou principal en secours),
+        en tuple ``(x, y, w, h)`` ; None si aucun écran."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+        g = screen.availableGeometry()
+        return (g.x(), g.y(), g.width(), g.height())
+
+    def apply_panel_mode(self):
+        """Redimensionne/positionne la fenêtre en panneau compact docké.
+
+        En mode vertical, colonne étroite (largeur = épaisseur configurée) sur le
+        bord gauche/droit le plus proche de la position actuelle ; en mode
+        horizontal, barre fine en haut de l'écran (« au-dessus du progiciel »). La
+        fenêtre reste ensuite librement redimensionnable à la souris.
+
+        Sans effet si le mode compact est désactivé."""
+        if not getattr(self, "compact_mode", False):
+            return
+        avail = self._current_screen_avail()
+        if avail is None:
+            return
+        frame = self.frameGeometry()
+        window = (frame.x(), frame.y(), frame.width(), frame.height())
+        if self.horizontal_mode:
+            # Barre horizontale dockée en haut (zone au-dessus du progiciel).
+            target = compact_panel_geometry(HORIZONTAL, avail, self.panel_thickness, "top")
+        else:
+            # Colonne verticale dockée du côté le plus proche.
+            side = nearest_vertical_side(window, avail)
+            target = compact_panel_geometry(VERTICAL, avail, self.panel_thickness, side)
+        x, y, w, h = target
+        self._applying_panel = True
+        try:
+            if self.isMaximized() or self.isFullScreen():
+                self.showNormal()
+            self.resize(w, h)
+            self.move(x, y)
+        finally:
+            self._applying_panel = False
+        self.logger.debug("Mode panneau appliqué : %s", target)
+
+    def toggle_compact_mode(self):
+        """Bascule rapide du mode panneau compact (menu « Menu »). Persiste le
+        choix et reconstruit l'interface pour appliquer le style compact ; en
+        l'activant, docke immédiatement le panneau."""
+        self.compact_mode = not self.compact_mode
+        QSettings().setValue("compact_mode", self.compact_mode)
+        self.logger.info("Mode panneau compact : %s", self.compact_mode)
+        self.create_interface()
+        if self.compact_mode:
+            self.apply_panel_mode()
+
+    def moveEvent(self, event):
+        """Déplacement de la fenêtre : (re)démarre le timer de magnétisme si le
+        magnétisme aux bords est actif. Ignoré pendant nos propres repositionnements
+        (``_applying_panel``) pour ne pas boucler."""
+        super().moveEvent(event)
+        if (getattr(self, "panel_snap", False)
+                and not self._applying_panel
+                and not self.shutting_down
+                and self.isVisible()):
+            self._snap_timer.start(200)
+
+    @Slot()
+    def _apply_edge_snap(self):
+        """Aimante la fenêtre au bord d'écran le plus proche (déclenché peu après
+        la fin d'un déplacement manuel)."""
+        if not self.panel_snap or self.shutting_down or not self.isVisible():
+            return
+        avail = self._current_screen_avail()
+        if avail is None:
+            return
+        frame = self.frameGeometry()
+        window = (frame.x(), frame.y(), frame.width(), frame.height())
+        x, y, _w, _h = snap_to_edges(window, avail, DEFAULT_SNAP_THRESHOLD)
+        if (x, y) != (window[0], window[1]):
+            self._applying_panel = True
+            try:
+                self.move(x, y)
+            finally:
+                self._applying_panel = False
+            self.logger.debug("Fenêtre aimantée au bord (%s, %s)", x, y)
 
     def _create_patient_list_widget(self):
         # Create the dock widget if it doesn't exist
@@ -989,6 +1134,10 @@ class MainWindow(QMainWindow):
     def toggle_orientation(self):
         self.horizontal_mode = not self.horizontal_mode
         self.create_interface()
+        # Le passage vertical/horizontal redocke le panneau dans la bonne
+        # dimension (colonne <-> barre) sans perdre l'état fonctionnel.
+        if self.compact_mode and self.isVisible():
+            self.apply_panel_mode()
 
     def _update_layout(self):
         # Créer un nouveau layout avec la nouvelle orientation
@@ -1329,8 +1478,11 @@ class MainWindow(QMainWindow):
             status_text = {"calling": "En appel", "ongoing": "Au comptoir"}.get(patient["status"], "????")
             language_code = patient["language_code"]
             language = f" ({language_code}) ".upper() if language_code != "fr" else ""
-            self.label_patient.setText(
-                f"{patient['call_number']}{language} {status_text} ({patient['activity']})")
+            patient_text = f"{patient['call_number']}{language} {status_text} ({patient['activity']})"
+            self.label_patient.setText(patient_text)
+            # Texte complet en infobulle : reste lisible même tronqué dans un
+            # panneau compact étroit (point 25).
+            self.label_patient.setToolTip(patient_text)
             self._update_menu_actions(True)  # Active les actions car il y a un patient
         except (KeyError, TypeError) as e:
             self._on_invalid_patient(patient, error=e)
@@ -1545,9 +1697,15 @@ class MainWindow(QMainWindow):
         # Supprime l'ancien widget central (widget de login)
         if self.centralWidget():
             self.centralWidget().deleteLater()
-        
+
         # Recrée l'interface principale
         self.create_interface()
+
+        # Après une (re)construction de l'interface comptoir alors que la fenêtre
+        # est déjà affichée (connexion staff, resync), on rétablit le panneau
+        # compact docké si le mode est actif.
+        if self.compact_mode and self.isVisible():
+            self.apply_panel_mode()
     
     def show_preferences_dialog(self):
         dialog = PreferencesDialog(self)
@@ -1725,9 +1883,18 @@ class MainWindow(QMainWindow):
         cosmétiques (raccourcis, volume) SANS reconnexion. """
         old = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
+        # Réglages affectant la disposition : un changement impose de reconstruire
+        # l'interface comptoir pour prendre effet immédiatement (orientation, mode
+        # compact, épaisseur, liste des patients).
+        old_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
+                      self.display_patient_list, self.patient_list_position_vertical,
+                      self.patient_list_position_horizontal)
         self.load_preferences()
         new = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
+        new_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
+                      self.display_patient_list, self.patient_list_position_vertical,
+                      self.patient_list_position_horizontal)
 
         # Réglages cosmétiques : toujours appliqués, aucune reconnexion requise.
         self.setup_global_shortcut()
@@ -1737,6 +1904,17 @@ class MainWindow(QMainWindow):
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
             self._reconnect_services()
+            return
+
+        # Pas de reconnexion : on applique à chaud les changements de disposition.
+        staff_present = isinstance(self.staff_id, int) and bool(self.staff_id)
+        if old_layout != new_layout and staff_present:
+            self.create_interface()
+            self.load_skin()
+        # Applique (ou retire) la forme de panneau compact. Utile aussi sur l'écran
+        # de connexion : la fenêtre prend/quitte la forme d'un panneau docké.
+        if self.compact_mode and self.isVisible():
+            self.apply_panel_mode()
 
     def _reconnect_services(self):
         """ Reconnexion complète après changement de serveur/secret/comptoir :
@@ -1780,6 +1958,8 @@ class MainWindow(QMainWindow):
         # create_interface() supprime l'ancien widget central -> reconstruction propre.
         self.create_interface()
         self.load_skin()
+        if self.compact_mode and self.isVisible():
+            self.apply_panel_mode()
         self.setup_user()
         self.start_socket_io_client(self.web_url)
         self.alert_if_not_connected()
