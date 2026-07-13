@@ -190,6 +190,10 @@ class MainWindow(QMainWindow):
     # réseau et évite la réentrance de closeEvent.
     shutting_down = False
 
+    # Vrai pendant une déconnexion utilisateur en attente de confirmation serveur
+    # (évite les doubles déclenchements ; l'UI n'est finalisée qu'après la réponse).
+    _disconnect_in_progress = False
+
     patient_id = None
     staff_id = None
     activities_staff = None  # les activités "Staff" pour renvoyer un patient vers quelqu'un
@@ -1268,8 +1272,18 @@ class MainWindow(QMainWindow):
         return login_widget
     
     def deconnection(self):
-        self.disconnect_from_counter()
-        self.deconnexion_interface()
+        """ Déconnexion demandée par l'utilisateur. On affiche « Déconnexion en
+        cours » et on NE bascule PAS immédiatement sur l'écran de connexion : la
+        bascule n'a lieu qu'APRÈS confirmation du serveur (handle_disconnect_result).
+        En cas d'échec, l'état précédent est conservé et on propose de réessayer,
+        pour éviter toute divergence entre l'état local et l'état serveur. """
+        if self._disconnect_in_progress:
+            return
+        self._disconnect_in_progress = True
+        # Mémorise le titre courant (nom du staff) pour le restaurer en cas d'échec.
+        self._title_before_disconnect = self.windowTitle()
+        self.setWindowTitle("PharmaFile - Déconnexion en cours…")
+        self.disconnect_from_counter(on_result=self.handle_disconnect_result)
 
     def deconnexion_interface(self):
         self.logger.debug("Affichage de l'interface de connexion")
@@ -1284,12 +1298,17 @@ class MainWindow(QMainWindow):
         # réactivation après 100ms
         QTimer.singleShot(100, self.enable_initials_input)
 
-    def disconnect_from_counter(self):
-        # Deconnexion sur le serveur
+    def disconnect_from_counter(self, on_result=None):
+        """ Envoie la déconnexion (remove_staff) au serveur.
+
+        ``on_result`` : handler de résultat. La déconnexion utilisateur passe
+        handle_disconnect_result (finalise l'UI après confirmation). Le chemin
+        automatique (staff déjà absent côté serveur, 204) l'appelle sans handler
+        (fire-and-forget), l'UI ayant déjà été mise à jour selon l'état serveur. """
         url = f'{self.web_url}/app/counter/remove_staff'
         data = {'counter_id': self.counter_id}
         self._submit(url, method='POST', data=data,
-                     on_result=self.handle_disconnect_result, key="disconnect")
+                     on_result=on_result, key="disconnect")
 
     def enable_initials_input(self):
         """ Permet d'activer le champ des initiales lors de l'initialisation + focus
@@ -1301,14 +1320,35 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def handle_disconnect_result(self, result):
         self.logger.debug("Réponse déconnexion (statut=%s)", result.status)
+        self._disconnect_in_progress = False
         if result.status == 200:
-            # Remise à jour de la barre de titre
-            self.update_window_title("Déconnecté")
-            # Mise à jour de l'id staff
+            # Confirmé par le serveur : on finalise SEULEMENT maintenant l'écran
+            # de connexion (pas avant, pour éviter un faux état local).
             self.staff_id = None
+            self.update_window_title("Déconnecté")
+            self.deconnexion_interface()
         else:
+            # Échec (réseau, 5xx…) : l'état précédent est CONSERVÉ (l'utilisateur
+            # reste connecté au comptoir). On rétablit le titre et on propose de
+            # réessayer, pour ne pas diverger de l'état serveur.
             self.logger.warning("Échec de la déconnexion : %s", result.detail)
-            QMessageBox.warning(self, "Erreur de connexion", "Impossible de se connecter. Veuillez réessayer.")
+            self._offer_retry_disconnect(result)
+
+    def _offer_retry_disconnect(self, result):
+        """ Rétablit l'état connecté et propose « Réessayer » après un échec de
+        déconnexion. """
+        if getattr(self, "_title_before_disconnect", None):
+            self.setWindowTitle(self._title_before_disconnect)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Déconnexion impossible")
+        box.setText((result.message or "La déconnexion a échoué.")
+                    + "\nVous êtes toujours connecté au comptoir.")
+        retry_btn = box.addButton("Réessayer", QMessageBox.AcceptRole)
+        box.addButton("Annuler", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is retry_btn:
+            self.deconnection()
 
     def validate_login(self):
         if not self.app_token:
