@@ -6,7 +6,7 @@ import threading
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
-from PySide6.QtGui import QIcon, QAction, QPainter
+from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
 
@@ -23,6 +23,7 @@ from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
 from preferences_diff import needs_service_reconnect
+from window_geometry import resolve_target_geometry
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -244,6 +245,11 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.aboutToQuit.connect(self.cleanup_systray)
 
+        # Si un moniteur est débranché/ajouté ou la géométrie d'un écran change,
+        # on revérifie que la fenêtre reste dans une zone visible (point 24).
+        app.screenRemoved.connect(lambda _screen: self.ensure_visible_on_screen())
+        app.screenAdded.connect(lambda _screen: self.ensure_visible_on_screen())
+
         self.logger.info("Test de la connexion...")
         self.app_token = None
         self.connected = False
@@ -320,7 +326,11 @@ class MainWindow(QMainWindow):
         self.start_socket_io_client(self.web_url)
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
+        # Restaure la géométrie mémorisée AVANT show(), puis vérifie la visibilité
+        # APRÈS show() (la géométrie de cadre n'est fiable qu'une fois affichée).
+        self.restore_window_geometry()
         self.show()
+        self.ensure_visible_on_screen()
 
         self.alert_if_not_connected()
 
@@ -753,6 +763,7 @@ class MainWindow(QMainWindow):
             ("Deconnexion ", self.deconnect_shortcut, self.deconnection),
             ("Préférences", None, self.show_preferences_dialog),
             ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
+            ("Réinitialiser la position", None, self.reset_window_position),
         ]
 
         for text, shortcut, callback in actions:
@@ -764,6 +775,91 @@ class MainWindow(QMainWindow):
                 self.more_menu.addAction(action)
 
         self.btn_more.setMenu(self.more_menu)
+
+    # --- Persistance de la géométrie de la fenêtre (taille/position/moniteur) ---
+
+    GEOMETRY_KEY = "window_geometry"
+    SCREEN_KEY = "window_screen_name"
+    DEFAULT_WINDOW_SIZE = (400, 300)  # taille par défaut après réinitialisation
+
+    def save_window_geometry(self):
+        """Mémorise taille, position (état maximisé inclus) et nom du moniteur.
+        Appelé à la fermeture. saveGeometry() encode aussi l'écran/DPI."""
+        settings = QSettings()
+        settings.setValue(self.GEOMETRY_KEY, self.saveGeometry())
+        screen = self.screen()
+        settings.setValue(self.SCREEN_KEY, screen.name() if screen else "")
+
+    def restore_window_geometry(self):
+        """Restaure la géométrie mémorisée. La vérification de visibilité est faite
+        séparément (ensure_visible_on_screen) APRÈS show(), quand la géométrie de
+        cadre est fiable. Retourne True si une géométrie a été restaurée."""
+        settings = QSettings()
+        geometry = settings.value(self.GEOMETRY_KEY)
+        if not geometry:
+            return False  # premier lancement : on laisse Qt placer la fenêtre
+        try:
+            return bool(self.restoreGeometry(geometry))
+        except (TypeError, ValueError) as e:
+            self.logger.warning("Géométrie enregistrée illisible : %s", e)
+            return False
+
+    def _screen_rects(self):
+        """Zones utiles (hors barre des tâches) de tous les écrans, en tuples."""
+        rects = []
+        for screen in QGuiApplication.screens():
+            g = screen.availableGeometry()
+            rects.append((g.x(), g.y(), g.width(), g.height()))
+        return rects
+
+    @Slot()
+    def ensure_visible_on_screen(self):
+        """Vérifie que la fenêtre reste dans une zone visible. Si son moniteur
+        d'origine a disparu ou qu'elle n'est plus assez visible (déconnexion,
+        changement d'écran, résolution réduite), on la recentre sur l'écran
+        principal."""
+        if self.shutting_down or not self.isVisible():
+            return
+        frame = self.frameGeometry()
+        window = (frame.x(), frame.y(), frame.width(), frame.height())
+        primary = QGuiApplication.primaryScreen()
+        if primary is None:
+            return
+        pa = primary.availableGeometry()
+        stored_name = QSettings().value(self.SCREEN_KEY) or None
+        target = resolve_target_geometry(
+            window,
+            self._screen_rects(),
+            (pa.x(), pa.y(), pa.width(), pa.height()),
+            stored_screen_name=stored_name,
+            available_screen_names=[s.name() for s in QGuiApplication.screens()],
+        )
+        if target is not None:
+            self.logger.info("Fenêtre hors zone visible : recentrage sur l'écran principal")
+            x, y, w, h = target
+            self.resize(w, h)
+            self.move(x, y)
+
+    def reset_window_position(self):
+        """Commande « Réinitialiser la position » : oublie la géométrie mémorisée
+        et recentre la fenêtre (taille par défaut) sur l'écran principal."""
+        settings = QSettings()
+        settings.remove(self.GEOMETRY_KEY)
+        settings.remove(self.SCREEN_KEY)
+        if self.isMaximized() or self.isFullScreen():
+            self.showNormal()
+        primary = QGuiApplication.primaryScreen()
+        if primary is None:
+            return
+        pa = primary.availableGeometry()
+        # Taille par défaut raisonnable, bornée à l'écran.
+        default_w = min(self.DEFAULT_WINDOW_SIZE[0], pa.width())
+        default_h = min(self.DEFAULT_WINDOW_SIZE[1], pa.height())
+        x = pa.x() + (pa.width() - default_w) // 2
+        y = pa.y() + (pa.height() - default_h) // 2
+        self.resize(default_w, default_h)
+        self.move(x, y)
+        self.logger.info("Position de la fenêtre réinitialisée (écran principal)")
 
     def _create_patient_list_widget(self):
         # Create the dock widget if it doesn't exist
@@ -1702,6 +1798,13 @@ class MainWindow(QMainWindow):
         if self.shutting_down:
             event.accept()
             return
+        # Mémorise taille/position/moniteur AVANT de marquer l'arrêt (la fenêtre
+        # est encore valide et affichée).
+        try:
+            self.save_window_geometry()
+        except Exception as e:
+            self.logger.debug("Sauvegarde de la géométrie à la fermeture : %s", e)
+
         self.shutting_down = True
         self.logger.info("Fermeture de l'App : arrêt propre en cours")
 

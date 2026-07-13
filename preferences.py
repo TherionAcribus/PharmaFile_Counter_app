@@ -132,6 +132,12 @@ class PreferencesDialog(QDialog):
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
 
+        # Réinitialise taille/position de la fenêtre (utile si elle est perdue
+        # hors écran après un changement de moniteur). Voir point 24.
+        self.reset_position_button = QPushButton("Réinitialiser la position de la fenêtre", self.general_page)
+        self.reset_position_button.clicked.connect(self._reset_window_position)
+        self.general_layout.addWidget(self.reset_position_button)
+
         # Ajout de la sélection de skins
         self.skin_label = QLabel("Sélectionner un skin:", self.general_page)
         self.general_layout.addWidget(self.skin_label)
@@ -473,6 +479,12 @@ class PreferencesDialog(QDialog):
         # branché sur ce signal. On NE recharge PAS ici : apply_preferences a besoin
         # des anciennes valeurs pour détecter le changement.
         self.preferences_updated.emit()
+
+    def _reset_window_position(self):
+        """Délègue à la fenêtre principale la réinitialisation de sa géométrie."""
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "reset_window_position"):
+            parent.reset_window_position()
 
     def get_shortcut_text(self, widget):
         keys = []
