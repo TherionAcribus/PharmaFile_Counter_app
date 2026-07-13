@@ -118,6 +118,31 @@ def test_idempotency_key_added_as_header(mgr_factory):
     assert post[4].get("X-Idempotency-Key") == "abc-123"
 
 
+def test_idempotency_key_preserved_across_401_retry(mgr_factory):
+    # Une action POST idempotente prend un 401, déclenche le renouvellement du
+    # jeton, puis est rejouée : le rejeu DOIT réutiliser exactement la même clé
+    # d'idempotence (sinon le serveur exécuterait l'action deux fois).
+    m = mgr_factory(FakeSession(post_responses=[
+        FakeResp(401, "expired"),                       # 1er envoi de l'action
+        FakeResp(200, json_data={"token": "newtok"}),   # renouvellement du jeton
+        FakeResp(200, "ok"),                             # rejeu de l'action
+    ]))
+    m.request_blocking("http://srv/act", method="POST", data={"x": 1},
+                       idempotency_key="same-key", timeout_s=5)
+
+    target_posts = [c for c in m._session.calls
+                    if c[0] == "POST" and c[1] == "http://srv/act"]
+    token_posts = [c for c in m._session.calls
+                   if c[0] == "POST" and c[1] == "http://srv/token"]
+
+    assert len(target_posts) == 2          # 1 envoi + 1 rejeu après 401
+    # c[4] = en-têtes de la requête POST (cf. FakeSession.post).
+    keys = {(c[4] or {}).get("X-Idempotency-Key") for c in target_posts}
+    assert keys == {"same-key"}            # MÊME clé sur les deux envois
+    assert len(token_posts) == 1
+    assert (token_posts[0][4] or {}).get("X-Idempotency-Key") is None  # jamais sur le renouvellement
+
+
 def test_network_error_uniform_netresult(mgr_factory):
     class BoomSession(FakeSession):
         def get(self, url, headers=None, timeout=None):
