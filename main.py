@@ -21,6 +21,7 @@ from task_registry import TaskRegistry
 from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
+from preferences_diff import needs_service_reconnect
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -1363,14 +1364,12 @@ class MainWindow(QMainWindow):
     
     def show_preferences_dialog(self):
         dialog = PreferencesDialog(self)
+        # apply_preferences (branché sur preferences_updated, émis à
+        # l'enregistrement) recharge les préférences, applique les réglages
+        # cosmétiques et reconnecte les services si serveur/secret/comptoir ont
+        # changé. Rien à refaire ici après exec().
         dialog.preferences_updated.connect(self.apply_preferences)
-        if dialog.exec():
-            # a la fermeture on recharge les preferences
-            self.load_preferences()
-            # on ajuste le volume
-            self.audio_player.set_volume(self.sound_volume)
-            # on recharge les raccourcis
-            self.setup_global_shortcut()
+        dialog.exec()
 
     def setup_global_shortcut(self):
         self.shortcut_thread = threading.Thread(target=self.setup_shortcuts, daemon=True)
@@ -1533,8 +1532,70 @@ class MainWindow(QMainWindow):
         return worker
 
     def apply_preferences(self):
+        """ Appelé après enregistrement des préférences. Compare les anciennes et
+        nouvelles valeurs : si le serveur, le secret ou le comptoir changent, on
+        reconnecte entièrement les services ; sinon on n'applique que les réglages
+        cosmétiques (raccourcis, volume) SANS reconnexion. """
+        old = {"web_url": self.web_url, "app_secret": self.app_secret,
+               "counter_id": self.counter_id}
         self.load_preferences()
-        self.setup_global_shortcut()    
+        new = {"web_url": self.web_url, "app_secret": self.app_secret,
+               "counter_id": self.counter_id}
+
+        # Réglages cosmétiques : toujours appliqués, aucune reconnexion requise.
+        self.setup_global_shortcut()
+        if hasattr(self, "audio_player"):
+            self.audio_player.set_volume(self.sound_volume)
+
+        if needs_service_reconnect(old, new):
+            self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
+            self._reconnect_services()
+
+    def _reconnect_services(self):
+        """ Reconnexion complète après changement de serveur/secret/comptoir :
+        ferme l'ancien WebSocket, nettoie jeton/session et l'état local, puis
+        relance en arrière-plan l'obtention d'un nouveau jeton + le snapshot du
+        nouveau comptoir (la reconstruction UI + reconnexion WS se font dans
+        _on_reconnect_ready). """
+        # 1. Fermer l'ancien WebSocket : plus aucun évènement de l'ancien comptoir.
+        if getattr(self, "socket_io_client", None):
+            self.socket_io_client.stop(timeout_ms=3000)
+            self.socket_io_client = None
+
+        # 2. Nettoyer jeton + session (le nouveau serveur/secret est déjà chargé).
+        self.app_token = None
+        if hasattr(self, "network_manager"):
+            self.network_manager.clear_token()
+
+        # 3. Repartir d'un état local vierge (rien de l'ancien comptoir).
+        self.queue_revision = -1
+        self.my_patient = None
+        self.list_patients = []
+        self.socket_was_disconnected = False
+
+        # 4. Nouveau jeton + snapshot en arrière-plan.
+        worker = StartupWorker(self)
+        worker.finished_startup.connect(self._on_reconnect_ready)
+        self._track_worker(worker)
+        worker.start()
+
+    def _on_reconnect_ready(self, connected, state):
+        """ Fin de la reconnexion : applique le snapshot du nouveau comptoir,
+        reconstruit l'interface comptoir et rouvre le WebSocket (sans re-créer
+        systray/audio, déjà en place). """
+        self.connected = connected
+        if connected and state:
+            self._apply_state(state)
+        else:
+            self.my_patient = None
+            self.list_patients = []
+
+        # create_interface() supprime l'ancien widget central -> reconstruction propre.
+        self.create_interface()
+        self.load_skin()
+        self.setup_user()
+        self.start_socket_io_client(self.web_url)
+        self.alert_if_not_connected()
 
     def init_audio(self):
         self.audio_player = AudioPlayer(self)

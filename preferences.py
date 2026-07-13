@@ -430,7 +430,6 @@ class PreferencesDialog(QDialog):
             return
 
         settings = QSettings()
-        old_url = settings.value("web_url")
         settings.setValue("web_url", url)
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
         # dans QSettings. save_secret efface aussi toute copie en clair héritée.
@@ -466,15 +465,13 @@ class PreferencesDialog(QDialog):
         self.current_skin = self.skin_combo.currentText()
         
         self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
-        self.parent().show() 
+        self.parent().show()
 
-        if url != old_url:
-            logger.debug("URL modifiée, redémarrage du client de connexion")
-            #2self.parent().start_sse_client(url)
-            # TODO idem avec websocket
-        
         self.accept()
-        self.parent().load_preferences()
+        # Le rechargement des préférences ET la reconnexion éventuelle des services
+        # (si serveur/secret/comptoir ont changé) sont gérés par apply_preferences,
+        # branché sur ce signal. On NE recharge PAS ici : apply_preferences a besoin
+        # des anciennes valeurs pour détecter le changement.
         self.preferences_updated.emit()
 
     def get_shortcut_text(self, widget):

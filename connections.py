@@ -160,6 +160,12 @@ class NetworkManager(QObject):
         with self._session_lock:
             return self._session.headers.get("X-App-Token")
 
+    def clear_token(self):
+        """Retire le jeton de la session (ex: changement de serveur/secret) pour
+        ne plus présenter un jeton périmé avant d'en obtenir un nouveau."""
+        with self._session_lock:
+            self._session.headers.pop("X-App-Token", None)
+
     def stop(self, timeout_ms=3000):
         """Arrête le worker (idempotent) et attend au plus ``timeout_ms``.
 

@@ -185,3 +185,11 @@ def test_stop_is_idempotent(mgr_factory):
     m = mgr_factory(FakeSession())
     assert m.stop() in (True, False)
     assert m.stop() in (True, False)
+
+
+def test_clear_token_removes_session_header(mgr_factory):
+    m = mgr_factory(FakeSession(post_responses=[FakeResp(200, json_data={"token": "TOK"})]))
+    m.fetch_token_blocking(timeout_s=5)
+    assert m.current_token() == "TOK"
+    m.clear_token()   # ex: changement de serveur/secret
+    assert m.current_token() is None
