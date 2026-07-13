@@ -14,7 +14,7 @@ from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
 from buttons import DebounceButton, IconeButton
 from patient_list_model import PatientListModel
-from notification import CustomNotification
+from notification import CustomNotification, NotificationManager
 from connections import NetworkManager
 from my_logger import AppLogger, register_secret
 from secret_store import load_secret
@@ -234,6 +234,8 @@ class MainWindow(QMainWindow):
         self.logger.info("Initialisation de la session...")
 
         self.activities_staff = None  # pour être en global
+        # Gestionnaire de notifications (créé paresseusement au premier affichage).
+        self.notification_manager = None
 
         # LOAD PREFERENCES
         self.load_preferences()
@@ -403,6 +405,8 @@ class MainWindow(QMainWindow):
         self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
         self.notification_duration = settings.value("notification_duration", 5, type=int)
         self.notification_font_size = settings.value("notification_font_size", 12, type=int)
+        # Coin de l'écran où empiler les notifications (configurable).
+        self.notification_corner = settings.value("notification_corner", "bottom-left")
         self.sound_volume = settings.value("notification_volume", 50, type=int)
 
         self.always_on_top = settings.value("always_on_top", False, type=bool)
@@ -706,7 +710,7 @@ class MainWindow(QMainWindow):
 
     def close_please_validate_notification(self):
         # Fermeture des notification qui appele à valider le patient si il y a en a ouverte et que l'on clique sur le bouton "Valider"
-        if hasattr(self, 'notification_manager'):
+        if getattr(self, 'notification_manager', None) is not None:
             for notification in self.notification_manager.active_notifications[:]:  # Create a copy of the list to avoid modification during iteration
                 if isinstance(notification, CustomNotification) and getattr(notification, 'origin', None) == "please_validate":
                     notification.close()
@@ -1957,10 +1961,19 @@ class MainWindow(QMainWindow):
         self.patient_model.set_staff_id(self.staff_id)
         self.patient_model.set_patients(self.list_patients or [])
 
-    def show_notification(self, data, internal=False):
-        if self.notification_specific_acts:
-            notification = CustomNotification(data=data, parent=self, internal=internal)
-            notification.show()
+    def _ensure_notification_manager(self):
+        """Crée (au besoin) et retourne le gestionnaire de notifications, qui
+        centralise écran cible, coin, déduplication et file d'attente."""
+        if getattr(self, "notification_manager", None) is None:
+            self.notification_manager = NotificationManager(self)
+        return self.notification_manager
+
+    def show_notification(self, data, internal=False, font_size=None, force=False):
+        # `force` = afficher même si les notifications sont désactivées (bouton de
+        # test des préférences).
+        if force or self.notification_specific_acts:
+            self._ensure_notification_manager().notify(
+                data, internal=internal, font_size=font_size)
 
     def _handle_connection_lost(self, reconnection_attempts):
         """Gère la perte de connexion"""

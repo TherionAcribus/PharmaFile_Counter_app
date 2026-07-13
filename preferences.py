@@ -6,7 +6,6 @@ from datetime import datetime
 logger = logging.getLogger("appcomptoir.preferences")
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
-from notification import CustomNotification
 from connections import DEFAULT_TIMEOUT
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
@@ -285,6 +284,23 @@ class PreferencesDialog(QDialog):
         self.notification_font_size_layout.addWidget(self.notification_font_size_spinbox)
         self.notifications_layout.addLayout(self.notification_font_size_layout)
 
+        # Coin de l'écran où afficher les notifications (point 26).
+        self.notification_corner_layout = QHBoxLayout()
+        self.notification_corner_label = QLabel("Coin d'affichage des notifications:", self.notifications_page)
+        self.notification_corner_combo = QComboBox(self.notifications_page)
+        # (libellé affiché, valeur enregistrée)
+        self.notification_corner_options = [
+            ("En bas à gauche", "bottom-left"),
+            ("En bas à droite", "bottom-right"),
+            ("En haut à gauche", "top-left"),
+            ("En haut à droite", "top-right"),
+        ]
+        for label, value in self.notification_corner_options:
+            self.notification_corner_combo.addItem(label, value)
+        self.notification_corner_layout.addWidget(self.notification_corner_label)
+        self.notification_corner_layout.addWidget(self.notification_corner_combo)
+        self.notifications_layout.addLayout(self.notification_corner_layout)
+
         # Ajout du contrôle du volume avec affichage numérique
         self.volume_layout = QHBoxLayout()
         self.volume_label = QLabel("Volume des notifications:", self.notifications_page)
@@ -391,6 +407,9 @@ class PreferencesDialog(QDialog):
         self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
+        corner_value = settings.value("notification_corner", "bottom-left")
+        corner_index = self.notification_corner_combo.findData(corner_value)
+        self.notification_corner_combo.setCurrentIndex(corner_index if corner_index >= 0 else 0)
         self.volume_slider.setValue(settings.value("notification_volume", 50, type=int))
 
         self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
@@ -457,6 +476,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
+        settings.setValue("notification_corner", self.notification_corner_combo.currentData())
         settings.setValue("notification_volume", self.volume_slider.value())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
@@ -570,7 +590,8 @@ class PreferencesDialog(QDialog):
     def test_notification(self):
         data = {"origin": "test_notification", "message": "Test de notification"}
         font_size = self.notification_font_size_spinbox.value()
-        notification = CustomNotification(data=data, font_size=font_size,parent=self.parent(), internal=True)
         self.parent().audio_player.set_volume(self.volume_spinbox.value())
-        notification.show()
+        # Passe par le gestionnaire (écran de l'app, coin configuré, sans focus) ;
+        # force=True car le test doit s'afficher même notifications désactivées.
+        self.parent().show_notification(data, internal=True, font_size=font_size, force=True)
 
