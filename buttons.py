@@ -81,6 +81,14 @@ class IconeButton(DebounceButton):
 
         self.icon_path = icon_path
         self.icon_inactive_path = icon_inactive_path
+        # Les QIcon (active / inactive) sont chargées UNE seule fois ici, depuis
+        # le disque, puis réutilisées à chaque changement d'état. update_button_icon()
+        # ne fait plus d'accès disque : un simple changement d'état ne relit plus
+        # les fichiers .ico (cf. point 22). La taille d'icône est aussi mise en
+        # cache pour éviter de recréer un QSize à chaque rafraîchissement.
+        self._icon_active = QIcon(icon_path)
+        self._icon_inactive = QIcon(icon_inactive_path)
+        self._icon_size = QSize(50, 50)
         self.flask_url = flask_url
         self.tooltip_text = tooltip_text
         self.tooltip_inactive_text = tooltip_inactive_text
@@ -91,8 +99,8 @@ class IconeButton(DebounceButton):
         self.main_window = parent
         self.is_always_visible = is_always_visible
         self.setFixedSize(50, 50)
-        self.setIcon(QIcon(self.icon_path))
-        self.setIconSize(QSize(50, 50))
+        self.setIcon(self._icon_active)
+        self.setIconSize(self._icon_size)
         self.setStyleSheet("border: none;")
         self.state = state  # inactive, active, waiting
         # État à restaurer si la requête échoue, pour ne jamais rester bloqué en
@@ -153,24 +161,24 @@ class IconeButton(DebounceButton):
 
         if self.state == "inactive":
             if self.is_always_visible:
-                self.setIcon(QIcon(self.icon_inactive_path))
-                self.setIconSize(QSize(50, 50))
+                self.setIcon(self._icon_inactive)
+                self.setIconSize(self._icon_size)
                 self.setEnabled(True)
                 self.setToolTip(self.tooltip_inactive_text)
-                self.show()  
+                self.show()
             else:
                 self.hide()
         elif self.state == "active":
-            self.show() 
-            self.setIcon(QIcon(self.icon_path))
-            self.setIconSize(QSize(50, 50))
+            self.show()
+            self.setIcon(self._icon_active)
+            self.setIconSize(self._icon_size)
             self.setEnabled(True)
             self.setToolTip(self.tooltip_text)
         elif self.state == "waiting":
             if self.is_always_visible:
                 self.show()
-            self.setIcon(QIcon(self.icon_path))
-            self.setIconSize(QSize(50, 50))
+            self.setIcon(self._icon_active)
+            self.setIconSize(self._icon_size)
             self.setEnabled(False)
             self.setToolTip("En attente d'une connexion")
 
