@@ -20,6 +20,7 @@ from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
 from counter_id_utils import coerce_counter_id
+from shortcut_defaults import default_shortcut, migrate_shortcut
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -344,9 +345,19 @@ class MainWindow(QMainWindow):
         self.logger.error("Aucun comptoir valide configuré : arrêt de l'application.")
         QApplication.instance().quit()
 
+    def _load_shortcut(self, settings, name):
+        """ Lit un raccourci depuis les préférences (défaut centralisé), applique
+        la migration des anciennes valeurs erronées et persiste la correction. """
+        stored = settings.value(name, default_shortcut(name))
+        migrated = migrate_shortcut(name, stored)
+        if migrated != stored:
+            settings.setValue(name, migrated)
+            self.logger.info("Raccourci '%s' migré vers %s", name, migrated)
+        return migrated
+
     def load_preferences(self):
         self.logger.info("Initialisation des préférences...")
-        
+
         settings = QSettings()
         self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
         # Le secret applicatif est lu depuis le magasin sécurisé (keyring /
@@ -360,11 +371,13 @@ class MainWindow(QMainWindow):
         # entiers. On garantit un seul type dans toute l'app pour que les
         # comparaisons (WebSocket, patient["counter_id"]...) soient cohérentes.
         self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
-        self.next_patient_shortcut = settings.value("next_patient_shortcut", "Alt+S")
-        self.validate_patient_shortcut = settings.value("validate_patient_shortcut", "Alt+V")
-        self.pause_shortcut = settings.value("pause_shortcut", "Altl+P")
-        self.recall_shortcut = settings.value("recall_shortcut", "Alt+R")
-        self.deconnect_shortcut = settings.value("deconnect_shortcut", "Alt+D")
+        # Raccourcis : défauts centralisés dans shortcut_defaults (source unique)
+        # + migration transparente des anciennes valeurs erronées (ex: "Altl+P").
+        self.next_patient_shortcut = self._load_shortcut(settings, "next_patient_shortcut")
+        self.validate_patient_shortcut = self._load_shortcut(settings, "validate_patient_shortcut")
+        self.pause_shortcut = self._load_shortcut(settings, "pause_shortcut")
+        self.recall_shortcut = self._load_shortcut(settings, "recall_shortcut")
+        self.deconnect_shortcut = self._load_shortcut(settings, "deconnect_shortcut")
         self.notification_current_patient = settings.value("notification_current_patient", True, type=bool)
         self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
         self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)

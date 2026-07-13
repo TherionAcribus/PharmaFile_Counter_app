@@ -10,6 +10,7 @@ from notification import CustomNotification
 from connections import DEFAULT_TIMEOUT
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
+from shortcut_defaults import default_shortcut, migrate_shortcut
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -368,11 +369,12 @@ class PreferencesDialog(QDialog):
         vertical_position = settings.value("patient_list_vertical_position", "bottom")
         horizontal_position = settings.value("patient_list_horizontal_position", "right")
         
-        self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input, "Alt+S")
-        self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input, "Alt+V")
-        self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input, "Alt+P")
-        self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input, "Alt+R")
-        self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input, "Alt+D")
+        # Défauts centralisés dans shortcut_defaults (identiques à main.py).
+        self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input)
+        self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input)
+        self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input)
+        self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input)
+        self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input)
 
         self.show_current_patient_checkbox.setChecked(settings.value("notification_current_patient", False, type=bool))
         self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
@@ -399,8 +401,8 @@ class PreferencesDialog(QDialog):
             self.skin_combo.setCurrentIndex(index)
         self.current_skin = selected_skin
 
-    def load_shortcut(self, settings, name, widget, default_shortcut):
-        shortcut = settings.value(name, default_shortcut)
+    def load_shortcut(self, settings, name, widget):
+        shortcut = migrate_shortcut(name, settings.value(name, default_shortcut(name)))
         keys = shortcut.split("+")
         widget.findChild(QCheckBox, "Ctrl").setChecked("Ctrl" in keys)
         widget.findChild(QCheckBox, "Alt").setChecked("Alt" in keys)
