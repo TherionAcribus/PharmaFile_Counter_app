@@ -1,0 +1,9 @@
+# App_Comptoir — dépendances de DÉVELOPPEMENT / TESTS.
+#
+# Installe le runtime puis les outils de test. L'audit des dépendances
+# (`tools/check_dependencies.py`) n'utilise que la bibliothèque standard : aucune
+# dépendance supplémentaire n'est nécessaire pour l'exécuter.
+
+-r requirements.txt
+
+pytest==9.1.1

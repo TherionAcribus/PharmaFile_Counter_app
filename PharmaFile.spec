@@ -1,5 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+# Modules exclus du build : jamais importés par le client (dépendances serveur ou
+# outils de dev). Les exclure garantit qu'ils ne gonflent pas la distribution même
+# s'ils se trouvent dans l'environnement de compilation (cf. point 23).
+SERVER_AND_DEV_EXCLUDES = [
+    'flask', 'werkzeug', 'jinja2', 'itsdangerous', 'redis', 'gunicorn',
+    'sqlalchemy', 'flask_sqlalchemy', 'flask_login', 'flask_socketio',
+    'celery', 'eventlet', 'gevent', 'pymysql', 'mysql', 'alembic',
+    'pytest', 'line_profiler', 'pyinstaller',
+]
 
 a = Analysis(
     ['main.py'],
@@ -10,7 +19,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=SERVER_AND_DEV_EXCLUDES,
     noarchive=False,
     optimize=0,
 )

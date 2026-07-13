@@ -1,0 +1,11 @@
+# App_Comptoir — dépendances de BUILD (génération de l'exécutable Windows).
+#
+# Installe le runtime puis l'outillage de packaging PyInstaller.
+# Compilation : voir COMPILATION.md (`pyinstaller --noconfirm --clean PharmaFile.spec`).
+
+-r requirements.txt
+
+pyinstaller==6.11.1
+# PyInstaller casse avec setuptools >= 70 (cf. COMPILATION.md « No module named
+# 'pkg_resources.extern' ») : on borne la version.
+setuptools<70.0.0
