@@ -4,7 +4,7 @@ import time
 import uuid
 import threading
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QScrollArea, QDockWidget, QBoxLayout, QFrame
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
 from PySide6.QtGui import QIcon, QAction, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -12,7 +12,8 @@ from PySide6.QtSvg import QSvgRenderer
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
-from buttons import DebounceButton, IconeButton, PatientButton
+from buttons import DebounceButton, IconeButton
+from patient_list_model import PatientListModel
 from notification import CustomNotification
 from connections import NetworkManager
 from my_logger import AppLogger, register_secret
@@ -466,8 +467,7 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.main_elements_container)
         self.main_layout.addWidget(self.icone_widget)
 
-        self.update_patient_widget()
-        self.update_patient_menu(self.list_patients)
+        self.refresh_patient_lists()
 
         # Ajouter un stretch pour pousser les widgets vers le haut/gauche
         if self.horizontal_mode:
@@ -711,6 +711,9 @@ class MainWindow(QMainWindow):
     def _create_choose_patient_button(self):
         self.btn_choose_patient = DebounceButton("Patients")
         self.choose_patient_menu = QMenu()
+        # Menu reconstruit paresseusement à l'ouverture (plus de reconstruction
+        # à chaque évènement de file) : il lit self.list_patients courant.
+        self.choose_patient_menu.aboutToShow.connect(self._rebuild_choose_patient_menu)
         self.btn_choose_patient.setMenu(self.choose_patient_menu)
 
         # self.my_patient/self.list_patients sont normalement déjà remplis par
@@ -729,8 +732,10 @@ class MainWindow(QMainWindow):
         if not self.list_patients:
             self.logger.info("__ Connexion pour charger la liste des patients...")
             self.list_patients = self.init_list_patients()
-        if self.list_patients:
-            self.update_list_patient(self.list_patients)
+        # Le menu est reconstruit à son ouverture ; ici on ne fait qu'actualiser
+        # le compteur visible du bouton. La vue (modèle) est mise à jour plus tard
+        # dans create_interface, une fois _create_patient_list_widget appelé.
+        self._update_patient_count_label()
 
     def _create_more_button(self):
         self.btn_more = DebounceButton("Menu")
@@ -775,27 +780,29 @@ class MainWindow(QMainWindow):
             container_layout = QVBoxLayout(container_widget)
             container_layout.setContentsMargins(0, 0, 0, 0)
             container_layout.setSpacing(0)
-            
-            # Create and configure scroll area
-            self.scroll_area = QScrollArea()
-            self.scroll_area.setWidgetResizable(True)
-            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            
-            # Create scroll content with a QWidget
-            self.scroll_content = QWidget()
-            self.scroll_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)  # Important: Maximum ici
-            
-            # Créer le layout pour le contenu
-            self.scroll_layout = QVBoxLayout(self.scroll_content)
-            self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-            self.scroll_layout.setSpacing(0)
-            self.scroll_layout.setAlignment(Qt.AlignTop)
-            
-            # Configurer la hiérarchie
-            self.scroll_area.setWidget(self.scroll_content)
-            container_layout.addWidget(self.scroll_area, 1)  # Le 1 donne la priorité d'expansion
+
+            # Vue de la file : QListView adossé à un QAbstractListModel. La vue
+            # virtualise le rendu (seuls les éléments visibles sont peints) et les
+            # mises à jour du modèle sont différentielles — pas de reconstruction
+            # complète ni de perte de la position de défilement (cf. point 21).
+            self.patient_model = PatientListModel(self)
+            self.patient_list_view = QListView()
+            self.patient_list_view.setModel(self.patient_model)
+            self.patient_list_view.setUniformItemSizes(True)  # perf avec beaucoup d'éléments
+            self.patient_list_view.setSelectionMode(QAbstractItemView.NoSelection)
+            self.patient_list_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.patient_list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.patient_list_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.patient_list_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            self.patient_list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Clic sur un patient : même action que l'ancien PatientButton.
+            self.patient_list_view.clicked.connect(self._on_patient_list_clicked)
+            # Menu contextuel par patient conservé, désormais porté par la vue.
+            self.patient_list_view.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.patient_list_view.customContextMenuRequested.connect(
+                self._on_patient_list_context_menu)
+
+            container_layout.addWidget(self.patient_list_view, 1)  # priorité d'expansion
             
             # Set the container as the dock widget's content
             self.patient_list_dock.setWidget(container_widget)
@@ -812,7 +819,7 @@ class MainWindow(QMainWindow):
                     border: none;
                     padding: 0;
                 }
-                QScrollArea {
+                QListView {
                     border: none;
                 }
             """)
@@ -836,6 +843,48 @@ class MainWindow(QMainWindow):
     
     def hide_patient_list(self):
         self.patient_list_dock.hide()
+
+    def _on_patient_list_clicked(self, index):
+        """Clic sur une ligne de la vue : appelle le patient correspondant
+        (équivalent de l'ancien clic sur un PatientButton)."""
+        patient_id = index.data(PatientListModel.IdRole)
+        if patient_id is not None:
+            self.call_web_function_validate_and_call_specifique(patient_id)
+
+    def _on_patient_list_context_menu(self, position):
+        """Menu contextuel d'un patient de la vue (valider / supprimer /
+        assigner). Reprend à l'identique l'ancien menu de PatientButton, mais
+        construit à la demande pour le patient sous le curseur."""
+        index = self.patient_list_view.indexAt(position)
+        if not index.isValid():
+            return
+        patient = index.data(PatientListModel.PatientRole)
+        if not isinstance(patient, dict):
+            return
+        patient_id = patient.get("id")
+        if patient_id is None:
+            return
+
+        menu = QMenu(self.patient_list_view)
+
+        action_validate = menu.addAction("Marquer comme validé")
+        action_validate.triggered.connect(
+            lambda checked=False, pid=patient_id: self.on_action_validate(pid))
+
+        action_delete = menu.addAction("Supprimer")
+        action_delete.triggered.connect(
+            lambda checked=False, pid=patient_id: self.on_action_delete(pid))
+
+        if getattr(self, 'activities_staff', None):
+            assign_submenu = QMenu("Assigner à...", menu)
+            for activity in self.activities_staff:
+                action = assign_submenu.addAction(activity['name'])
+                action.triggered.connect(
+                    lambda checked=False, a=activity, pid=patient_id:
+                    self.on_action_wait_for(a, pid))
+            menu.addMenu(assign_submenu)
+
+        menu.exec(self.patient_list_view.viewport().mapToGlobal(position))
 
     def toggle_orientation(self):
         self.horizontal_mode = not self.horizontal_mode
@@ -1095,10 +1144,8 @@ class MainWindow(QMainWindow):
         self.update_my_patient(self.my_patient)
         self.update_my_buttons(self.my_patient)
 
-        # liste des patients (menus + widget)
-        self.update_patient_menu(self.list_patients)
-        self.update_list_patient(self.list_patients)
-        self.update_patient_widget()
+        # liste des patients (vue différentielle + compteur ; menus paresseux)
+        self.refresh_patient_lists()
 
         # réglages (icônes autocalling / papier)
         if hasattr(self, 'btn_auto_calling'):
@@ -1725,16 +1772,34 @@ class MainWindow(QMainWindow):
     # nom du comptoir) a été supprimé : ces informations sont désormais fournies
     # de façon atomique par /api/counter/<id>/state via _apply_state().
 
-    def update_list_patient(self, patients):
-        """ Mise à jour de la liste des patients pour le bouton 'Choix' """
-        self.choose_patient_menu.clear()  # Clear the menu before updating
+    def refresh_patient_lists(self):
+        """Rafraîchit l'affichage de la file après un changement.
+
+        La vue (modèle) est mise à jour de façon différentielle et le compteur du
+        bouton « Patients » est réactualisé. Les menus déroulants (bouton
+        « Patients » et systray) NE sont PAS reconstruits ici : ils le sont
+        paresseusement à leur ouverture (``aboutToShow``) et lisent
+        ``self.list_patients``. Inutile donc de les reconstruire à chaque
+        évènement de file alors qu'ils sont fermés la plupart du temps."""
+        self._update_patient_count_label()
+        self.update_patient_widget()
+
+    def _update_patient_count_label(self):
+        """Met à jour le libellé du bouton « Patients (N) » (toujours visible)."""
+        if not hasattr(self, 'btn_choose_patient'):
+            return
+        count = len(self.list_patients or [])
+        self.btn_choose_patient.setText(f"Patient{'s' if count > 1 else ''} ({count})")
+
+    def _rebuild_choose_patient_menu(self):
+        """Reconstruit le menu du bouton « Patients » (appelé à son ouverture)."""
+        self.choose_patient_menu.clear()
         try:
-            for patient in patients:
+            for patient in (self.list_patients or []):
                 language = f" ({patient['language_code']}) ".upper() if patient["language_code"] != "fr" else ""
                 action_select_patient = QAction(f"{patient['call_number']} {language}- {patient['activity']}", self)
                 action_select_patient.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
                 self.choose_patient_menu.addAction(action_select_patient)
-            self.btn_choose_patient.setMenu(self.choose_patient_menu)
         except TypeError:
             self.logger.warning("Liste de patients invalide (TypeError)")
 
@@ -1764,63 +1829,30 @@ class MainWindow(QMainWindow):
 
         # mise à jour de self.patient
         self.list_patients = patient
-        self.update_patient_menu(patient)
-        self.update_list_patient(patient)
-        self.update_patient_widget()
+        self.refresh_patient_lists()
 
-    def update_patient_menu(self, patients):
-        """ Mise a jour de la liste des patients le trayIcon """
-        menu = QMenu()       
-
-        # Mise à jour du bouton 'Choix' selon qu'il y ait ou non des patients
-        label_text = f"Patient{'s' if len(patients) > 1 else ''} ({len(patients)})"
-        self.btn_choose_patient.setText(label_text)
-
-        # Ajout des patients dans le menu
-        for patient in patients:
-            action_text = f"{patient['call_number']} - {patient['activity']}"
-            label = QLabel(action_text)
-            if self.staff_id == patient["activity_is_staff"]:
-                label.setStyleSheet("background-color: #f98517; color: #000000;")
-
+    def _rebuild_tray_patient_menu(self):
+        """Reconstruit le menu contextuel du systray « Prochain patient » (appelé
+        à son ouverture via aboutToShow)."""
+        menu = self.tray_patient_menu
+        menu.clear()
+        for patient in (self.list_patients or []):
+            try:
+                action_text = f"{patient['call_number']} - {patient['activity']}"
+            except (KeyError, TypeError):
+                continue
             action = menu.addAction(action_text)
             action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
-            
-        self.trayIcon2.setContextMenu(menu)
 
     def update_patient_widget(self):
-        # Clear existing buttons
-        for i in reversed(range(self.scroll_layout.count())):
-            widget = self.scroll_layout.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
-                widget.deleteLater()
-
-        # Add new buttons for each patient
-        for patient in self.list_patients:
-            button_text = patient['call_number']
-            if patient['activity_is_staff']:
-                button_text += f" -> {patient['activity']}"
-            if patient["language_code"] != "fr":
-                button_text += f" ({patient['language_code']})"
-            button = PatientButton(button_text, patient, self)  # Utilisation d'une classe personnalisée
-            
-            font = button.font()
-            font.setPointSize(8)
-            button.setFont(font)
-
-            if self.staff_id == patient["activity_is_staff"]:
-                button.setStyleSheet("background-color: #f98517; color: #000000;")
-
-            button.clicked.connect(lambda checked, id=patient["id"]: self.call_web_function_validate_and_call_specifique(id))
-            self.scroll_layout.addWidget(button)
-
-        # Add a spacer at the end
-        self.scroll_layout.addStretch(1)
-
-        # Force layout update
-        self.scroll_content.updateGeometry()
-        self.scroll_area.updateGeometry()
+        """Met la vue de la file à jour via son modèle, de façon différentielle :
+        seuls les patients ajoutés/retirés/modifiés provoquent un changement (plus
+        de suppression/recréation de tous les boutons, plus de clignotement ni de
+        perte de la position de défilement)."""
+        if not hasattr(self, 'patient_model'):
+            return
+        self.patient_model.set_staff_id(self.staff_id)
+        self.patient_model.set_patients(self.list_patients or [])
 
     def show_notification(self, data, internal=False):
         if self.notification_specific_acts:
@@ -1939,10 +1971,11 @@ class MainWindow(QMainWindow):
         icon_path = resource_path("assets/images/next_orange.ico")
         self.trayIcon2 = QSystemTrayIcon(QIcon(icon_path), self)
         self.trayIcon2.setToolTip("Prochain patient")
-        tray_menu2 = QMenu()
-        open_action2 = tray_menu2.addAction("Call Web Function")
-        open_action2.triggered.connect(self.call_web_function_validate_and_call_next)
-        self.trayIcon2.setContextMenu(tray_menu2)
+        # Menu persistant reconstruit à son ouverture (aboutToShow) : la liste des
+        # patients n'est plus reconstruite dans le systray à chaque évènement.
+        self.tray_patient_menu = QMenu()
+        self.tray_patient_menu.aboutToShow.connect(self._rebuild_tray_patient_menu)
+        self.trayIcon2.setContextMenu(self.tray_patient_menu)
         self.trayIcon2.activated.connect(self.on_tray_icon_call_next_activated)
         self.trayIcon2.setVisible(True)
         self.trayIcon2.show()
