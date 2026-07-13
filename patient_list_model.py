@@ -19,6 +19,12 @@ import logging
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 
+from accessibility import (
+    DEFAULT_LIST_FONT_SIZE,
+    clamp_font_size,
+    staff_highlight_text,
+)
+
 logger = logging.getLogger("appcomptoir.patient_list_model")
 
 # Au-delà de ce nombre, on tronque l'affichage : un QListView virtualise déjà le
@@ -113,14 +119,29 @@ class PatientListModel(QAbstractListModel):
     IdRole = Qt.UserRole + 1
     PatientRole = Qt.UserRole + 2
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, font_size=DEFAULT_LIST_FONT_SIZE):
         super().__init__(parent)
         self._patients = []   # liste ordonnée de dicts patient
         self._staff_id = None
         self._font = QFont()
-        self._font.setPointSize(8)
+        # Police configurable, jamais en dessous du plancher de lisibilité
+        # (accessibility.clamp_font_size). L'ancienne valeur figée de 8 pt était
+        # trop petite ; la taille est désormais un réglage borné.
+        self._font.setPointSize(clamp_font_size(font_size))
         self._highlight_brush = QBrush(QColor(_STAFF_HIGHLIGHT_BG))
         self._highlight_fg = QBrush(QColor(_STAFF_HIGHLIGHT_FG))
+
+    def set_font_size(self, size):
+        """Change la taille de police de la liste (bornée au plancher de
+        lisibilité) et rafraîchit l'affichage si elle a changé."""
+        new_size = clamp_font_size(size)
+        if new_size == self._font.pointSize():
+            return
+        self._font.setPointSize(new_size)
+        if self._patients:
+            top = self.index(0, 0)
+            bottom = self.index(len(self._patients) - 1, 0)
+            self.dataChanged.emit(top, bottom, [Qt.FontRole, Qt.SizeHintRole])
 
     # --- API Qt ---------------------------------------------------------
 
@@ -134,7 +155,13 @@ class PatientListModel(QAbstractListModel):
             return None
         patient = self._patients[index.row()]
         if role == Qt.DisplayRole:
-            return patient_display_text(patient)
+            text = patient_display_text(patient)
+            # Accessibilité (point 28) : le surlignage « équipier courant » ne
+            # repose plus sur la seule couleur de fond orange ; on préfixe aussi
+            # le libellé d'un pictogramme, lisible en niveaux de gris.
+            if patient_is_staff_highlight(patient, self._staff_id):
+                text = staff_highlight_text(text)
+            return text
         if role == self.IdRole:
             return patient.get("id")
         if role == self.PatientRole:
@@ -168,8 +195,10 @@ class PatientListModel(QAbstractListModel):
         if self._patients:
             top = self.index(0, 0)
             bottom = self.index(len(self._patients) - 1, 0)
+            # DisplayRole en plus du fond/texte : le marqueur « ★ » d'un patient
+            # assigné à l'équipier dépend aussi de staff_id.
             self.dataChanged.emit(top, bottom,
-                                  [Qt.BackgroundRole, Qt.ForegroundRole])
+                                  [Qt.DisplayRole, Qt.BackgroundRole, Qt.ForegroundRole])
 
     def set_patients(self, patients):
         """Met la file à jour de façon différentielle.

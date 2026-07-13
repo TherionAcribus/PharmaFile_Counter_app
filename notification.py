@@ -16,6 +16,13 @@ from notification_layout import (
     notification_signature,
     should_queue,
 )
+from accessibility import (
+    DEFAULT_TONE,
+    decorate_title,
+    notification_severity,
+    notification_title,
+    severity_colors,
+)
 
 logger = logging.getLogger("appcomptoir.notification")
 
@@ -195,6 +202,8 @@ class CustomNotification(QDialog):
         close_button = QPushButton("×")
         close_button.setFixedSize(20, 20)
         close_button.setFocusPolicy(Qt.NoFocus)
+        close_button.setToolTip("Fermer")
+        close_button.setAccessibleName("Fermer la notification")
         close_button.clicked.connect(self.close)
         top_layout.addWidget(close_button)
 
@@ -228,49 +237,23 @@ class CustomNotification(QDialog):
         logger.debug("Notification affichée (origin=%s)", self.origin)
         self.message = notification_data["message"]
 
-        # Définir des couleurs par défaut
-        self.background_color = "white"
-        self.font_color = "black"
+        # Accessibilité (point 28) : l'état d'une notification n'est plus porté
+        # par la seule couleur de fond. On calcule une *sévérité* (info / succès /
+        # attention / alerte) qui détermine à la fois :
+        #   - des couleurs fond/texte au contraste AA (l'ancien « light_green »
+        #     n'était pas une couleur Qt valide et retombait sur blanc) ;
+        #   - un pictogramme préfixant le titre, distinguable en niveaux de gris.
+        # Le titre suit par ailleurs le *ton* configuré (sobre par défaut, ou
+        # l'ancien ton humoristique), au lieu d'être figé.
+        severity = notification_severity(self.origin)
+        self.background_color, self.font_color = severity_colors(severity)
 
-        self.sound = "ding"
-        if self.origin == "activity":
-            self.title = "Une nouvelle mission arrive !"
-        elif self.origin == "printer_error":
-            self.title = "Je crois qu'on a un problème..."
-        elif self.origin == "low_paper":
-            self.title = "Fin du rouleau !"
-            self.background_color = "orange"
-        elif self.origin == "no_paper":
-            self.title = "Il n'y a plus de papier !"
-            self.background_color = "red"
-        elif self.origin == "paper_ok":
-            self.title = "Vous faites bonne impression !"
-            self.background_color = "light_green"
-        elif self.origin == "patient_taken":
-            self.title = "A une seconde près !"
-        elif self.origin == "autocalling":
-            self.title = "Ils arrivent !"
-        elif self.origin == "new_patient":
-            self.title = "Nouveau patient !"
-        elif self.origin == "connection":
-            self.title = "Problème de connexion"
-        elif self.origin == "please_validate":
-            self.title = "Sauvez un bébé phoque : validez votre patient !"
-            self.sound = "please_validate"
-            self.background_color = "red"
-        elif self.origin == "disconnect_by_user":
-            self.title = "Pousse toi de là !"
-        elif self.origin == "test_notification":
-            self.title = "Test micro, 1, 2, 3, Test..."
-        elif self.origin == "socket_connection_true":
-            self.title = "Tout va bien, on est branché !"
-        elif self.origin == "socket_connection_false":
-            self.title = "Quelqu'un s'est pris les pieds dans les cables !"
-            self.background_color = "red"
-        elif self.origin == "patient_for_staff_from_app":
-            self.title = "Transfert de patient"
-        else:
-            self.title = self.origin
+        tone = getattr(self.parent(), "message_tone", DEFAULT_TONE)
+        title = notification_title(self.origin, tone, fallback=self.origin)
+        self.title = decorate_title(title, severity)
+
+        # Son : « ding » par défaut, son spécifique pour l'appel à validation.
+        self.sound = "please_validate" if self.origin == "please_validate" else "ding"
 
     def show_without_activating(self):
         """Affiche la notification sans lui donner le focus (le progiciel de

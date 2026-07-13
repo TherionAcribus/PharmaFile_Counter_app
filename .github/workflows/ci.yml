@@ -34,6 +34,11 @@ jobs:
       - name: Audit des dépendances déclarées
         run: python tools/check_dependencies.py
 
+      # Garde-fou accessibilité (point 28) : aucun skin ne doit repasser sous le
+      # contraste AA sur le texte actif.
+      - name: Audit du contraste des skins
+        run: python tools/check_contrast.py
+
       - name: Tests
         env:
           QT_QPA_PLATFORM: offscreen

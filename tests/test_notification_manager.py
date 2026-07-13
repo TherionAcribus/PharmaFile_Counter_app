@@ -132,3 +132,50 @@ def test_reads_configured_corner(main_window):
     notif = mgr.active_notifications[0]
     # Coin haut-droite : proche du haut de l'écran.
     assert notif.y() < geo.y() + geo.height() // 2
+
+
+# --------------------------------------------------------------------------
+# Accessibilité (point 28) : ton configurable + sévérité (titre + couleurs)
+# --------------------------------------------------------------------------
+
+from notification import CustomNotification  # noqa: E402
+from accessibility import (  # noqa: E402
+    TONE_HUMOROUS, TONE_SOBER, severity_colors, severity_glyph,
+    notification_severity, passes_aa,
+)
+
+
+def _make_notif(main_window, origin, tone=TONE_SOBER):
+    main_window.message_tone = tone
+    return CustomNotification(data={"origin": origin, "message": "m"},
+                              parent=main_window, internal=True)
+
+
+def test_title_uses_sober_tone_by_default(main_window):
+    notif = _make_notif(main_window, "please_validate", TONE_SOBER)
+    assert "Patient à valider" in notif.title
+    assert "phoque" not in notif.title
+
+
+def test_title_uses_humorous_tone_when_configured(main_window):
+    notif = _make_notif(main_window, "please_validate", TONE_HUMOROUS)
+    assert "phoque" in notif.title
+
+
+def test_title_carries_severity_glyph(main_window):
+    notif = _make_notif(main_window, "no_paper")
+    assert notif.title.startswith(severity_glyph(notification_severity("no_paper")))
+
+
+def test_colors_are_valid_and_contrasted(main_window):
+    # L'ancien « light_green » (invalide) est remplacé par une couleur contrastée.
+    notif = _make_notif(main_window, "paper_ok")
+    bg, fg = severity_colors(notification_severity("paper_ok"))
+    assert notif.background_color == bg
+    assert notif.font_color == fg
+    assert passes_aa(notif.font_color, notif.background_color)
+
+
+def test_unknown_origin_falls_back_to_origin_text(main_window):
+    notif = _make_notif(main_window, "origine_inconnue")
+    assert "origine_inconnue" in notif.title

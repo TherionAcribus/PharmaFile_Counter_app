@@ -126,7 +126,7 @@ QMenu::item
 
 QMenu::item:selected
 {
-    background-color: #22a6b2;
+    background-color: #1a7e87;
     color: #ffffff;
 
 }
@@ -153,12 +153,12 @@ QToolTip
 /*-----QPushButton-----*/
 QPushButton
 {
-	background-color: #20afe7;
+	background-color: #177ca4;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -175,12 +175,12 @@ QPushButton::disabled
 
 QPushButton::hover
 {
-	background-color: #33bdff;
+	background-color: #217ba6;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -188,12 +188,12 @@ QPushButton::hover
 
 QPushButton::pressed
 {
-	background-color: #2082ff;
+	background-color: #1c71de;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -202,12 +202,12 @@ QPushButton::pressed
 /*-----QToolButton-----*/
 QToolButton
 {
-	background-color: #20afe7;
+	background-color: #177ca4;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -224,12 +224,12 @@ QToolButton::disabled
 
 QToolButton::hover
 {
-	background-color: #33bdff;
+	background-color: #217ba6;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -237,12 +237,12 @@ QToolButton::hover
 
 QToolButton::pressed
 {
-	background-color: #2082ff;
+	background-color: #1c71de;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
 	border-radius: 11px;
-	border-color: #2082ff;
+	border-color: #1c71de;
 	padding: 5px;
 
 }
@@ -633,7 +633,7 @@ QTableView::item:selected
 {
     background-color: #60c461;
     border: 2px solid #60c461;
-    color: #F0F0F0;
+    color: #000000;
 }
 
 QTableCornerButton::section

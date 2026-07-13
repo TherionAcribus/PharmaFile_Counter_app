@@ -228,7 +228,7 @@ QToolButton::disabled
 
 QToolButton::hover
 {
-	background-color: #9fa3ae;
+	background-color: #6f727a;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 1px;
@@ -241,7 +241,7 @@ QToolButton::hover
 
 QToolButton::pressed
 {
-	background-color: #7b7e86;
+	background-color: #70737a;
 	color: #ffffff;
 	border-style: solid;
 	border-width: 2px;
@@ -464,7 +464,7 @@ QLineEdit::disabled
 /*-----QTextEdit-----*/
 QTextEdit
 {
-	background-color: #808080;
+	background-color: #737373;
 	color: #fff;
 	border: 1px groove #333333;
 
@@ -635,9 +635,9 @@ QRadioButton::indicator:disabled
 /*-----QTableView & QTableWidget-----*/
 QTableView
 {
-    background-color: #808080;
+    background-color: #737373;
     border: 1px groove #333333;
-    color: #f0f0f0;
+    color: #ffffff;
 	font-weight: bold;
     gridline-color: #333333;
     outline : 0;
@@ -948,7 +948,7 @@ QSlider::handle:horizontal
 
 QSlider::handle:horizontal:hover 
 {
-	background-color: #808080;
+	background-color: #737373;
 
 }
 
@@ -1014,7 +1014,7 @@ QSlider::handle:vertical
 
 QSlider::handle:vertical:hover 
 {
-	background-color: #808080;
+	background-color: #737373;
 
 }
 

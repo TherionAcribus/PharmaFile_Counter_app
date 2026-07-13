@@ -64,9 +64,15 @@ class DebounceButton(QPushButton):
         #self.setMaximumSize(30, 30)  # Taille minimale en pixels (ajustez selon vos besoins)
 
     def setRed(self):
+        """ Signale un état d'alerte sur le bouton.
+
+        Accessibilité (point 28) : l'état ne doit pas reposer sur la seule
+        couleur. On garde le fond rouge (contraste AA rouge #c0392b / blanc) pour
+        ceux qui perçoivent la couleur, mais le libellé et le nom accessible sont
+        enrichis d'un marqueur texte par l'appelant (cf. main._set_validate_alert).
+        """
         self.color_changed = True
-        """ Change temporairement la couleur du bouton en rouge """
-        self.setStyleSheet("background-color: red; color: white;")
+        self.setStyleSheet("background-color: #c0392b; color: #ffffff;")
 
     def resetColor(self):
         """ Réinitialise la couleur du bouton à son style d'origine """
@@ -76,8 +82,15 @@ class DebounceButton(QPushButton):
 
 
 class IconeButton(DebounceButton):
-    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, parent=None):
+    def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, parent=None, accessible_name=None):
         super().__init__(parent)
+
+        # Nom accessible (point 28) : un bouton purement iconographique n'a pas de
+        # texte ; sans nom accessible, un lecteur d'écran ne peut pas l'annoncer.
+        # On fixe un nom stable décrivant la fonction du bouton, indépendant de
+        # l'état (le tooltip, lui, reflète l'action courante et change avec l'état).
+        self._accessible_name = accessible_name or tooltip_text
+        self.setAccessibleName(self._accessible_name)
 
         self.icon_path = icon_path
         self.icon_inactive_path = icon_inactive_path
@@ -164,7 +177,7 @@ class IconeButton(DebounceButton):
                 self.setIcon(self._icon_inactive)
                 self.setIconSize(self._icon_size)
                 self.setEnabled(True)
-                self.setToolTip(self.tooltip_inactive_text)
+                self._set_state_hint(self.tooltip_inactive_text)
                 self.show()
             else:
                 self.hide()
@@ -173,12 +186,19 @@ class IconeButton(DebounceButton):
             self.setIcon(self._icon_active)
             self.setIconSize(self._icon_size)
             self.setEnabled(True)
-            self.setToolTip(self.tooltip_text)
+            self._set_state_hint(self.tooltip_text)
         elif self.state == "waiting":
             if self.is_always_visible:
                 self.show()
             self.setIcon(self._icon_active)
             self.setIconSize(self._icon_size)
             self.setEnabled(False)
-            self.setToolTip("En attente d'une connexion")
+            self._set_state_hint("En attente d'une connexion")
+
+    def _set_state_hint(self, text):
+        """Reflète l'action/l'état courant à la fois dans l'infobulle et dans la
+        description accessible (annoncée par les lecteurs d'écran), sans toucher
+        au nom accessible qui, lui, reste stable."""
+        self.setToolTip(text)
+        self.setAccessibleDescription(text)
 

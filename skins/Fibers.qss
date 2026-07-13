@@ -116,8 +116,8 @@ QMenu::item:disabled
 
 QMenu::item:selected
 {
-	background-color: #ab7f83;
-	border: 1px solid #ab7f83;
+	background-color: #8e696d;
+	border: 1px solid #8e696d;
 	color: #fff;
 
 }
@@ -126,7 +126,7 @@ QMenu::item:selected
 /*-----QPushButton-----*/
 QPushButton
 {
-	background-color: #6384ff;
+	background-color: #516cd1;
 	color: #fff;
 	border: none;
 	min-width: 80px;
@@ -512,7 +512,7 @@ QTreeView::item:selected
 
 QTreeView::item:!selected:hover
 {
-    background-color: #ab7f83;
+    background-color: #8e696d;
     border: none;
     color: white;
 
@@ -594,9 +594,9 @@ QListView::item:selected:active
 
 
 QListView::item:hover {
-    background-color: #ab7f83;
+    background-color: #8e696d;
     border: none;
-    color: #000;
+    color: #ffffff;
 
 }
 

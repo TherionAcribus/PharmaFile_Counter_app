@@ -6,7 +6,7 @@ import threading
 import keyboard
 from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
-from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication, QShortcut, QKeySequence
+from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication, QShortcut, QKeySequence, QColor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtSvg import QSvgRenderer
 
@@ -24,6 +24,13 @@ from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
 from preferences_diff import needs_service_reconnect
 from window_geometry import resolve_target_geometry
+from accessibility import (
+    DEFAULT_LIST_FONT_SIZE,
+    DEFAULT_TONE,
+    clamp_font_size,
+    normalize_tone,
+    validate_alert_text,
+)
 from panel_layout import (
     VERTICAL, HORIZONTAL, DEFAULT_PANEL_THICKNESS, DEFAULT_SNAP_THRESHOLD,
     clamp_thickness, compact_panel_geometry, nearest_vertical_side, snap_to_edges,
@@ -441,6 +448,14 @@ class MainWindow(QMainWindow):
         self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
         self.notification_duration = settings.value("notification_duration", 5, type=int)
         self.notification_font_size = settings.value("notification_font_size", 12, type=int)
+        # Ton des messages de notification (point 28) : « sobre » (explicite,
+        # défaut) ou « humoristique » (ancien ton). Titres calculés dans
+        # accessibility.notification_title.
+        self.message_tone = normalize_tone(settings.value("message_tone", DEFAULT_TONE))
+        # Taille de police de la file des patients (point 28), bornée au plancher
+        # de lisibilité. Remplace l'ancienne valeur figée de 8 pt.
+        self.patient_list_font_size = clamp_font_size(
+            settings.value("patient_list_font_size", DEFAULT_LIST_FONT_SIZE, type=int))
         # Coin de l'écran où empiler les notifications (configurable).
         self.notification_corner = settings.value("notification_corner", "bottom-left")
         self.sound_volume = settings.value("notification_volume", 50, type=int)
@@ -665,12 +680,42 @@ class MainWindow(QMainWindow):
         ]
 
         for attr_name, text, shortcut, callback in buttons_config:
-            button = DebounceButton(f"{text}\n{shortcut}")
+            base_label = f"{text}\n{shortcut}"
+            button = DebounceButton(base_label)
+            # Nom accessible = action (sans le raccourci), infobulle explicite :
+            # utile pour les lecteurs d'écran et au survol (point 28).
+            button.setAccessibleName(text)
+            button.setToolTip(f"{text} (raccourci : {shortcut})")
+            # Libellé de base mémorisé : permet de restaurer le texte après un
+            # marquage d'alerte (bouton Valider) sans reconstruire le bouton.
+            button._base_label = base_label
             button.clicked.connect(callback)
             setattr(self, attr_name, button)  # Stocke le bouton comme attribut de la classe
             self.main_button_layout.addWidget(button)
 
         self.main_button_container.setLayout(self.main_button_layout)
+
+    def _set_validate_alert(self, active):
+        """Marque (ou démarque) le bouton Valider comme « patient à valider ».
+
+        Accessibilité (point 28) : l'état ne repose plus uniquement sur le fond
+        rouge. On enrichit aussi le libellé d'un pictogramme d'alerte, le nom
+        accessible et l'infobulle, pour rester compréhensible en niveaux de gris
+        et pour les lecteurs d'écran."""
+        button = getattr(self, "btn_validate", None)
+        if button is None:
+            return
+        base_label = getattr(button, "_base_label", button.text())
+        if active:
+            button.setRed()
+            button.setText(validate_alert_text(base_label))
+            button.setAccessibleName("Patient à valider")
+            button.setToolTip("Patient à valider — cliquez pour valider")
+        else:
+            button.resetColor()
+            button.setText(base_label)
+            button.setAccessibleName("Valider")
+            button.setToolTip("Valider")
 
 
     def _create_option_button_container(self):
@@ -702,7 +747,7 @@ class MainWindow(QMainWindow):
         self.icone_widget.setLayout(self.icone_layout)       
 
 
-    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True):
+    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, accessible_name=None):
         return IconeButton(
             icon_path=resource_path(icon_path),
             icon_inactive_path=resource_path(icon_inactive_path),
@@ -711,7 +756,8 @@ class MainWindow(QMainWindow):
             tooltip_inactive_text=tooltip_inactive_text,
             state=state,
             parent=self,
-            is_always_visible=is_always_visible
+            is_always_visible=is_always_visible,
+            accessible_name=accessible_name,
         )
 
     def _create_auto_calling_button(self):
@@ -722,7 +768,8 @@ class MainWindow(QMainWindow):
             f'{self.web_url}/app/counter/auto_calling',
             "Desactiver l'appel automatique",
             "Activer l'appel automatique",
-            self.autocalling
+            self.autocalling,
+            accessible_name="Appel automatique des patients"
         )
 
     def _create_paper_button(self):
@@ -734,7 +781,8 @@ class MainWindow(QMainWindow):
             "Indiquer que vous avez changé le papier",
             "Indiquer qu'il faut changer le papier",
             self.add_paper,
-            is_always_visible=False)
+            is_always_visible=False,
+            accessible_name="État du papier de l'imprimante")
         
     def trigger_paper_button(self):
         if hasattr(self, 'btn_paper'):
@@ -1045,19 +1093,30 @@ class MainWindow(QMainWindow):
             # virtualise le rendu (seuls les éléments visibles sont peints) et les
             # mises à jour du modèle sont différentielles — pas de reconstruction
             # complète ni de perte de la position de défilement (cf. point 21).
-            self.patient_model = PatientListModel(self)
+            self.patient_model = PatientListModel(self, font_size=self.patient_list_font_size)
             self.patient_list_view = QListView()
             self.patient_list_view.setModel(self.patient_model)
             self.patient_list_view.setUniformItemSizes(True)  # perf avec beaucoup d'éléments
-            self.patient_list_view.setSelectionMode(QAbstractItemView.NoSelection)
+            # Navigation clavier (point 28) : la liste devient focusable et
+            # sélectionnable au clavier (Tab pour l'atteindre, flèches pour se
+            # déplacer, Entrée pour appeler le patient, touche Menu pour le menu
+            # contextuel). L'ancien NoSelection empêchait toute navigation clavier.
+            self.patient_list_view.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.patient_list_view.setFocusPolicy(Qt.StrongFocus)
+            self.patient_list_view.setTabKeyNavigation(True)
+            self.patient_list_view.setAccessibleName("Liste des patients en attente")
             self.patient_list_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.patient_list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.patient_list_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.patient_list_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
             self.patient_list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            # Clic sur un patient : même action que l'ancien PatientButton.
+            # Clic (souris) sur un patient : même action que l'ancien PatientButton.
             self.patient_list_view.clicked.connect(self._on_patient_list_clicked)
+            # `activated` couvre l'équivalent clavier (Entrée sur la ligne courante).
+            self.patient_list_view.activated.connect(self._on_patient_list_activated)
             # Menu contextuel par patient conservé, désormais porté par la vue.
+            # Avec CustomContextMenu, la touche « Menu » du clavier déclenche aussi
+            # ce signal sur la ligne sélectionnée.
             self.patient_list_view.setContextMenuPolicy(Qt.CustomContextMenu)
             self.patient_list_view.customContextMenuRequested.connect(
                 self._on_patient_list_context_menu)
@@ -1107,9 +1166,21 @@ class MainWindow(QMainWindow):
     def _on_patient_list_clicked(self, index):
         """Clic sur une ligne de la vue : appelle le patient correspondant
         (équivalent de l'ancien clic sur un PatientButton)."""
+        self._last_patient_list_trigger = time.monotonic()
         patient_id = index.data(PatientListModel.IdRole)
         if patient_id is not None:
             self.call_web_function_validate_and_call_specifique(patient_id)
+
+    def _on_patient_list_activated(self, index):
+        """Activation clavier (Entrée) d'une ligne : même effet qu'un clic.
+
+        Un double-clic souris émet à la fois ``clicked`` et ``activated`` ; on
+        ignore l'``activated`` s'il suit immédiatement un ``clicked`` pour ne pas
+        appeler deux fois le même patient."""
+        last = getattr(self, "_last_patient_list_trigger", 0)
+        if time.monotonic() - last < 0.3:
+            return
+        self._on_patient_list_clicked(index)
 
     def _on_patient_list_context_menu(self, position):
         """Menu contextuel d'un patient de la vue (valider / supprimer /
@@ -1523,14 +1594,14 @@ class MainWindow(QMainWindow):
             if not patient:
                     self.btn_pause.setEnabled(False)
                     self.btn_validate.setEnabled(False)
-                    self.btn_validate.resetColor()
+                    self._set_validate_alert(False)
                     self.call_timer.stop()  # bloque le timer "calling" si plus personne
             else:
                 if patient["counter_id"] == self.counter_id:
                     if patient["id"] is None:
                         self.btn_pause.setEnabled(False)
                         self.btn_validate.setEnabled(False)
-                        self.btn_validate.resetColor()
+                        self._set_validate_alert(False)
                         self.call_timer.stop()  # bloque le timer "calling" si plus personne
                     else:
                         if patient["status"] == "calling":
@@ -1540,7 +1611,7 @@ class MainWindow(QMainWindow):
                         elif patient["status"] == "ongoing":
                             self.btn_pause.setEnabled(True)
                             self.btn_validate.setEnabled(False)
-                            self.btn_validate.resetColor()
+                            self._set_validate_alert(False)
                             self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
         except:
             pass
@@ -2033,6 +2104,10 @@ class MainWindow(QMainWindow):
         self.setup_global_shortcut()
         if hasattr(self, "audio_player"):
             self.audio_player.set_volume(self.sound_volume)
+        # Taille de police de la file : le modèle persiste entre deux
+        # reconstructions d'interface, on l'applique donc explicitement (point 28).
+        if hasattr(self, "patient_model"):
+            self.patient_model.set_font_size(self.patient_list_font_size)
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
@@ -2442,7 +2517,7 @@ class MainWindow(QMainWindow):
             self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
     def call_timer_delay_expired(self):
-        self.btn_validate.setRed()
+        self._set_validate_alert(True)
         self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."}, internal=True)
 
     def create_call_timer(self):
@@ -2453,6 +2528,20 @@ class MainWindow(QMainWindow):
 
 
 class ConnectionStatusIndicator(QWidget):
+    # Couleur de teinte par état (pour ceux qui perçoivent la couleur).
+    _STATUS_COLOR = {
+        "connected": "#2e7d32",     # vert
+        "connecting": "#e67e22",    # orange
+        "disconnected": "#c0392b",  # rouge
+    }
+    # Libellé texte par état (nom accessible + infobulle) : l'état ne repose pas
+    # que sur la couleur/la forme, il est aussi nommé pour les lecteurs d'écran.
+    _STATUS_LABEL = {
+        "connected": "Temps réel connecté",
+        "connecting": "Reconnexion en cours",
+        "disconnected": "Temps réel déconnecté",
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(30, 30)
@@ -2477,6 +2566,8 @@ class ConnectionStatusIndicator(QWidget):
             else:
                 logger.warning("Erreur lors du chargement de %s", filename)
 
+        self._refresh_accessibility()
+
     def set_status(self, status, reconnection_attempts=None):
         logger.debug("Indicateur de connexion : %s", status)
         try:
@@ -2492,21 +2583,29 @@ class ConnectionStatusIndicator(QWidget):
         except RuntimeError:
             pass
 
+    def _status_tooltip(self):
+        """Texte d'état complet (base + horodatage/tentatives)."""
+        base = self._STATUS_LABEL.get(self.status, self._STATUS_LABEL["disconnected"])
+        if self.status == "connected":
+            if self.last_connection_time:
+                time_str = self.last_connection_time.toString("HH:mm:ss")
+                return f"{base} depuis {time_str}"
+            return base
+        if self.reconnection_attempts > 0:
+            return f"{base}\nNombre de tentatives de reconnexion : {self.reconnection_attempts}"
+        return base
+
+    def _refresh_accessibility(self):
+        """Nom accessible = état courant, pour les lecteurs d'écran (point 28)."""
+        label = self._STATUS_LABEL.get(self.status, self._STATUS_LABEL["disconnected"])
+        self.setAccessibleName(f"État de la connexion temps réel : {label}")
+        self.setAccessibleDescription(self._status_tooltip())
+
     def update_tooltip(self):
         try:
             if self.isVisible():
-                if self.status == "connected":
-                    if self.last_connection_time:
-                        time_str = self.last_connection_time.toString("HH:mm:ss")
-                        tooltip = f"Connecté depuis {time_str}"
-                    else:
-                        tooltip = "Temps réel Connecté"
-                else:
-                    tooltip = "Temps réel déconnecté"
-                    if self.reconnection_attempts > 0:
-                        tooltip += f"\nNombre de tentatives de reconnexion : {self.reconnection_attempts}"
-                
-                self.setToolTip(tooltip)
+                self.setToolTip(self._status_tooltip())
+                self._refresh_accessibility()
         except RuntimeError:
             pass
 
@@ -2516,8 +2615,34 @@ class ConnectionStatusIndicator(QWidget):
                 painter = QPainter(self)
                 painter.setRenderHint(QPainter.Antialiasing)
                 self.renderers[self.status].render(painter, self.rect())
+
+                # Teinte l'icône selon l'état : garde la forme (anti-aliasée) mais
+                # la recolore (SourceIn ne peint que là où l'icône a de l'alpha).
+                color = self._STATUS_COLOR.get(self.status)
+                if color is not None:
+                    painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+                    painter.fillRect(self.rect(), QColor(color))
+                    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+                # « connecting » utilise le même dessin SVG que « connected » : la
+                # couleur seule ne suffirait pas à les distinguer en niveaux de
+                # gris. On superpose trois points (badge « en cours ») pour une
+                # distinction non colorée.
+                if self.status == "connecting":
+                    self._paint_progress_dots(painter)
         except RuntimeError:
             pass
+
+    def _paint_progress_dots(self, painter):
+        rect = self.rect()
+        dot_r = max(1, rect.width() // 12)
+        gap = dot_r * 3
+        cy = rect.bottom() - dot_r - 1
+        cx0 = rect.center().x() - gap
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#1a1a1a"))
+        for i in range(3):
+            painter.drawEllipse(cx0 + i * gap - dot_r, cy - dot_r, dot_r * 2, dot_r * 2)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -39,7 +39,7 @@ def qapp():
     yield app
 
 
-def _make(state="inactive", is_always_visible=True):
+def _make(state="inactive", is_always_visible=True, accessible_name=None):
     return IconeButton(
         icon_path=ACTIVE_ICON,
         icon_inactive_path=INACTIVE_ICON,
@@ -49,6 +49,7 @@ def _make(state="inactive", is_always_visible=True):
         state=state,
         is_always_visible=is_always_visible,
         parent=None,
+        accessible_name=accessible_name,
     )
 
 
@@ -134,3 +135,35 @@ def test_hidden_when_inactive_and_not_always_visible(qapp):
     btn = _make(state="active", is_always_visible=False)
     btn.change_state("inactive")
     assert btn.isVisible() is False
+
+
+# --------------------------------------------------------------------------
+# Accessibilité (point 28) : nom accessible + description reflétant l'état
+# --------------------------------------------------------------------------
+
+def test_accessible_name_is_set_explicitly(qapp):
+    btn = _make(accessible_name="Appel automatique des patients")
+    assert btn.accessibleName() == "Appel automatique des patients"
+
+
+def test_accessible_name_defaults_to_tooltip_text(qapp):
+    # Sans nom explicite, on retombe sur le libellé d'action (jamais vide).
+    btn = _make()
+    assert btn.accessibleName() == "Désactiver"
+
+
+def test_accessible_name_stable_across_states(qapp):
+    btn = _make(accessible_name="État du papier")
+    btn.change_state("active")
+    assert btn.accessibleName() == "État du papier"
+    btn.change_state("inactive")
+    assert btn.accessibleName() == "État du papier"
+
+
+def test_accessible_description_reflects_current_state(qapp):
+    btn = _make(state="active", accessible_name="État du papier")
+    assert btn.accessibleDescription() == "Désactiver"
+    btn.change_state("inactive")
+    assert btn.accessibleDescription() == "Activer"
+    btn.change_state("waiting")
+    assert btn.accessibleDescription() == "En attente d'une connexion"

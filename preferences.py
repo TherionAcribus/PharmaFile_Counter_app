@@ -18,6 +18,10 @@ from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE,
     ACTION_LABELS, normalize_mode, find_duplicate_shortcuts,
 )
+from accessibility import (
+    DEFAULT_LIST_FONT_SIZE, DEFAULT_TONE, MIN_FONT_POINT_SIZE,
+    TONE_HUMOROUS, TONE_SOBER, clamp_font_size, normalize_tone,
+)
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -153,7 +157,17 @@ class PreferencesDialog(QDialog):
         self.patient_list_position_horizontal = QComboBox(self.general_page)
         self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.general_layout.addWidget(self.patient_list_position_horizontal)
-        
+
+        # Taille de police de la file des patients (point 28) : configurable, avec
+        # un plancher de lisibilité (l'ancienne valeur figée de 8 pt était petite).
+        self.patient_list_font_size_layout = QHBoxLayout()
+        self.patient_list_font_size_label = QLabel("Taille de police de la liste:", self.general_page)
+        self.patient_list_font_size_spinbox = QSpinBox(self.general_page)
+        self.patient_list_font_size_spinbox.setRange(MIN_FONT_POINT_SIZE, 24)
+        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_label)
+        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_spinbox)
+        self.general_layout.addLayout(self.patient_list_font_size_layout)
+
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
         self.general_layout.addWidget(self.debug_window)
 
@@ -333,6 +347,21 @@ class PreferencesDialog(QDialog):
         self.notification_font_size_layout.addWidget(self.notification_font_size_spinbox)
         self.notifications_layout.addLayout(self.notification_font_size_layout)
 
+        # Ton des messages (point 28) : sobre (explicite, défaut) ou humoristique.
+        self.message_tone_layout = QHBoxLayout()
+        self.message_tone_label = QLabel("Ton des messages:", self.notifications_page)
+        self.message_tone_combo = QComboBox(self.notifications_page)
+        # (libellé affiché, valeur enregistrée)
+        self.message_tone_options = [
+            ("Sobre (explicite)", TONE_SOBER),
+            ("Humoristique", TONE_HUMOROUS),
+        ]
+        for label, value in self.message_tone_options:
+            self.message_tone_combo.addItem(label, value)
+        self.message_tone_layout.addWidget(self.message_tone_label)
+        self.message_tone_layout.addWidget(self.message_tone_combo)
+        self.notifications_layout.addLayout(self.message_tone_layout)
+
         # Coin de l'écran où afficher les notifications (point 26).
         self.notification_corner_layout = QHBoxLayout()
         self.notification_corner_label = QLabel("Coin d'affichage des notifications:", self.notifications_page)
@@ -465,6 +494,9 @@ class PreferencesDialog(QDialog):
         self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
         self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
         self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
+        tone_value = normalize_tone(settings.value("message_tone", DEFAULT_TONE))
+        tone_index = self.message_tone_combo.findData(tone_value)
+        self.message_tone_combo.setCurrentIndex(tone_index if tone_index >= 0 else 0)
         corner_value = settings.value("notification_corner", "bottom-left")
         corner_index = self.notification_corner_combo.findData(corner_value)
         self.notification_corner_combo.setCurrentIndex(corner_index if corner_index >= 0 else 0)
@@ -477,6 +509,8 @@ class PreferencesDialog(QDialog):
         self.panel_thickness_spinbox.setValue(
             clamp_thickness(settings.value("panel_thickness", DEFAULT_PANEL_THICKNESS)))
         self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
+        self.patient_list_font_size_spinbox.setValue(
+            clamp_font_size(settings.value("patient_list_font_size", DEFAULT_LIST_FONT_SIZE, type=int)))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
         self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
         self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
@@ -562,6 +596,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
         settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
+        settings.setValue("message_tone", self.message_tone_combo.currentData())
         settings.setValue("notification_corner", self.notification_corner_combo.currentData())
         settings.setValue("notification_volume", self.volume_slider.value())
 
@@ -571,6 +606,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("panel_snap", self.panel_snap_checkbox.isChecked())
         settings.setValue("panel_thickness", self.panel_thickness_spinbox.value())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
+        settings.setValue("patient_list_font_size", self.patient_list_font_size_spinbox.value())
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
         settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])
         settings.setValue("debug_window", self.debug_window.isChecked())

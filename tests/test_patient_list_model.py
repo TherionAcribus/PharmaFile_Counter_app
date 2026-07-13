@@ -198,15 +198,60 @@ def test_reorder_preserves_ids(qapp):
 
 
 def test_display_role_and_staff_background(qapp):
+    from accessibility import STAFF_HIGHLIGHT_MARKER
     m = PatientListModel()
     m.set_staff_id(7)
     m.set_patients([_patient(1, call="A-1", activity="Ordo", staff=7, lang="en")])
     idx = m.index(0, 0)
-    assert m.data(idx, Qt.DisplayRole) == "A-1 -> Ordo (en)"
+    # Accessibilité (point 28) : le libellé d'un patient assigné à l'équipier
+    # courant porte un marqueur texte en plus du fond orange.
+    assert m.data(idx, Qt.DisplayRole) == f"{STAFF_HIGHLIGHT_MARKER}A-1 -> Ordo (en)"
     assert m.data(idx, PatientListModel.PatientRole)["id"] == 1
     # Fond orange car l'activité est assignée à l'équipier courant.
     assert m.data(idx, Qt.BackgroundRole) is not None
     assert m.data(idx, Qt.FontRole) is not None
+
+
+def test_display_role_no_marker_when_not_staff(qapp):
+    from accessibility import STAFF_HIGHLIGHT_MARKER
+    m = PatientListModel()
+    m.set_staff_id(3)
+    m.set_patients([_patient(1, call="A-1", activity="Ordo", staff=7, lang="fr")])
+    text = m.data(m.index(0, 0), Qt.DisplayRole)
+    assert not text.startswith(STAFF_HIGHLIGHT_MARKER)
+    assert text == "A-1 -> Ordo"
+
+
+def test_staff_marker_appears_and_disappears_with_staff_id(qapp):
+    from accessibility import STAFF_HIGHLIGHT_MARKER
+    m = PatientListModel()
+    m.set_patients([_patient(1, call="A-1", staff=7, lang="fr")])
+    idx = m.index(0, 0)
+    assert not m.data(idx, Qt.DisplayRole).startswith(STAFF_HIGHLIGHT_MARKER)
+    m.set_staff_id(7)
+    assert m.data(idx, Qt.DisplayRole).startswith(STAFF_HIGHLIGHT_MARKER)
+
+
+def test_font_size_is_configurable_and_floored(qapp):
+    from accessibility import MIN_FONT_POINT_SIZE
+    m = PatientListModel(font_size=16)
+    m.set_patients([_patient(1)])
+    assert m.data(m.index(0, 0), Qt.FontRole).pointSize() == 16
+    # Sous le plancher : borné au minimum lisible.
+    m.set_font_size(2)
+    assert m.data(m.index(0, 0), Qt.FontRole).pointSize() == MIN_FONT_POINT_SIZE
+
+
+def test_set_font_size_emits_only_when_changed(qapp):
+    m = PatientListModel(font_size=12)
+    m.set_patients([_patient(1), _patient(2)])
+    c = SignalCounter(m)
+    m.set_font_size(14)
+    assert c.data_changed == 1
+    assert c.reset == 0
+    c2 = SignalCounter(m)
+    m.set_font_size(14)  # inchangé -> aucun signal
+    assert c2.data_changed == 0
 
 
 def test_no_background_when_not_staff_match(qapp):

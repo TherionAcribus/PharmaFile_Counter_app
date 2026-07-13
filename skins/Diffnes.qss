@@ -161,7 +161,7 @@ QToolButton:checked
 /*-----QPushButton-----*/
 QPushButton
 {
-	background-color: #4891b4;
+	background-color: #3c7a97;
 	color: #fff;
 	min-width: 80px;
 	border-radius: 4px;
@@ -669,7 +669,7 @@ QListView::item:selected:active
 QListView::item:hover {
     background-color: #5e5e5e;
     border: none;
-    color: #000;
+    color: #ffffff;
 
 }
 

@@ -30,9 +30,9 @@ QWidget
 
 
 /*-----QLabel-----*/
-QLabel 
+QLabel
 {
-	color: black;
+	color: #ffffff;
 	background-color: #49515c;
     margin-top:1px;
 	margin-bottom:1px;
@@ -230,7 +230,7 @@ QHeaderView::section
 	border-bottom: 0px;
 	border-left: 1px solid black;
 	border-right: 1px solid black;
-	background-color: #668391;
+	background-color: #5d7784;
     margin-top:1px;
 	margin-bottom:1px;
 
@@ -255,7 +255,7 @@ QTreeView::item:hover
 
 QTreeView::item:selected 
 {
-	background-color: #629fff;
+	background-color: #4772b8;
 	color: #fff;
 
 }
@@ -263,7 +263,7 @@ QTreeView::item:selected
 
 QTreeView::item:selected:active
 {
-	background-color: #629fff;
+	background-color: #4772b8;
 	color: #fff;
 
 }
@@ -297,7 +297,7 @@ QScrollBar:horizontal
 
 QScrollBar::handle:horizontal
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     min-height: 20px;
 
@@ -306,7 +306,7 @@ QScrollBar::handle:horizontal
 
 QScrollBar::add-line:horizontal
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     width: 14px;
     subcontrol-position: right;
@@ -317,7 +317,7 @@ QScrollBar::add-line:horizontal
 
 QScrollBar::sub-line:horizontal
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     width: 14px;
     subcontrol-position: left;
@@ -363,7 +363,7 @@ QScrollBar:vertical
 
 QScrollBar::handle:vertical
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     min-height: 20px;
 
@@ -372,7 +372,7 @@ QScrollBar::handle:vertical
 
 QScrollBar::add-line:vertical
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     height: 14px;
     subcontrol-position: bottom;
@@ -383,7 +383,7 @@ QScrollBar::add-line:vertical
 
 QScrollBar::sub-line:vertical
 {
-    background-color: #668391;
+    background-color: #5d7784;
 	border: 1px solid #000;
     height: 14px;
     subcontrol-position: top;
