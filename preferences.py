@@ -70,14 +70,31 @@ class CountersWorker(QThread):
             if token_response.status_code != 200:
                 self.result.emit(False, "Secret applicatif invalide : impossible de récupérer la liste des comptoirs")
                 return
-            token = token_response.json()['token']
+            # Réponse JSON invalide ou jeton manquant : on émet un échec explicite
+            # au lieu de laisser une exception tuer silencieusement le thread (le
+            # signal ne serait jamais émis et l'interface resterait figée).
+            try:
+                token = token_response.json().get("token")
+            except ValueError:
+                token = None
+            if not token:
+                self.result.emit(False, "Réponse du serveur invalide (jeton manquant).")
+                return
 
             response = requests.get(f"{self.web_url}/api/counters",
                                      headers={'X-App-Token': token}, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                self.result.emit(True, response.json())
-            else:
+            if response.status_code != 200:
                 self.result.emit(False, f"Erreur de chargement des comptoirs: {response.status_code}")
+                return
+            try:
+                counters = response.json()
+            except ValueError:
+                self.result.emit(False, "Réponse du serveur invalide (liste des comptoirs illisible).")
+                return
+            if not isinstance(counters, list):
+                self.result.emit(False, "Réponse du serveur invalide (format de liste inattendu).")
+                return
+            self.result.emit(True, counters)
         except requests.exceptions.RequestException as e:
             self.result.emit(False, f"Erreur: {e}")
 
@@ -118,6 +135,12 @@ class TokenCheckWorker(QThread):
         self.checked.emit(False, f"Réponse inattendue du serveur (statut {resp.status_code}).")
 
 
+# Délai maximal (ms) d'attente d'un worker de test à la fermeture du dialogue
+# (point 9). Borné pour ne jamais figer l'interface : les appels réseau ont déjà
+# leur propre timeout (DEFAULT_TIMEOUT), ce délai n'est qu'un garde-fou.
+WORKER_SHUTDOWN_TIMEOUT_MS = 3000
+
+
 # Constants for UI texts and corresponding values
 BOTTOM_TEXT = "Bas"
 RIGHT_TEXT = "Droite"
@@ -134,7 +157,16 @@ class PreferencesDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Préférences")
-        
+
+        # Registre des workers de test en cours (point 9), indexés par « kind »
+        # (une entrée par type de test). On conserve une référence forte tant
+        # que le thread tourne — sinon le ramasse-miettes peut détruire le
+        # QThread en cours d'exécution (« QThread: Destroyed while thread is
+        # still running »). Le kind sert aussi à interdire deux tests identiques
+        # simultanés. _closing coupe tout nouveau lancement pendant la fermeture.
+        self._workers = {}
+        self._closing = False
+
         self.main_layout = QHBoxLayout(self)
         
         self.navigation_list = QListWidget()
@@ -469,6 +501,53 @@ class PreferencesDialog(QDialog):
         self.counters_loaded.connect(self.update_counters)
         
 
+    def _start_worker(self, kind, worker):
+        """ Démarre un worker de test en le suivant dans le registre (point 9).
+
+        - Conserve une référence forte jusqu'à sa fin (empêche la destruction du
+          QThread pendant qu'il tourne).
+        - Empêche deux tests identiques simultanés : si un worker du même `kind`
+          est déjà en cours, refuse le nouveau et renvoie False.
+        - Refuse aussi tout lancement pendant la fermeture du dialogue.
+
+        Renvoie True si le worker a été démarré, False sinon. """
+        if self._closing:
+            return False
+        existing = self._workers.get(kind)
+        if existing is not None and existing.isRunning():
+            return False
+        # Remplace un éventuel worker précédent (déjà terminé) : la référence est
+        # gardée tant qu'il tourne, puis libérée au prochain lancement du même
+        # kind ou à la fermeture (_shutdown_workers).
+        self._workers[kind] = worker
+        worker.start()
+        return True
+
+    def _shutdown_workers(self):
+        """ Arrête proprement les workers de test encore actifs à la fermeture
+        du dialogue (point 9) : on demande l'interruption puis on attend leur fin
+        avec un délai borné. Sans cette attente, le QThread pourrait être détruit
+        alors qu'il tourne encore (crash) lorsque le dialogue est libéré. Le délai
+        est borné pour ne jamais figer l'interface indéfiniment. """
+        self._closing = True
+        for worker in list(self._workers.values()):
+            if worker is None or not worker.isRunning():
+                continue
+            worker.requestInterruption()
+            if not worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS):
+                logger.warning(
+                    "Un worker de test est toujours actif après %d ms à la "
+                    "fermeture des préférences ; il est abandonné.",
+                    WORKER_SHUTDOWN_TIMEOUT_MS)
+        self._workers.clear()
+
+    def done(self, result):
+        # Point de sortie unique du dialogue : accept() ET reject() (et donc la
+        # croix de fermeture, qui passe par reject) y aboutissent. On y arrête les
+        # workers de test avant que le dialogue ne soit refermé/libéré.
+        self._shutdown_workers()
+        super().done(result)
+
     def create_shortcut_input(self):
         widget = QWidget()
         layout = QHBoxLayout()
@@ -661,11 +740,14 @@ class PreferencesDialog(QDialog):
         """ Vérifie en arrière-plan que (URL, secret) donnent un jeton, PUIS
         enregistre seulement en cas de succès. Le bouton Enregistrer est désactivé
         pendant la vérification pour éviter les doubles soumissions. """
+        worker = TokenCheckWorker(web_url, app_secret)
+        worker.checked.connect(self._on_connection_checked)
+        # Suivi + anti-doublon via le registre (point 9) : si une vérification est
+        # déjà en cours, on ne relance rien (le bouton est déjà désactivé).
+        if not self._start_worker("token_check", worker):
+            return
         self.save_button.setEnabled(False)
         self.status_label.setText("Vérification de la connexion au serveur…")
-        self._conn_check_worker = TokenCheckWorker(web_url, app_secret)
-        self._conn_check_worker.checked.connect(self._on_connection_checked)
-        self._conn_check_worker.start()
 
     @Slot(bool, str)
     def _on_connection_checked(self, ok, message):
@@ -773,30 +855,42 @@ class PreferencesDialog(QDialog):
         return "+".join(keys)
 
     def test_url(self):
-        self.status_label.setText("Test de connexion en cours...")
         url = self.url_input.text()
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
             self.status_label.setText("L'URL ne peut pas être vide")
             return
-        
-        self.worker = TestConnectionWorker(url)
-        self.worker.connection_tested.connect(self.on_connection_tested)
-        self.worker.start()
+
+        worker = TestConnectionWorker(url)
+        worker.connection_tested.connect(self.on_connection_tested)
+        # Anti-doublon (point 9) : un seul test de connexion à la fois. On ne
+        # désactive le bouton et n'affiche « en cours » qu'après un démarrage
+        # effectif. Le bouton reste désactivé jusqu'à la fin du chargement des
+        # comptoirs qui suit un test réussi (réactivé dans _on_counters_result).
+        if not self._start_worker("test_connection", worker):
+            return
+        self.status_label.setText("Test de connexion en cours...")
+        self.test_button.setEnabled(False)
 
     @Slot(bool, str)
     def on_connection_tested(self, success, message):
         self.status_label.setText(message)
         if success:
-            self.load_counters()
+            self.load_counters()  # le bouton est réactivé à la fin du chargement
+        else:
+            self.test_button.setEnabled(True)
 
     def load_counters(self):
-        self.counters_worker = CountersWorker(self.url_input.text(), self.app_secret_input.text())
-        self.counters_worker.result.connect(self._on_counters_result)
-        self.counters_worker.start()
+        worker = CountersWorker(self.url_input.text(), self.app_secret_input.text())
+        worker.result.connect(self._on_counters_result)
+        # Si un chargement des comptoirs est déjà en cours (ou fermeture), on
+        # réactive le bouton pour ne pas le laisser bloqué désactivé.
+        if not self._start_worker("counters", worker):
+            self.test_button.setEnabled(True)
 
     @Slot(bool, object)
     def _on_counters_result(self, success, data):
+        self.test_button.setEnabled(True)
         if success:
             self.counters_loaded.emit(data)
         else:
@@ -806,8 +900,14 @@ class PreferencesDialog(QDialog):
     def update_counters(self, counters):
         self.counter_combobox.clear()
         for counter in counters:
-            self.counter_combobox.addItem(counter['name'], counter['id'])
-        
+            # Champs manquants côté serveur : on ignore l'entrée plutôt que de
+            # lever une KeyError qui interromprait la mise à jour de la liste.
+            try:
+                self.counter_combobox.addItem(counter['name'], counter['id'])
+            except (KeyError, TypeError):
+                logger.warning("Comptoir ignoré (champ manquant) : %r", counter)
+                continue
+
         if self.counter_id:
             index = self.counter_combobox.findData(int(self.counter_id))
             if index != -1:
