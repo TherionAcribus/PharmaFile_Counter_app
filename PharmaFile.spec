@@ -10,12 +10,29 @@ SERVER_AND_DEV_EXCLUDES = [
     'pytest', 'line_profiler', 'pyinstaller',
 ]
 
+# keyring charge ses backends dynamiquement (entry points / import différé) :
+# PyInstaller ne les détecte pas par analyse statique. Sans ces imports cachés,
+# le binaire gelé ne trouve AUCUN backend et retombe sur un stockage en clair
+# (secret_store le signalerait, mais on veut le stockage sécurisé). On force donc
+# l'inclusion du backend Windows (Credential Manager, via win32ctypes) et des
+# backends de secours multiplateformes.
+KEYRING_HIDDENIMPORTS = [
+    'keyring.backends.Windows',
+    'keyring.backends.macOS',
+    'keyring.backends.SecretService',
+    'keyring.backends.chainer',
+    'keyring.backends.fail',
+    'win32ctypes.core',            # dépendance du backend Windows (pywin32-ctypes)
+    'win32ctypes.core.cffi',
+    'win32ctypes.core.ctypes',
+]
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[('assets', 'assets'), ('skins', 'skins'), ('templates', 'templates')],
-    hiddenimports=[],
+    hiddenimports=KEYRING_HIDDENIMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

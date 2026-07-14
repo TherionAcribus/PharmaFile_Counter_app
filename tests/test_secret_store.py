@@ -62,7 +62,8 @@ def broken_keyring(monkeypatch):
 
 def test_save_then_load_uses_keyring(fake_keyring):
     settings = FakeSettings()
-    save_secret(settings, "mon-secret")
+    # save_secret renvoie True quand le stockage sécurisé a réussi.
+    assert save_secret(settings, "mon-secret") is True
     # Rien en clair dans QSettings.
     assert settings.value("app_secret") is None
     assert fake_keyring["app_secret"] == "mon-secret"
@@ -92,7 +93,8 @@ def test_empty_when_nothing_stored(fake_keyring):
 
 def test_fallback_to_qsettings_when_keyring_broken(broken_keyring):
     settings = FakeSettings()
-    save_secret(settings, "repli")
-    # keyring HS => on retombe sur QSettings (comportement historique).
+    # keyring HS => repli sur QSettings, mais save_secret le SIGNALE (False) au
+    # lieu d'accepter silencieusement le stockage en clair.
+    assert save_secret(settings, "repli") is False
     assert settings.value("app_secret") == "repli"
     assert load_secret(settings) == "repli"

@@ -575,7 +575,17 @@ class PreferencesDialog(QDialog):
         settings.setValue("web_url", url)
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
         # dans QSettings. save_secret efface aussi toute copie en clair héritée.
-        save_secret(settings, app_secret)
+        # Si le magasin sécurisé est indisponible, save_secret retombe sur un
+        # stockage en clair mais le signale (renvoie False) : on ne l'accepte
+        # PAS silencieusement, on prévient explicitement l'utilisateur.
+        if app_secret and not save_secret(settings, app_secret):
+            QMessageBox.warning(
+                self, "Stockage non sécurisé du secret",
+                "Le gestionnaire de secrets du système est indisponible sur ce "
+                "poste. Le secret d'application a été enregistré en clair dans la "
+                "configuration locale.\n\nInstallez/activez un magasin de secrets "
+                "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
+                "pour un stockage sécurisé.")
         settings.setValue("counter_id", counter_id)
         settings.setValue("next_patient_shortcut", next_patient_shortcut)
         settings.setValue("validate_patient_shortcut", validate_patient_shortcut)

@@ -90,16 +90,22 @@ def load_secret(settings) -> str:
     return ""
 
 
-def save_secret(settings, value) -> None:
+def save_secret(settings, value) -> bool:
     """Enregistre le secret dans le magasin sécurisé.
 
-    En cas de succès keyring, on s'assure qu'aucune copie en clair ne subsiste
-    dans QSettings. Si keyring échoue/est indisponible, on retombe sur QSettings
-    (comportement historique) en journalisant un avertissement.
+    Retourne ``True`` si le secret a bien été stocké de façon sécurisée
+    (keyring), ``False`` s'il a fallu retomber sur un stockage en clair
+    (QSettings). Le repli n'est **jamais silencieux** : on journalise un
+    avertissement ET on renvoie ``False`` pour que l'appelant en informe
+    l'utilisateur (cf. preferences.save_preferences).
+
+    En cas de succès keyring, on s'assure qu'aucune copie en clair héritée ne
+    subsiste dans QSettings.
     """
     value = value or ""
     if _keyring_set(value):
         settings.remove(_LEGACY_QSETTINGS_KEY)
-        return
+        return True
     logger.warning("Secret applicatif stocké en clair dans QSettings (keyring indisponible).")
     settings.setValue(_LEGACY_QSETTINGS_KEY, value)
+    return False
