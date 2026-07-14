@@ -14,7 +14,8 @@ import settings_schema
 from panel_layout import MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS
 from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
-    ACTION_LABELS, find_duplicate_shortcuts,
+    ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
+    INVALID_EMPTY, INVALID_LONE_MODIFIER, INVALID_UNKNOWN_KEY,
 )
 from accessibility import (
     MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
@@ -85,7 +86,6 @@ REVERSE_POSITION_MAPPING = {v: k for k, v in POSITION_MAPPING.items()}
 
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
-    preferences_updated = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -554,9 +554,6 @@ class PreferencesDialog(QDialog):
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
 
-        # Détection des doublons de raccourcis (point 27) : deux actions ne peuvent
-        # pas utiliser la même combinaison (comparaison indépendante de l'ordre et
-        # de la casse des modificateurs). On refuse d'enregistrer si conflit.
         shortcut_map = {
             "next": next_patient_shortcut,
             "validate": validate_patient_shortcut,
@@ -564,6 +561,29 @@ class PreferencesDialog(QDialog):
             "recall": recall_shortcut,
             "deconnect": deconnect_shortcut,
         }
+        # Validation des raccourcis (point 7) : chaque action doit avoir une touche
+        # réelle reconnue (ni champ vide, ni modificateur seul, ni touche inconnue).
+        # Sans ce contrôle, un « Ctrl » seul ou une touche invalide était accepté
+        # puis silencieusement ignoré à l'installation (action inopérante).
+        invalid = find_invalid_shortcuts(shortcut_map)
+        if invalid:
+            reasons = {
+                INVALID_EMPTY: "aucune touche définie",
+                INVALID_LONE_MODIFIER: "un modificateur seul (ajoutez une touche)",
+                INVALID_UNKNOWN_KEY: "une touche non reconnue",
+            }
+            lines = "\n".join(
+                f"• {ACTION_LABELS.get(a, a)} : {reasons[code]}"
+                for a, code in invalid.items())
+            QMessageBox.warning(
+                self, "Raccourcis invalides",
+                "Certains raccourcis ne sont pas valides :\n\n"
+                f"{lines}\n\nCorrigez-les avant d'enregistrer.")
+            return
+
+        # Détection des doublons de raccourcis (point 27) : deux actions ne peuvent
+        # pas utiliser la même combinaison (comparaison indépendante de l'ordre et
+        # de la casse des modificateurs). On refuse d'enregistrer si conflit.
         duplicates = find_duplicate_shortcuts(shortcut_map)
         if duplicates:
             conflicts = "\n".join(
@@ -628,16 +648,14 @@ class PreferencesDialog(QDialog):
         # skins
         settings.setValue("selected_skin", self.skin_combo.currentText())
         self.current_skin = self.skin_combo.currentText()
-        
-        self.parent().setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top_checkbox.isChecked())
-        self.parent().show()
 
+        # Un SEUL mécanisme d'application (point 7) : on ferme le dialogue avec le
+        # résultat Accepted. C'est l'appelant (MainWindow.show_preferences_dialog)
+        # qui, en voyant ce résultat, déclenche l'UNIQUE apply_preferences —
+        # lequel recharge les valeurs, applique le cosmétique (dont always-on-top)
+        # et reconnecte les services au besoin. Le dialogue ne recharge rien et ne
+        # touche plus directement la fenêtre parente (plus de signal concurrent).
         self.accept()
-        # Le rechargement des préférences ET la reconnexion éventuelle des services
-        # (si serveur/secret/comptoir ont changé) sont gérés par apply_preferences,
-        # branché sur ce signal. On NE recharge PAS ici : apply_preferences a besoin
-        # des anciennes valeurs pour détecter le changement.
-        self.preferences_updated.emit()
 
     def _reset_window_position(self):
         """Délègue à la fenêtre principale la réinitialisation de sa géométrie."""

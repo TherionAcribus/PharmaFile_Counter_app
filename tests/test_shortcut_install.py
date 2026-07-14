@@ -45,6 +45,23 @@ class FakeQShortcut:
         self.deleted = True
 
 
+class FakeThread:
+    """Thread d'enregistrement global factice : suit les join() (sérialisation)."""
+
+    def __init__(self, alive=True):
+        self._alive = alive
+        self.join_calls = 0
+        self.join_timeout = None
+
+    def is_alive(self):
+        return self._alive
+
+    def join(self, timeout=None):
+        self.join_calls += 1
+        self.join_timeout = timeout
+        self._alive = False
+
+
 @pytest.fixture
 def fake_keyboard(monkeypatch):
     kb = FakeKeyboard()
@@ -121,3 +138,38 @@ def test_reinstall_clears_previous_qshortcuts_before_installing(fake_keyboard):
     assert old.deleted is True
     assert w._qshortcuts == []
     assert w.calls["global"] == 1
+
+
+# --- Sérialisation (point 7) : attente de l'install globale précédente -------
+
+def test_install_joins_previous_running_thread_before_reinstall(fake_keyboard):
+    # Un enregistrement global précédent encore actif doit être attendu (join)
+    # AVANT de retirer/réinstaller, pour ne pas faire courir unhook et add_hotkey.
+    prev = FakeThread(alive=True)
+    w = _win(main.MODE_GLOBAL)
+    w._shortcut_thread = prev          # pas de _shortcut_lock -> créé paresseusement
+    w._install_shortcuts()
+    assert prev.join_calls == 1
+    assert prev.join_timeout is not None   # attente bornée
+    assert w.calls["global"] == 1
+    # Référence consommée : le vrai _install_global_shortcuts (ici stubbé) en
+    # reposera une neuve ; l'aiguillage ne doit pas conserver l'ancienne.
+    assert w._shortcut_thread is None
+
+
+def test_install_does_not_join_finished_thread(fake_keyboard):
+    prev = FakeThread(alive=False)
+    w = _win(main.MODE_FOCUSED)
+    w._shortcut_thread = prev
+    w._install_shortcuts()
+    assert prev.join_calls == 0
+    assert w.calls["focused"] == 1
+    assert w._shortcut_thread is None
+
+
+def test_install_creates_lock_lazily_without_init(fake_keyboard):
+    # Faux self sans _shortcut_lock ni _shortcut_thread : ne doit pas lever.
+    w = _win(main.MODE_DISABLED, existing_shortcuts=[FakeQShortcut()])
+    w._install_shortcuts()
+    assert fake_keyboard.unhook_calls == 1
+    assert w.calls["global"] == 0 and w.calls["focused"] == 0

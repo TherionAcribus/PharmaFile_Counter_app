@@ -121,6 +121,60 @@ def find_duplicate_shortcuts(mapping):
     return {norm: acts for norm, acts in groups.items() if len(acts) > 1}
 
 
+# --- Validation d'un raccourci saisi ----------------------------------------
+
+# Touches « réelles » nommées reconnues au-delà d'un caractère simple. Sert de
+# garde-fou précoce (au moment d'enregistrer les préférences) contre les fautes
+# de frappe évidentes ; la bibliothèque ``keyboard`` reste seule juge à
+# l'installation (ses erreurs sont interceptées et signalées, cf. main.py).
+_NAMED_KEYS = frozenset({
+    "space", "enter", "return", "tab", "esc", "escape", "backspace",
+    "delete", "del", "insert", "ins", "home", "end", "pageup", "pagedown",
+    "up", "down", "left", "right", "printscreen", "pause", "menu",
+    "capslock", "numlock", "scrolllock",
+    "plus", "minus", "add", "subtract", "multiply", "divide", "decimal",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+})
+
+
+def is_recognized_key(key):
+    """Vrai si ``key`` est une touche « réelle » plausible : un caractère simple
+    (lettre, chiffre, ponctuation) ou une touche nommée connue (F1-F12, espace,
+    entrée, flèches…). Insensible à la casse."""
+    if not key:
+        return False
+    k = str(key).strip().lower()
+    if len(k) == 1:
+        return True
+    return k in _NAMED_KEYS
+
+
+# Codes de problème renvoyés par find_invalid_shortcuts (l'UI les traduit).
+INVALID_EMPTY = "empty"                 # aucune touche saisie
+INVALID_LONE_MODIFIER = "lone_modifier"  # modificateur(s) sans touche réelle
+INVALID_UNKNOWN_KEY = "unknown_key"      # touche non reconnue
+
+
+def find_invalid_shortcuts(mapping):
+    """Valide chaque raccourci d'un ``{action: texte}``.
+
+    Retourne ``{action: code}`` pour les raccourcis invalides, où ``code`` vaut :
+      - ``INVALID_EMPTY`` : champ vide (aucune touche) ;
+      - ``INVALID_LONE_MODIFIER`` : uniquement des modificateurs (ex. « Ctrl+Alt »
+        sans touche) — n'enregistrerait aucun raccourci exploitable ;
+      - ``INVALID_UNKNOWN_KEY`` : la touche réelle n'est pas reconnue.
+
+    Les doublons entre actions sont détectés séparément (find_duplicate_shortcuts)."""
+    invalid = {}
+    for action, text in mapping.items():
+        mods, key = _split(text)
+        if key is None:
+            invalid[action] = INVALID_LONE_MODIFIER if mods else INVALID_EMPTY
+        elif not is_recognized_key(key):
+            invalid[action] = INVALID_UNKNOWN_KEY
+    return invalid
+
+
 def to_keyboard_hotkey(text):
     """Traduit un raccourci d'interface vers la syntaxe de la bibliothèque
     ``keyboard`` (mode global), ex. « Ctrl+Maj+P » -> « ctrl+shift+p ».

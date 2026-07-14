@@ -4,7 +4,7 @@ import time
 import uuid
 import threading
 import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView
+from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView, QDialog
 from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
 from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication, QShortcut, QKeySequence, QColor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -308,6 +308,14 @@ class MainWindow(QMainWindow):
         # fois ; les demandes reçues pendant une resync sont fusionnées en une
         # seule relance (pas de rafale de ResyncWorker).
         self._resync = ResyncCoordinator()
+
+        # Sérialisation de l'(ré)installation des raccourcis (point 7) : un verrou
+        # garantit qu'une installation ne chevauche jamais une autre, et
+        # _shortcut_thread référence l'éventuel thread d'enregistrement global en
+        # cours (joint avant toute réinstallation pour éviter que unhook et
+        # add_hotkey ne s'exécutent en concurrence dans la bibliothèque keyboard).
+        self._shortcut_lock = threading.Lock()
+        self._shortcut_thread = None
 
         # Connexion (UNE seule fois) des signaux de raccourci à leurs actions
         # GUI, indépendamment des ré-enregistrements de hotkeys clavier faits à
@@ -1801,13 +1809,14 @@ class MainWindow(QMainWindow):
             self.apply_panel_mode()
     
     def show_preferences_dialog(self):
+        # Un SEUL mécanisme d'application (point 7) : le dialogue se contente de
+        # renvoyer Accepted lorsqu'il a enregistré les préférences ; c'est ICI,
+        # et seulement ici, qu'on déclenche l'UNIQUE apply_preferences (recharge +
+        # cosmétique + reconnexion éventuelle). Plus de signal preferences_updated
+        # concurrent, plus de rechargement après exec() : un seul propriétaire.
         dialog = PreferencesDialog(self)
-        # apply_preferences (branché sur preferences_updated, émis à
-        # l'enregistrement) recharge les préférences, applique les réglages
-        # cosmétiques et reconnecte les services si serveur/secret/comptoir ont
-        # changé. Rien à refaire ici après exec().
-        dialog.preferences_updated.connect(self.apply_preferences)
-        dialog.exec()
+        if dialog.exec() == QDialog.Accepted:
+            self.apply_preferences()
 
     def _shortcut_items(self):
         """ Couples (action, texte du raccourci) dans un ordre stable. """
@@ -1829,16 +1838,34 @@ class MainWindow(QMainWindow):
         """ Retire tous les raccourcis existants (hooks keyboard + QShortcut) puis
         installe le mécanisme correspondant au mode : aucun (désactivés), QShortcut
         actifs au premier plan, ou hooks globaux. Un SEUL mécanisme est actif à la
-        fois -> pas de double déclenchement. """
-        self._remove_all_shortcuts()
-        mode = getattr(self, "shortcut_mode", DEFAULT_MODE)
-        if mode == MODE_DISABLED:
-            self.logger.info("Raccourcis clavier désactivés.")
-            return
-        if mode == MODE_FOCUSED:
-            self._install_focused_shortcuts()
-        else:
-            self._install_global_shortcuts()
+        fois -> pas de double déclenchement.
+
+        SÉRIALISÉ (point 7) : un verrou empêche deux installations de se chevaucher,
+        et on attend la fin de l'éventuel thread d'enregistrement global précédent
+        AVANT de retirer/réinstaller — sinon unhook_all_hotkeys et add_hotkey
+        pourraient s'exécuter en concurrence (la bibliothèque keyboard n'est pas
+        thread-safe), laissant des hooks orphelins ou dupliqués. """
+        # Verrou créé paresseusement : robustesse si l'objet n'est pas passé par
+        # __init__ (faux self de tests).
+        lock = getattr(self, "_shortcut_lock", None)
+        if lock is None:
+            lock = self._shortcut_lock = threading.Lock()
+        with lock:
+            prev = getattr(self, "_shortcut_thread", None)
+            if prev is not None and prev.is_alive():
+                # Attente bornée : l'enregistrement global précédent doit être
+                # terminé avant de toucher aux hooks.
+                prev.join(timeout=2.0)
+            self._shortcut_thread = None
+            self._remove_all_shortcuts()
+            mode = getattr(self, "shortcut_mode", DEFAULT_MODE)
+            if mode == MODE_DISABLED:
+                self.logger.info("Raccourcis clavier désactivés.")
+                return
+            if mode == MODE_FOCUSED:
+                self._install_focused_shortcuts()
+            else:
+                self._install_global_shortcuts()
 
     def _remove_all_shortcuts(self):
         """ Désinstalle hooks keyboard globaux ET QShortcut premier plan. Retirer
@@ -2100,7 +2127,16 @@ class MainWindow(QMainWindow):
         old_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
                       self.display_patient_list, self.patient_list_position_vertical,
                       self.patient_list_position_horizontal)
+        old_on_top = getattr(self, "always_on_top", False)
         self.load_preferences()
+
+        # « Toujours au premier plan » : appliqué ICI (plus dans le dialogue, qui ne
+        # touche plus la fenêtre parente — point 7). setWindowFlag peut masquer la
+        # fenêtre, on ne la manipule donc que si le réglage a changé.
+        if self.always_on_top != old_on_top:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
+            if self.isVisible():
+                self.show()
         new = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
         new_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
@@ -2208,6 +2244,11 @@ class MainWindow(QMainWindow):
         self.logger.info("Fermeture de l'App : arrêt propre en cours")
 
         # 1. Plus aucune nouvelle action déclenchée par les raccourcis clavier.
+        #    On attend d'abord (borné) la fin d'un enregistrement global en cours
+        #    pour qu'il ne rajoute pas de hook APRÈS le unhook (point 7).
+        prev_shortcut_thread = getattr(self, "_shortcut_thread", None)
+        if prev_shortcut_thread is not None and prev_shortcut_thread.is_alive():
+            prev_shortcut_thread.join(timeout=2.0)
         try:
             keyboard.unhook_all_hotkeys()
         except Exception as e:

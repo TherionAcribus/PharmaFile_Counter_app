@@ -116,6 +116,57 @@ def test_to_qt_none_without_key():
     assert sc.to_qt_key_sequence("Alt") is None
 
 
+# --- is_recognized_key ------------------------------------------------------
+
+def test_recognized_single_char_keys():
+    assert sc.is_recognized_key("p")
+    assert sc.is_recognized_key("A")
+    assert sc.is_recognized_key("7")
+
+
+def test_recognized_named_keys_case_insensitive():
+    assert sc.is_recognized_key("F5")
+    assert sc.is_recognized_key("space")
+    assert sc.is_recognized_key("Enter")
+
+
+def test_unrecognized_keys():
+    assert not sc.is_recognized_key("")
+    assert not sc.is_recognized_key(None)
+    assert not sc.is_recognized_key("abc")      # multi-caractères non nommé
+
+
+# --- find_invalid_shortcuts (validation point 7) ----------------------------
+
+def test_valid_shortcuts_have_no_errors():
+    mapping = {"next": "Alt+S", "validate": "Ctrl+F1", "pause": "P"}
+    assert sc.find_invalid_shortcuts(mapping) == {}
+
+
+def test_empty_field_is_invalid():
+    assert sc.find_invalid_shortcuts({"next": ""}) == {"next": sc.INVALID_EMPTY}
+    assert sc.find_invalid_shortcuts({"next": None}) == {"next": sc.INVALID_EMPTY}
+
+
+def test_lone_modifier_is_invalid():
+    assert sc.find_invalid_shortcuts({"next": "Ctrl+Alt"}) == {"next": sc.INVALID_LONE_MODIFIER}
+    assert sc.find_invalid_shortcuts({"next": "Maj"}) == {"next": sc.INVALID_LONE_MODIFIER}
+
+
+def test_unknown_key_is_invalid():
+    assert sc.find_invalid_shortcuts({"next": "Ctrl+abc"}) == {"next": sc.INVALID_UNKNOWN_KEY}
+
+
+def test_invalid_only_reports_offending_actions():
+    mapping = {"next": "Alt+S", "pause": "Ctrl", "recall": "", "validate": "Ctrl+zz"}
+    invalid = sc.find_invalid_shortcuts(mapping)
+    assert invalid == {
+        "pause": sc.INVALID_LONE_MODIFIER,
+        "recall": sc.INVALID_EMPTY,
+        "validate": sc.INVALID_UNKNOWN_KEY,
+    }
+
+
 # --- normalize_mode ---------------------------------------------------------
 
 def test_normalize_mode_valid():
