@@ -10,17 +10,14 @@ from connections import DEFAULT_TIMEOUT
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
-from panel_layout import (
-    MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
-    clamp_thickness,
-)
+import settings_schema
+from panel_layout import MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS
 from shortcut_config import (
-    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE,
-    ACTION_LABELS, normalize_mode, find_duplicate_shortcuts,
+    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
+    ACTION_LABELS, find_duplicate_shortcuts,
 )
 from accessibility import (
-    DEFAULT_LIST_FONT_SIZE, DEFAULT_TONE, MIN_FONT_POINT_SIZE,
-    TONE_HUMOROUS, TONE_SOBER, clamp_font_size, normalize_tone,
+    MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
 )
 
 class TestConnectionWorker(QThread):
@@ -200,6 +197,9 @@ class PreferencesDialog(QDialog):
         
         self.url_layout = QHBoxLayout()
         self.url_input = QLineEdit(self.connexion_page)
+        # Aucune adresse par défaut n'est gravée dans le code : le texte indicatif
+        # guide la saisie de l'adresse propre à l'officine.
+        self.url_input.setPlaceholderText("https://mon-serveur.example.com")
         self.url_layout.addWidget(self.url_input)
         
         self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
@@ -460,15 +460,21 @@ class PreferencesDialog(QDialog):
             self.stacked_widget.setCurrentIndex(3)            
         
     def load_preferences(self):
+        # Toutes les valeurs sont lues via settings_schema (même source unique de
+        # défauts/plages que main.py) : la fenêtre de préférences affiche donc
+        # exactement les mêmes défauts que ceux appliqués au démarrage.
         settings = QSettings()
-        self.url_input.setText(settings.value("web_url", "http://localhost:5000"))
+        settings_schema.migrate_settings(settings)
+        # URL serveur : aucun défaut gravé (chaque officine renseigne la sienne) ;
+        # champ vide = non configuré. Un texte indicatif guide la saisie.
+        self.url_input.setText(settings_schema.read(settings, "web_url"))
         self.app_secret_input.setText(load_secret(settings))
         self.counter_id = coerce_counter_id(settings.value("counter_id", None))
         label = f"{self.counter_id} - Chargement en cours..." if self.counter_id else "Sélectionnez un comptoir..."
         self.counter_combobox.addItem(label, self.counter_id)
-        vertical_position = settings.value("patient_list_vertical_position", "bottom")
-        horizontal_position = settings.value("patient_list_horizontal_position", "right")
-        
+        vertical_position = settings_schema.read(settings, "patient_list_vertical_position")
+        horizontal_position = settings_schema.read(settings, "patient_list_horizontal_position")
+
         # Défauts centralisés dans shortcut_defaults (identiques à main.py).
         self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input)
         self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input)
@@ -477,46 +483,44 @@ class PreferencesDialog(QDialog):
         self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input)
 
         # Mode des raccourcis + options (point 27).
-        mode = normalize_mode(settings.value("shortcut_mode", DEFAULT_MODE))
+        mode = settings_schema.read(settings, "shortcut_mode")
         mode_index = self.shortcut_mode_combo.findData(mode)
         self.shortcut_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
         self.confirm_sensitive_checkbox.setChecked(
-            settings.value("confirm_sensitive_shortcuts", False, type=bool))
+            settings_schema.read(settings, "confirm_sensitive_shortcuts"))
         self.shortcut_feedback_checkbox.setChecked(
-            settings.value("shortcut_feedback", True, type=bool))
+            settings_schema.read(settings, "shortcut_feedback"))
 
-        self.show_current_patient_checkbox.setChecked(settings.value("notification_current_patient", False, type=bool))
-        self.notification_autocalling_new_patient_checkbox.setChecked(settings.value("notification_autocalling_new_patient", True, type=bool))
-        self.notification_specific_acts_checkbox.setChecked(settings.value("notification_specific_acts", True, type=bool))
-        self.notification_add_paper_checkbox.setChecked(settings.value("notification_add_paper", True, type=bool))
-        self.notification_connection_checkbox.setChecked(settings.value("notification_connection", True, type=bool))
-        self.notification_after_deconnection_spinbox.setValue(settings.value("notification_after_deconnection", 10, type=int))
-        self.notification_after_calling_spinbox.setValue(settings.value("notification_after_calling", 30, type=int))
-        self.notification_duration_spinbox.setValue(settings.value("notification_duration", 5, type=int))
-        self.notification_font_size_spinbox.setValue(settings.value("notification_font_size", 12, type=int))
-        tone_value = normalize_tone(settings.value("message_tone", DEFAULT_TONE))
+        self.show_current_patient_checkbox.setChecked(settings_schema.read(settings, "notification_current_patient"))
+        self.notification_autocalling_new_patient_checkbox.setChecked(settings_schema.read(settings, "notification_autocalling_new_patient"))
+        self.notification_specific_acts_checkbox.setChecked(settings_schema.read(settings, "notification_specific_acts"))
+        self.notification_add_paper_checkbox.setChecked(settings_schema.read(settings, "notification_add_paper"))
+        self.notification_connection_checkbox.setChecked(settings_schema.read(settings, "notification_connection"))
+        self.notification_after_deconnection_spinbox.setValue(settings_schema.read(settings, "notification_after_deconnection"))
+        self.notification_after_calling_spinbox.setValue(settings_schema.read(settings, "notification_after_calling"))
+        self.notification_duration_spinbox.setValue(settings_schema.read(settings, "notification_duration"))
+        self.notification_font_size_spinbox.setValue(settings_schema.read(settings, "notification_font_size"))
+        tone_value = settings_schema.read(settings, "message_tone")
         tone_index = self.message_tone_combo.findData(tone_value)
         self.message_tone_combo.setCurrentIndex(tone_index if tone_index >= 0 else 0)
-        corner_value = settings.value("notification_corner", "bottom-left")
+        corner_value = settings_schema.read(settings, "notification_corner")
         corner_index = self.notification_corner_combo.findData(corner_value)
         self.notification_corner_combo.setCurrentIndex(corner_index if corner_index >= 0 else 0)
-        self.volume_slider.setValue(settings.value("notification_volume", 50, type=int))
+        self.volume_slider.setValue(settings_schema.read(settings, "notification_volume"))
 
-        self.always_on_top_checkbox.setChecked(settings.value("always_on_top", False, type=bool))
-        self.horizontal_mode.setChecked(settings.value("vertical_mode", False, type=bool))
-        self.compact_mode_checkbox.setChecked(settings.value("compact_mode", False, type=bool))
-        self.panel_snap_checkbox.setChecked(settings.value("panel_snap", True, type=bool))
-        self.panel_thickness_spinbox.setValue(
-            clamp_thickness(settings.value("panel_thickness", DEFAULT_PANEL_THICKNESS)))
-        self.display_patient_list.setChecked(settings.value("display_patient_list", False, type=bool))
-        self.patient_list_font_size_spinbox.setValue(
-            clamp_font_size(settings.value("patient_list_font_size", DEFAULT_LIST_FONT_SIZE, type=int)))
+        self.always_on_top_checkbox.setChecked(settings_schema.read(settings, "always_on_top"))
+        self.horizontal_mode.setChecked(settings_schema.read(settings, "vertical_mode"))
+        self.compact_mode_checkbox.setChecked(settings_schema.read(settings, "compact_mode"))
+        self.panel_snap_checkbox.setChecked(settings_schema.read(settings, "panel_snap"))
+        self.panel_thickness_spinbox.setValue(settings_schema.read(settings, "panel_thickness"))
+        self.display_patient_list.setChecked(settings_schema.read(settings, "display_patient_list"))
+        self.patient_list_font_size_spinbox.setValue(settings_schema.read(settings, "patient_list_font_size"))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
         self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
-        self.debug_window.setChecked(settings.value("debug_window", False, type=bool))
-        
+        self.debug_window.setChecked(settings_schema.read(settings, "debug_window"))
+
         # pour les skins
-        selected_skin = settings.value("selected_skin", "")
+        selected_skin = settings_schema.read(settings, "selected_skin")
         index = self.skin_combo.findText(selected_skin)
         if index >= 0:
             self.skin_combo.setCurrentIndex(index)

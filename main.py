@@ -24,20 +24,17 @@ from counter_id_utils import coerce_counter_id
 from shortcut_defaults import default_shortcut, migrate_shortcut
 from preferences_diff import needs_service_reconnect
 from window_geometry import resolve_target_geometry
+import settings_schema
 from accessibility import (
-    DEFAULT_LIST_FONT_SIZE,
-    DEFAULT_TONE,
-    clamp_font_size,
-    normalize_tone,
     validate_alert_text,
 )
 from panel_layout import (
-    VERTICAL, HORIZONTAL, DEFAULT_PANEL_THICKNESS, DEFAULT_SNAP_THRESHOLD,
-    clamp_thickness, compact_panel_geometry, nearest_vertical_side, snap_to_edges,
+    VERTICAL, HORIZONTAL, DEFAULT_SNAP_THRESHOLD,
+    compact_panel_geometry, nearest_vertical_side, snap_to_edges,
 )
 from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE, ACTIONS,
-    ACTION_LABELS, SENSITIVE_ACTIONS, normalize_mode,
+    ACTION_LABELS, SENSITIVE_ACTIONS,
     to_keyboard_hotkey, to_qt_key_sequence,
 )
 
@@ -335,12 +332,16 @@ class MainWindow(QMainWindow):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
         self.connected = connected
 
-        # Identifiant de comptoir invalide (1er démarrage sans config, valeur
-        # corrompue…) : on N'entre PAS en mode comptoir et on ouvre l'écran de
-        # configuration. Sans un counter_id entier valide, toutes les
-        # comparaisons/URL seraient incohérentes.
-        if self.counter_id is None:
-            self.logger.error("counter_id invalide : ouverture de l'écran de configuration.")
+        # Configuration incomplète (1er démarrage, valeur corrompue…) : on
+        # N'entre PAS en mode comptoir et on ouvre l'écran de configuration.
+        # - URL serveur vide = « non configuré » : aucune adresse par défaut
+        #   n'est gravée dans le code (chaque officine renseigne la sienne).
+        # - counter_id : sans entier valide, toutes les comparaisons/URL de
+        #   comptoir seraient incohérentes.
+        if not self.web_url or self.counter_id is None:
+            self.logger.error(
+                "Configuration incomplète (url=%r, counter_id=%r) : ouverture de "
+                "l'écran de configuration.", self.web_url, self.counter_id)
             self._require_valid_counter_id()
             return
 
@@ -391,12 +392,14 @@ class MainWindow(QMainWindow):
 
         if accepted:
             self.load_preferences()
-            if self.counter_id is not None:
-                self.logger.info("Comptoir configuré (id=%s), démarrage.", self.counter_id)
+            if self.web_url and self.counter_id is not None:
+                self.logger.info(
+                    "Configuration valide (url renseignée, comptoir id=%s), démarrage.",
+                    self.counter_id)
                 self._start_startup_sequence()
                 return
 
-        self.logger.error("Aucun comptoir valide configuré : arrêt de l'application.")
+        self.logger.error("Configuration incomplète (URL ou comptoir manquant) : arrêt de l'application.")
         QApplication.instance().quit()
 
     def _load_shortcut(self, settings, name):
@@ -413,7 +416,13 @@ class MainWindow(QMainWindow):
         self.logger.info("Initialisation des préférences...")
 
         settings = QSettings()
-        self.web_url = settings.value("web_url", "https://gestionfile.onrender.com")
+        # Migration + estampille de version du schéma de configuration. Toutes
+        # les valeurs ci-dessous sont lues via settings_schema (source unique des
+        # clés, types, défauts et plages) : main.py et preferences.py partagent
+        # ainsi exactement les mêmes défauts (fin des divergences historiques
+        # URL / notification patient courant / délai après appel).
+        settings_schema.migrate_settings(settings)
+        self.web_url = settings_schema.read(settings, "web_url")
         # Le secret applicatif est lu depuis le magasin sécurisé (keyring /
         # Gestionnaire d'identifiants Windows), avec migration automatique de
         # l'ancienne valeur en clair éventuellement présente dans QSettings.
@@ -424,6 +433,7 @@ class MainWindow(QMainWindow):
         # QSettings peut renvoyer une chaîne ("1") ; le serveur utilise des
         # entiers. On garantit un seul type dans toute l'app pour que les
         # comparaisons (WebSocket, patient["counter_id"]...) soient cohérentes.
+        # Défaut contextuel (runtime = 1) : géré hors schéma, cf. settings_schema.
         self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
         # Raccourcis : défauts centralisés dans shortcut_defaults (source unique)
         # + migration transparente des anciennes valeurs erronées (ex: "Altl+P").
@@ -435,52 +445,49 @@ class MainWindow(QMainWindow):
         # Mode des raccourcis (point 27) : désactivés / actifs au premier plan /
         # globaux. Défaut = global (comportement historique). + confirmation
         # facultative des actions sensibles et retour visuel de l'action.
-        self.shortcut_mode = normalize_mode(settings.value("shortcut_mode", DEFAULT_MODE))
-        self.confirm_sensitive_shortcuts = settings.value(
-            "confirm_sensitive_shortcuts", False, type=bool)
-        self.shortcut_feedback = settings.value("shortcut_feedback", True, type=bool)
-        self.notification_current_patient = settings.value("notification_current_patient", True, type=bool)
-        self.notification_autocalling_new_patient = settings.value("notification_autocalling_new_patient", True, type=bool)
-        self.notification_specific_acts = settings.value("notification_specific_acts", True, type=bool)
-        self.notification_add_paper = settings.value("notification_add_paper", True, type=bool)
-        self.notification_connection = settings.value("notification_connection", True, type=bool)
-        self.notification_after_deconnection = settings.value("notification_after_deconnection", 10, type=int)
-        self.timer_after_calling = settings.value("notification_after_calling", 60, type=int)
-        self.notification_duration = settings.value("notification_duration", 5, type=int)
-        self.notification_font_size = settings.value("notification_font_size", 12, type=int)
+        self.shortcut_mode = settings_schema.read(settings, "shortcut_mode")
+        self.confirm_sensitive_shortcuts = settings_schema.read(settings, "confirm_sensitive_shortcuts")
+        self.shortcut_feedback = settings_schema.read(settings, "shortcut_feedback")
+        self.notification_current_patient = settings_schema.read(settings, "notification_current_patient")
+        self.notification_autocalling_new_patient = settings_schema.read(settings, "notification_autocalling_new_patient")
+        self.notification_specific_acts = settings_schema.read(settings, "notification_specific_acts")
+        self.notification_add_paper = settings_schema.read(settings, "notification_add_paper")
+        self.notification_connection = settings_schema.read(settings, "notification_connection")
+        self.notification_after_deconnection = settings_schema.read(settings, "notification_after_deconnection")
+        self.timer_after_calling = settings_schema.read(settings, "notification_after_calling")
+        self.notification_duration = settings_schema.read(settings, "notification_duration")
+        self.notification_font_size = settings_schema.read(settings, "notification_font_size")
         # Ton des messages de notification (point 28) : « sobre » (explicite,
         # défaut) ou « humoristique » (ancien ton). Titres calculés dans
         # accessibility.notification_title.
-        self.message_tone = normalize_tone(settings.value("message_tone", DEFAULT_TONE))
+        self.message_tone = settings_schema.read(settings, "message_tone")
         # Taille de police de la file des patients (point 28), bornée au plancher
         # de lisibilité. Remplace l'ancienne valeur figée de 8 pt.
-        self.patient_list_font_size = clamp_font_size(
-            settings.value("patient_list_font_size", DEFAULT_LIST_FONT_SIZE, type=int))
+        self.patient_list_font_size = settings_schema.read(settings, "patient_list_font_size")
         # Coin de l'écran où empiler les notifications (configurable).
-        self.notification_corner = settings.value("notification_corner", "bottom-left")
-        self.sound_volume = settings.value("notification_volume", 50, type=int)
+        self.notification_corner = settings_schema.read(settings, "notification_corner")
+        self.sound_volume = settings_schema.read(settings, "notification_volume")
 
-        self.always_on_top = settings.value("always_on_top", False, type=bool)
-        self.horizontal_mode = settings.value("vertical_mode", False, type=bool)
+        self.always_on_top = settings_schema.read(settings, "always_on_top")
+        self.horizontal_mode = settings_schema.read(settings, "vertical_mode")
         # Mode panneau compact (point 25) : panneau étroit docké sur un bord
         # plutôt qu'une fenêtre générique. En mode vertical, colonne étroite ; en
         # mode horizontal, barre fine au-dessus du progiciel.
-        self.compact_mode = settings.value("compact_mode", False, type=bool)
+        self.compact_mode = settings_schema.read(settings, "compact_mode")
         # Magnétisme aux bords de l'écran lors d'un déplacement manuel.
-        self.panel_snap = settings.value("panel_snap", True, type=bool)
+        self.panel_snap = settings_schema.read(settings, "panel_snap")
         # Épaisseur du panneau (largeur en vertical, hauteur en horizontal), bornée.
-        self.panel_thickness = clamp_thickness(
-            settings.value("panel_thickness", DEFAULT_PANEL_THICKNESS))
-        self.display_patient_list = settings.value("display_patient_list", False, type=bool)
-        self.patient_list_position_vertical = settings.value("patient_list_vertical_position", "bottom")
-        self.patient_list_position_horizontal = settings.value("patient_list_horizontal_position", "right")
-        self.debug_window = settings.value("debug_window", False, type=bool)
+        self.panel_thickness = settings_schema.read(settings, "panel_thickness")
+        self.display_patient_list = settings_schema.read(settings, "display_patient_list")
+        self.patient_list_position_vertical = settings_schema.read(settings, "patient_list_vertical_position")
+        self.patient_list_position_horizontal = settings_schema.read(settings, "patient_list_horizontal_position")
+        self.debug_window = settings_schema.read(settings, "debug_window")
         # Journalisation détaillée (DEBUG) seulement si la fenêtre de log est
         # demandée ; sinon INFO (production). Les logs DEBUG ne sont donc pas
         # actifs en usage normal.
         if hasattr(self, "app_logger"):
             self.app_logger.enable_debug(self.debug_window)
-        self.selected_skin = settings.value("selected_skin", "")
+        self.selected_skin = settings_schema.read(settings, "selected_skin")
 
     def setup_ui(self):
         self.logger.info("Initialisation de l'interface...")
