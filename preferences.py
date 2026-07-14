@@ -764,26 +764,36 @@ class PreferencesDialog(QDialog):
                 message + "\n\nLes préférences n'ont PAS été enregistrées. "
                 "Vérifiez l'adresse du serveur et le secret applicatif.")
 
+    def _sync_and_verify(self, settings):
+        """ Force l'écriture QSettings (``sync``) et vérifie qu'elle a abouti
+        (``status``). Renvoie True si la persistance a réussi ; sinon affiche une
+        erreur et renvoie False (point 10 : ne jamais laisser croire à un
+        enregistrement réussi quand l'écriture a échoué). """
+        settings.sync()
+        if settings.status() != QSettings.NoError:
+            QMessageBox.critical(
+                self, "Échec d'enregistrement",
+                "Les préférences n'ont pas pu être enregistrées sur ce poste "
+                "(accès au stockage local refusé ou format invalide). Les "
+                "modifications ne sont PAS garanties.\n\nVérifiez les droits "
+                "d'accès à la configuration, puis réessayez.")
+            return False
+        return True
+
     def _finalize_save(self):
         """ Persiste toutes les préférences (l'URL a déjà été validée/normalisée et,
-        si la connexion changeait, vérifiée) puis ferme le dialogue avec Accepted. """
+        si la connexion changeait, vérifiée) puis ferme le dialogue avec Accepted.
+
+        Ordre voulu (point 10) pour éviter une configuration à moitié enregistrée
+        entre QSettings et le magasin de secrets : on écrit d'abord TOUS les
+        réglages non secrets, on force et on vérifie leur persistance
+        (``sync``/``status``) ; seulement alors on enregistre le secret, puis on
+        re-synchronise et re-vérifie. Toute défaillance affiche une erreur et
+        laisse le dialogue ouvert (pas d'``accept``), donc rien n'est confirmé. """
         url = self.url_input.text()
         app_secret = self.app_secret_input.text()
         settings = QSettings()
         settings.setValue("web_url", url)
-        # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
-        # dans QSettings. save_secret efface aussi toute copie en clair héritée.
-        # Si le magasin sécurisé est indisponible, save_secret retombe sur un
-        # stockage en clair mais le signale (renvoie False) : on ne l'accepte
-        # PAS silencieusement, on prévient explicitement l'utilisateur.
-        if app_secret and not save_secret(settings, app_secret):
-            QMessageBox.warning(
-                self, "Stockage non sécurisé du secret",
-                "Le gestionnaire de secrets du système est indisponible sur ce "
-                "poste. Le secret d'application a été enregistré en clair dans la "
-                "configuration locale.\n\nInstallez/activez un magasin de secrets "
-                "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
-                "pour un stockage sécurisé.")
         # Valeurs relues des widgets (le dialogue est modal : elles n'ont pas
         # changé depuis la validation). counter_id normalisé en entier.
         settings.setValue("counter_id", coerce_counter_id(self.counter_combobox.currentData()))
@@ -824,6 +834,30 @@ class PreferencesDialog(QDialog):
         # skins
         settings.setValue("selected_skin", self.skin_combo.currentText())
         self.current_skin = self.skin_combo.currentText()
+
+        # Persistance des réglages non secrets d'abord, VÉRIFIÉE avant de toucher
+        # au magasin de secrets (évite un état mixte QSettings/keyring).
+        if not self._sync_and_verify(settings):
+            return
+
+        # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
+        # dans QSettings. save_secret efface aussi toute copie en clair héritée.
+        # Si le magasin sécurisé est indisponible, save_secret retombe sur un
+        # stockage en clair (dans QSettings) mais le signale (renvoie False) : on
+        # ne l'accepte PAS silencieusement, on prévient explicitement plus bas.
+        fell_back_to_cleartext = bool(app_secret) and not save_secret(settings, app_secret)
+        # save_secret a pu écrire dans QSettings (repli en clair) ou en nettoyer
+        # une copie héritée (succès keyring) : on re-synchronise et re-vérifie.
+        if not self._sync_and_verify(settings):
+            return
+        if fell_back_to_cleartext:
+            QMessageBox.warning(
+                self, "Stockage non sécurisé du secret",
+                "Le gestionnaire de secrets du système est indisponible sur ce "
+                "poste. Le secret d'application a été enregistré en clair dans la "
+                "configuration locale.\n\nInstallez/activez un magasin de secrets "
+                "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
+                "pour un stockage sécurisé.")
 
         # Un SEUL mécanisme d'application (point 7) : on ferme le dialogue avec le
         # résultat Accepted. C'est l'appelant (MainWindow.show_preferences_dialog)
