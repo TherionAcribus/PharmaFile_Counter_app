@@ -17,6 +17,14 @@ from shortcut_config import (
     ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
     INVALID_EMPTY, INVALID_LONE_MODIFIER, INVALID_UNKNOWN_KEY,
 )
+from url_validation import validate_server_url
+
+
+def dev_insecure_allowed():
+    """Mode développement explicite : autorise http:// vers un serveur distant.
+    Activé uniquement par la variable d'environnement APPCOMPTOIR_DEV_INSECURE
+    (pas d'option d'interface, pour éviter un déblocage accidentel en production)."""
+    return bool(os.environ.get("APPCOMPTOIR_DEV_INSECURE"))
 from accessibility import (
     MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
 )
@@ -72,6 +80,42 @@ class CountersWorker(QThread):
                 self.result.emit(False, f"Erreur de chargement des comptoirs: {response.status_code}")
         except requests.exceptions.RequestException as e:
             self.result.emit(False, f"Erreur: {e}")
+
+
+class TokenCheckWorker(QThread):
+    """ Vérifie, en arrière-plan, qu'une URL + un secret permettent réellement
+    d'obtenir un jeton applicatif (connexion « exploitable »). Utilisé avant
+    d'enregistrer un changement de serveur/secret : on ne confirme l'enregistrement
+    que si la nouvelle connexion fonctionne (point 8). """
+    checked = Signal(bool, str)  # ok, message d'erreur (vide si ok)
+
+    def __init__(self, web_url, app_secret):
+        super().__init__()
+        self.web_url = web_url
+        self.app_secret = app_secret
+
+    def run(self):
+        try:
+            resp = requests.post(f"{self.web_url}/api/get_app_token",
+                                 data={"app_secret": self.app_secret},
+                                 timeout=DEFAULT_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            self.checked.emit(False, f"Serveur injoignable : {e}")
+            return
+        if resp.status_code == 200:
+            try:
+                token = resp.json().get("token")
+            except ValueError:
+                token = None
+            if token:
+                self.checked.emit(True, "")
+            else:
+                self.checked.emit(False, "Réponse du serveur invalide (jeton manquant).")
+            return
+        if resp.status_code in (401, 403):
+            self.checked.emit(False, "Secret applicatif refusé par le serveur.")
+            return
+        self.checked.emit(False, f"Réponse inattendue du serveur (statut {resp.status_code}).")
 
 
 # Constants for UI texts and corresponding values
@@ -536,7 +580,6 @@ class PreferencesDialog(QDialog):
         widget.findChild(QLineEdit).setText(keys[-1] if keys and keys[-1] not in ["Ctrl", "Alt", "Maj", "Win"] else "")
 
     def save_preferences(self):
-        url = self.url_input.text()
         app_secret = self.app_secret_input.text()
         # counter_id normalisé en entier strictement positif (cohérent avec le
         # serveur et avec les comparaisons de l'app).
@@ -547,9 +590,15 @@ class PreferencesDialog(QDialog):
         deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
         pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
 
-        if not url:
-            QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
+        # Validation + normalisation de l'URL (point 8) : schéma http/https, hôte
+        # présent, et http interdit pour un serveur distant (sauf mode dev). On
+        # écrit la forme normalisée dans le champ (feedback + valeur enregistrée).
+        ok, url, error = validate_server_url(
+            self.url_input.text(), allow_insecure_remote=dev_insecure_allowed())
+        if not ok:
+            QMessageBox.warning(self, "URL invalide", error)
             return
+        self.url_input.setText(url)
         if counter_id is None:
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
@@ -595,6 +644,49 @@ class PreferencesDialog(QDialog):
                 f"{conflicts}\n\nAttribuez une combinaison distincte à chacune.")
             return
 
+        # Ne pas confirmer l'enregistrement tant que la nouvelle connexion n'est
+        # pas exploitable (point 8) : si l'URL ou le secret changent, on vérifie
+        # d'abord qu'ils permettent d'obtenir un jeton. Sinon (seuls des réglages
+        # cosmétiques/comptoir ont changé), on enregistre directement.
+        settings = QSettings()
+        stored_url = settings_schema.read(settings, "web_url")
+        stored_secret = load_secret(settings)
+        connection_changed = (url != stored_url) or (app_secret != stored_secret)
+        if connection_changed:
+            self._validate_connection_then_save(url, app_secret)
+        else:
+            self._finalize_save()
+
+    def _validate_connection_then_save(self, web_url, app_secret):
+        """ Vérifie en arrière-plan que (URL, secret) donnent un jeton, PUIS
+        enregistre seulement en cas de succès. Le bouton Enregistrer est désactivé
+        pendant la vérification pour éviter les doubles soumissions. """
+        self.save_button.setEnabled(False)
+        self.status_label.setText("Vérification de la connexion au serveur…")
+        self._conn_check_worker = TokenCheckWorker(web_url, app_secret)
+        self._conn_check_worker.checked.connect(self._on_connection_checked)
+        self._conn_check_worker.start()
+
+    @Slot(bool, str)
+    def _on_connection_checked(self, ok, message):
+        self.save_button.setEnabled(True)
+        if ok:
+            self.status_label.setText("Connexion vérifiée — enregistrement…")
+            self._finalize_save()
+        else:
+            # « Enregistré » n'est PAS affiché : le dialogue reste ouvert et rien
+            # n'est persisté tant que la connexion n'est pas exploitable.
+            self.status_label.setText("Non enregistré : " + message)
+            QMessageBox.warning(
+                self, "Connexion impossible",
+                message + "\n\nLes préférences n'ont PAS été enregistrées. "
+                "Vérifiez l'adresse du serveur et le secret applicatif.")
+
+    def _finalize_save(self):
+        """ Persiste toutes les préférences (l'URL a déjà été validée/normalisée et,
+        si la connexion changeait, vérifiée) puis ferme le dialogue avec Accepted. """
+        url = self.url_input.text()
+        app_secret = self.app_secret_input.text()
         settings = QSettings()
         settings.setValue("web_url", url)
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
@@ -610,12 +702,14 @@ class PreferencesDialog(QDialog):
                 "configuration locale.\n\nInstallez/activez un magasin de secrets "
                 "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
                 "pour un stockage sécurisé.")
-        settings.setValue("counter_id", counter_id)
-        settings.setValue("next_patient_shortcut", next_patient_shortcut)
-        settings.setValue("validate_patient_shortcut", validate_patient_shortcut)
-        settings.setValue("pause_shortcut", pause_shortcut)
-        settings.setValue('recall_shortcut', recall_shortcut)
-        settings.setValue("deconnect_shortcut", deconnect_shortcut)
+        # Valeurs relues des widgets (le dialogue est modal : elles n'ont pas
+        # changé depuis la validation). counter_id normalisé en entier.
+        settings.setValue("counter_id", coerce_counter_id(self.counter_combobox.currentData()))
+        settings.setValue("next_patient_shortcut", self.get_shortcut_text(self.next_patient_shortcut_input))
+        settings.setValue("validate_patient_shortcut", self.get_shortcut_text(self.validate_patient_shortcut_input))
+        settings.setValue("pause_shortcut", self.get_shortcut_text(self.pause_shortcut_input))
+        settings.setValue('recall_shortcut', self.get_shortcut_text(self.recall_shortcut_input))
+        settings.setValue("deconnect_shortcut", self.get_shortcut_text(self.deconnect_input))
         settings.setValue("shortcut_mode", self.shortcut_mode_combo.currentData())
         settings.setValue("confirm_sensitive_shortcuts", self.confirm_sensitive_checkbox.isChecked())
         settings.setValue("shortcut_feedback", self.shortcut_feedback_checkbox.isChecked())

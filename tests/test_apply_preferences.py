@@ -32,7 +32,8 @@ def _win(url="http://a", secret="s", counter=1):
         always_on_top=False,
     )
     w.setup_global_shortcut = lambda: w.calls.__setitem__("shortcut", w.calls["shortcut"] + 1)
-    w._reconnect_services = lambda: w.calls.__setitem__("reconnect", w.calls["reconnect"] + 1)
+    # _reconnect_services reçoit désormais (old_config, old_staff_present) — point 8.
+    w._reconnect_services = lambda *a, **k: w.calls.__setitem__("reconnect", w.calls["reconnect"] + 1)
     w.isVisible = lambda: False
     w.setWindowFlag = lambda *a, **k: None
     w.show = lambda: None

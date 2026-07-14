@@ -2121,6 +2121,10 @@ class MainWindow(QMainWindow):
         cosmétiques (raccourcis, volume) SANS reconnexion. """
         old = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
+        # Le staff était-il connecté sur l'ANCIEN comptoir ? Si oui, un changement
+        # de serveur/comptoir doit d'abord libérer cet ancien comptoir (sinon il
+        # reste marqué occupé côté serveur).
+        old_staff_present = isinstance(self.staff_id, int) and bool(self.staff_id)
         # Réglages affectant la disposition : un changement impose de reconstruire
         # l'interface comptoir pour prendre effet immédiatement (orientation, mode
         # compact, épaisseur, liste des patients).
@@ -2154,7 +2158,7 @@ class MainWindow(QMainWindow):
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
-            self._reconnect_services()
+            self._reconnect_services(old, old_staff_present)
             return
 
         # Pas de reconnexion : on applique à chaud les changements de disposition.
@@ -2167,29 +2171,46 @@ class MainWindow(QMainWindow):
         if self.compact_mode and self.isVisible():
             self.apply_panel_mode()
 
-    def _reconnect_services(self):
-        """ Reconnexion complète après changement de serveur/secret/comptoir :
-        ferme l'ancien WebSocket, nettoie jeton/session et l'état local, puis
-        relance en arrière-plan l'obtention d'un nouveau jeton + le snapshot du
-        nouveau comptoir (la reconstruction UI + reconnexion WS se font dans
-        _on_reconnect_ready). """
+    def _reconnect_services(self, old_config, old_staff_present):
+        """ Reconnexion complète après changement de serveur/secret/comptoir, dans
+        un ordre strict pour ne jamais mélanger ancien et nouveau serveur :
+
+          1. arrêt propre de l'ancien WebSocket ;
+          2. libération de l'ANCIEN comptoir (avec l'ancien jeton, encore valide) ;
+          3. invalidation du jeton + de la session réseau + de l'état local ;
+          4. (les préférences sont déjà enregistrées) ;
+          5. nouveau jeton + snapshot du nouveau comptoir (en arrière-plan) ;
+          6/7. reconnexion HTTP/WebSocket + reconstruction UI -> _on_reconnect_ready.
+
+        ``old_config`` porte l'ancien web_url/counter_id ; ``old_staff_present``
+        indique si un staff occupait l'ancien comptoir (à libérer). """
         # 1. Fermer l'ancien WebSocket : plus aucun évènement de l'ancien comptoir.
         if getattr(self, "socket_io_client", None):
             self.socket_io_client.stop(timeout_ms=3000)
             self.socket_io_client = None
 
-        # 2. Nettoyer jeton + session (le nouveau serveur/secret est déjà chargé).
+        # 2. Libérer l'ancien comptoir AVANT d'invalider le jeton (le jeton courant
+        #    vaut pour l'ancien serveur). Best-effort borné : on n'empêche pas la
+        #    reconnexion si l'ancien serveur ne répond pas.
+        if old_staff_present:
+            self._release_counter_blocking(
+                url=old_config.get("web_url"), counter_id=old_config.get("counter_id"))
+
+        # 3. Nettoyer jeton + session (le nouveau serveur/secret est déjà chargé).
+        #    Le staff de l'ancien comptoir ne vaut pas sur le nouveau : on repart
+        #    déconnecté (l'utilisateur se ré-identifiera sur le nouveau comptoir).
         self.app_token = None
+        self.staff_id = None
         if hasattr(self, "network_manager"):
             self.network_manager.clear_token()
 
-        # 3. Repartir d'un état local vierge (rien de l'ancien comptoir).
+        # Repartir d'un état local vierge (rien de l'ancien comptoir).
         self.queue_revision = -1
         self.my_patient = None
         self.list_patients = []
         self.socket_was_disconnected = False
 
-        # 4. Nouveau jeton + snapshot en arrière-plan.
+        # 5. Nouveau jeton + snapshot en arrière-plan.
         worker = StartupWorker(self)
         worker.finished_startup.connect(self._on_reconnect_ready)
         self._track_worker(worker)
@@ -2198,7 +2219,9 @@ class MainWindow(QMainWindow):
     def _on_reconnect_ready(self, connected, state):
         """ Fin de la reconnexion : applique le snapshot du nouveau comptoir,
         reconstruit l'interface comptoir et rouvre le WebSocket (sans re-créer
-        systray/audio, déjà en place). """
+        systray/audio, déjà en place). Si le nouveau serveur est inexploitable
+        (jeton non obtenu), on en informe explicitement l'utilisateur et on
+        propose un redémarrage plutôt que de laisser croire à un succès. """
         self.connected = connected
         if connected and state:
             self._apply_state(state)
@@ -2212,8 +2235,35 @@ class MainWindow(QMainWindow):
         if self.compact_mode and self.isVisible():
             self.apply_panel_mode()
         self.setup_user()
+        # Le WebSocket est relancé sur le NOUVEau serveur (nouvelle URL) dans tous
+        # les cas : s'il est momentanément injoignable, la boucle de reconnexion
+        # rattrapera dès qu'il répond.
         self.start_socket_io_client(self.web_url)
         self.alert_if_not_connected()
+
+        if not connected:
+            self._warn_reconnect_failed()
+
+    def _warn_reconnect_failed(self):
+        """ Avertit que la nouvelle connexion a échoué (jeton non obtenu) et propose
+        un redémarrage. On ne prétend pas que le changement est « appliqué » alors
+        que le serveur est inexploitable (point 8). """
+        self.logger.error(
+            "Reconnexion échouée après changement de configuration (serveur %s injoignable ou secret refusé).",
+            self.web_url)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Connexion au serveur impossible")
+        box.setText(
+            "Les nouveaux paramètres ont été enregistrés mais la connexion au "
+            "serveur a échoué (serveur injoignable ou secret refusé).\n\n"
+            "Vérifiez l'adresse et le secret dans les préférences, puis redémarrez "
+            "l'application.")
+        open_prefs = box.addButton("Ouvrir les préférences", QMessageBox.AcceptRole)
+        box.addButton("Fermer", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_prefs:
+            self.show_preferences_dialog()
 
     def init_audio(self):
         self.audio_player = AudioPlayer(self)
@@ -2282,14 +2332,22 @@ class MainWindow(QMainWindow):
         event.accept()
         super().closeEvent(event)
 
-    def _release_counter_blocking(self):
+    def _release_counter_blocking(self, url=None, counter_id=None):
         """ Envoie la déconnexion du comptoir (remove_staff) et attend au plus
         quelques secondes (timeout HTTP court + attente courte). Bornée : si le
-        serveur ne répond pas, on continue la fermeture. """
+        serveur ne répond pas, on continue.
+
+        ``url``/``counter_id`` permettent de libérer un ANCIEN comptoir (autre
+        serveur/numéro) lors d'un changement de connexion — sinon on utilise le
+        serveur/comptoir courants (fermeture de l'application). La libération doit
+        se faire AVANT d'invalider le jeton (le jeton courant vaut pour l'ancien
+        serveur). """
         if not hasattr(self, 'network_manager'):
             return
-        url = f'{self.web_url}/app/counter/remove_staff'
-        data = {'counter_id': self.counter_id}
+        base_url = url if url is not None else self.web_url
+        target_counter = counter_id if counter_id is not None else self.counter_id
+        url = f'{base_url}/app/counter/remove_staff'
+        data = {'counter_id': target_counter}
         try:
             result = self.network_manager.request_blocking(
                 url, method='POST', data=data, timeout=(2, 3), timeout_s=4)
