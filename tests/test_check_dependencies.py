@@ -9,7 +9,6 @@ import ast
 import os
 import sys
 
-import pytest
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, os.path.join(_ROOT, "tools"))

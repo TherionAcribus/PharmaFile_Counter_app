@@ -7,9 +7,13 @@ logger = logging.getLogger("appcomptoir.preferences")
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
+import endpoints
+import resources
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
-from shortcut_defaults import default_shortcut, migrate_shortcut
+from shortcut_defaults import (
+    UI_MODIFIERS, join_shortcut, read_shortcut, split_shortcut,
+)
 import settings_schema
 from panel_layout import MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS
 from shortcut_config import (
@@ -64,7 +68,7 @@ class CountersWorker(QThread):
 
     def run(self):
         try:
-            token_response = requests.post(f"{self.web_url}/api/get_app_token",
+            token_response = requests.post(endpoints.app_token(self.web_url),
                                             data={'app_secret': self.app_secret},
                                             timeout=DEFAULT_TIMEOUT)
             if token_response.status_code != 200:
@@ -81,7 +85,7 @@ class CountersWorker(QThread):
                 self.result.emit(False, "Réponse du serveur invalide (jeton manquant).")
                 return
 
-            response = requests.get(f"{self.web_url}/api/counters",
+            response = requests.get(endpoints.counters(self.web_url),
                                      headers={'X-App-Token': token}, timeout=DEFAULT_TIMEOUT)
             if response.status_code != 200:
                 self.result.emit(False, f"Erreur de chargement des comptoirs: {response.status_code}")
@@ -113,7 +117,7 @@ class TokenCheckWorker(QThread):
 
     def run(self):
         try:
-            resp = requests.post(f"{self.web_url}/api/get_app_token",
+            resp = requests.post(endpoints.app_token(self.web_url),
                                  data={"app_secret": self.app_secret},
                                  timeout=DEFAULT_TIMEOUT)
         except requests.exceptions.RequestException as e:
@@ -650,13 +654,16 @@ class PreferencesDialog(QDialog):
         self.current_skin = selected_skin
 
     def load_shortcut(self, settings, name, widget):
-        shortcut = migrate_shortcut(name, settings.value(name, default_shortcut(name)))
-        keys = shortcut.split("+")
-        widget.findChild(QCheckBox, "Ctrl").setChecked("Ctrl" in keys)
-        widget.findChild(QCheckBox, "Alt").setChecked("Alt" in keys)
-        widget.findChild(QCheckBox, "Maj").setChecked("Maj" in keys)
-        widget.findChild(QCheckBox, "Win").setChecked("Win" in keys)
-        widget.findChild(QLineEdit).setText(keys[-1] if keys and keys[-1] not in ["Ctrl", "Alt", "Maj", "Win"] else "")
+        """Remplit les cases/le champ d'un raccourci depuis les préférences.
+
+        La LECTURE (défaut, migration, persistance de la correction) est celle de
+        shortcut_defaults.read_shortcut, partagée avec main.py : la fenêtre de
+        préférences et le démarrage voient donc toujours la même valeur.
+        """
+        modifiers, key = split_shortcut(read_shortcut(settings, name, logger))
+        for modifier in UI_MODIFIERS:
+            widget.findChild(QCheckBox, modifier).setChecked(modifier in modifiers)
+        widget.findChild(QLineEdit).setText(key)
 
     def save_preferences(self):
         app_secret = self.app_secret_input.text()
@@ -874,19 +881,10 @@ class PreferencesDialog(QDialog):
             parent.reset_window_position()
 
     def get_shortcut_text(self, widget):
-        keys = []
-        if widget.findChild(QCheckBox, "Ctrl").isChecked():
-            keys.append("Ctrl")
-        if widget.findChild(QCheckBox, "Alt").isChecked():
-            keys.append("Alt")
-        if widget.findChild(QCheckBox, "Maj").isChecked():
-            keys.append("Maj")
-        if widget.findChild(QCheckBox, "Win").isChecked():
-            keys.append("Win")
-        key_input = widget.findChild(QLineEdit).text()
-        if key_input:
-            keys.append(key_input)
-        return "+".join(keys)
+        """Recompose le raccourci saisi (inverse exact de load_shortcut)."""
+        modifiers = [m for m in UI_MODIFIERS
+                     if widget.findChild(QCheckBox, m).isChecked()]
+        return join_shortcut(modifiers, widget.findChild(QLineEdit).text())
 
     def test_url(self):
         url = self.url_input.text()
@@ -948,13 +946,17 @@ class PreferencesDialog(QDialog):
                 self.counter_combobox.setCurrentIndex(index)
     
     def load_skins(self):
-        skins_dir = "skins"
-        self.skin_combo.addItem("Pas de skin")  
-        if not os.path.exists(skins_dir):
-            os.makedirs(skins_dir)
-        for file in os.listdir(skins_dir):
-            if file.endswith(".qss"):
-                self.skin_combo.addItem(os.path.splitext(file)[0])
+        """Remplit la liste des skins depuis les ressources embarquées.
+
+        Ne crée plus le dossier « skins » s'il manque : l'ancienne version en
+        fabriquait un (vide) dans le répertoire de lancement de l'application.
+        """
+        self.skin_combo.addItem("Pas de skin")
+        skins = resources.available_skins()
+        if not skins:
+            logger.warning("Aucun skin trouvé dans %s", resources.skins_dir())
+        for name in skins:
+            self.skin_combo.addItem(name)
 
     def preview_skin(self, skin_name):
         logger.debug("Aperçu du skin : %s", skin_name)
@@ -962,10 +964,11 @@ class PreferencesDialog(QDialog):
             # Supprime le skin en désactivant tous les styles QSS
             self.parent().setStyleSheet("")
         elif skin_name:
-            qss_file = os.path.join("skins", f"{skin_name}.qss")
-            if os.path.exists(qss_file):
-                with open(qss_file, "r") as f:
-                    self.parent().setStyleSheet(f.read())
+            qss = resources.read_skin(skin_name)
+            if qss is None:
+                logger.warning("Skin '%s' introuvable ou illisible", skin_name)
+                return
+            self.parent().setStyleSheet(qss)
 
     def reject(self):
         # Réapplique le skin enregistré si l'utilisateur ferme sans sauvegarder

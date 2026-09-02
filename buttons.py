@@ -160,10 +160,11 @@ class IconeButton(DebounceButton):
         data = {'action': action,
                 'counter_id': self.main_window.counter_id}
 
-        # make_request_thread : session partagée (jeton courant ajouté au moment
-        # de l'appel) + renouvellement automatique du jeton sur 401 avec un seul
-        # rejeu de la requête.
-        self.request_thread = self.main_window.make_request_thread(url, method='POST', data=data)
+        # La couche d'accès (CounterApi) fournit un handle sur la session
+        # partagée : jeton courant ajouté au moment de l'appel, renouvellement
+        # automatique sur 401 avec un seul rejeu. Le bouton gère lui-même le
+        # cycle de vie du handle (il en garde une référence).
+        self.request_thread = self.main_window.api.make_handle(url, method='POST', data=data)
         self.request_thread.result.connect(self.handle_response)
         self.request_thread.start()
 

@@ -1,0 +1,31 @@
+# Configuration ruff (lint) du client comptoir, alignée sur le serveur et la borne.
+#
+# Socle d'erreurs CRITIQUES (jamais du style, toujours de vrais défauts) :
+#   E9  : erreurs de syntaxe / d'indentation
+#   F63 : tests/comparaisons douteux (ex. `is` sur un littéral)
+#   F7  : constructions invalides (break/continue hors boucle…)
+#   F81 : redéfinition d'un nom déjà importé/défini
+#   F82 : noms indéfinis (variable/référence non définie)
+#
+# Le client étant plus petit et déjà propre, on va PLUS LOIN que le serveur —
+# ces règles passent toutes aujourd'hui, elles servent donc de cliquet :
+#   F401 : import inutilisé (grossit la distribution PyInstaller)
+#   F841 : variable assignée jamais lue (reste d'une approche abandonnée)
+#   E711/E712/E713 : comparaisons à None/True/False mal écrites
+#   E722 : `except:` nu — cf. point 10.3, un test le vérifie aussi
+#   W605 : séquence d'échappement invalide dans une chaîne (chemins Windows)
+target-version = "py312"
+line-length = 120
+
+exclude = [".venv", "build", "dist", "__pycache__"]
+
+[lint]
+select = ["E9", "F63", "F7", "F81", "F82", "F401", "F841",
+          "E711", "E712", "E713", "E722", "W605"]
+
+[lint.per-file-ignores]
+# Les tests importent volontairement des modules pour leurs effets de bord et
+# réimportent après monkeypatch.
+"tests/*" = ["E402", "F811"]
+# Fichier .spec : PyInstaller y injecte des noms globaux (Analysis, PYZ, EXE…).
+"*.spec" = ["F821"]

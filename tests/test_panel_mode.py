@@ -1,11 +1,12 @@
-"""Câblage réel du mode panneau compact (point 25) dans MainWindow.
+"""Câblage réel du mode panneau compact (point 25), porté par ``WindowPlacement``
+depuis le point 10.12.
 
-On appelle les vraies méthodes apply_panel_mode / _apply_edge_snap avec un faux
-``self`` minimal (aucun widget instancié) : on vérifie que l'orientation choisit
-la bonne géométrie de panneau (colonne verticale dockée vs barre horizontale en
-haut), que le magnétisme n'agit qu'en cas de déplacement réel, et que le drapeau
-``_applying_panel`` est bien posé pendant nos repositionnements pour ne pas
-reboucler via moveEvent.
+On appelle les vraies méthodes apply_panel_mode / apply_edge_snap avec un faux
+gestionnaire et une fausse fenêtre (aucun widget instancié) : on vérifie que
+l'orientation choisit la bonne géométrie de panneau (colonne verticale dockée vs
+barre horizontale en haut), que le magnétisme n'agit qu'en cas de déplacement
+réel, et que le drapeau ``applying`` est bien posé pendant nos repositionnements
+pour ne pas reboucler via moveEvent.
 """
 
 import logging
@@ -15,7 +16,7 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
+from window_placement import WindowPlacement  # noqa: E402
 
 
 class FakeRect:
@@ -43,7 +44,7 @@ class FakePanelWindow:
         self.panel_snap = True
         self.panel_thickness = 300
         self.shutting_down = False
-        self._applying_panel = False
+        self.applying = False
         self._avail = avail
         self._frame = FakeRect(*frame)
         self.logger = logging.getLogger("test.panel_mode")
@@ -51,11 +52,15 @@ class FakePanelWindow:
         self.moves = []
         self.applying_during_move = []
         # Vraies méthodes liées à ce faux self.
-        self.apply_panel_mode = types.MethodType(main.MainWindow.apply_panel_mode, self)
-        self._apply_edge_snap = types.MethodType(main.MainWindow._apply_edge_snap, self)
+        # Le gestionnaire de placement voit CETTE instance comme sa fenêtre.
+        self.window = self
+        self.applying = False
+        self.apply_panel_mode = types.MethodType(WindowPlacement.apply_panel_mode, self)
+        self._apply_edge_snap = types.MethodType(WindowPlacement.apply_edge_snap, self)
+        self._window_frame = types.MethodType(WindowPlacement._window_frame, self)
 
     # --- API Qt minimale simulée ---
-    def _current_screen_avail(self):
+    def current_screen_avail(self):
         return self._avail
 
     def frameGeometry(self):
@@ -78,7 +83,7 @@ class FakePanelWindow:
 
     def move(self, x, y):
         # Enregistre l'état du drapeau au moment du move pour vérifier la garde.
-        self.applying_during_move.append(self._applying_panel)
+        self.applying_during_move.append(self.applying)
         self.moves.append((x, y))
 
 
@@ -109,10 +114,10 @@ def test_horizontal_panel_docks_to_top():
 def test_apply_panel_sets_guard_during_move():
     w = FakePanelWindow()
     w.apply_panel_mode()
-    # Pendant le repositionnement, _applying_panel doit être True (évite la boucle
+    # Pendant le repositionnement, applying doit être True (évite la boucle
     # de magnétisme via moveEvent) puis rétabli à False après.
     assert w.applying_during_move == [True]
-    assert w._applying_panel is False
+    assert w.applying is False
 
 
 def test_apply_panel_noop_when_compact_disabled():
@@ -125,7 +130,7 @@ def test_apply_panel_noop_when_compact_disabled():
 
 def test_apply_panel_noop_without_screen():
     w = FakePanelWindow()
-    w._current_screen_avail = lambda: None
+    w.current_screen_avail = lambda: None
     w.apply_panel_mode()
     assert w.moves == []
 
@@ -137,7 +142,7 @@ def test_snap_moves_window_near_edge():
     w = FakePanelWindow(frame=(10, 300, 300, 500))
     w._apply_edge_snap()
     assert w.moves == [(0, 300)]
-    assert w._applying_panel is False
+    assert w.applying is False
 
 
 def test_snap_does_nothing_when_far_from_edges():

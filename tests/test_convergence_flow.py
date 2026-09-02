@@ -159,7 +159,8 @@ def _wrr(queue_revision=10, pending=False):
         logger=logging.getLogger("test.convergence.resync"),
         queue_revision=queue_revision,
         shutting_down=False,
-        _resync=coord,
+        # Le coalescing vit désormais dans le contrôleur de session (10.13).
+        session=types.SimpleNamespace(finish_resync=coord.finish),
         calls={"apply": 0, "resync": 0},
     )
     w._apply_resync_state = lambda state: w.calls.__setitem__("apply", w.calls["apply"] + 1)

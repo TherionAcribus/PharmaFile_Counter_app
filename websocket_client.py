@@ -5,6 +5,7 @@ import random
 import threading
 from PySide6.QtCore import Signal, QThread
 
+import endpoints
 from socket_auth import build_socket_auth_headers
 from counter_id_utils import coerce_counter_id
 
@@ -138,8 +139,9 @@ class WebSocketClient(QThread):
                 # Jeton relu à CHAQUE tentative : une reconnexion après
                 # renouvellement utilise automatiquement le nouveau jeton.
                 headers = build_socket_auth_headers(self.username, self._current_token())
-                logger.info("Connexion à %s/socket_app_counter", self.web_url)
-                self.sio.connect(f"{self.web_url}/socket_app_counter", headers=headers)
+                socket_url = endpoints.socket_url(self.web_url)
+                logger.info("Connexion à %s", socket_url)
+                self.sio.connect(socket_url, headers=headers)
 
                 logger.info("Connexion WebSocket établie")
                 reconnection_attempts = 0

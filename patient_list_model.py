@@ -116,8 +116,11 @@ class PatientListModel(QAbstractListModel):
     """File des patients pour un ``QListView``, mise à jour de façon
     différentielle et identifiée par ``id``."""
 
-    IdRole = Qt.UserRole + 1
-    PatientRole = Qt.UserRole + 2
+    # Accès par l'énumération (Qt.ItemDataRole.UserRole) plutôt que par le
+    # raccourci Qt.UserRole : même valeur au runtime, mais reconnu par les
+    # annotations de PySide6 (donc vérifiable par mypy).
+    IdRole = Qt.ItemDataRole.UserRole + 1
+    PatientRole = Qt.ItemDataRole.UserRole + 2
 
     def __init__(self, parent=None, font_size=DEFAULT_LIST_FONT_SIZE):
         super().__init__(parent)

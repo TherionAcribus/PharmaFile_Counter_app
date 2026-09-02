@@ -1,7 +1,8 @@
-"""Câblage réel du traitement des raccourcis (point 27) dans MainWindow.
+"""Câblage réel du traitement des raccourcis (point 27), désormais porté par
+``ShortcutManager`` (point 10.10).
 
-On appelle les vraies méthodes _dispatch_shortcut / _perform_shortcut_action /
-_register_global_hotkeys avec un faux ``self`` minimal : on vérifie la
+On appelle les vraies méthodes _dispatch / perform / _register_global_hotkeys
+avec un faux ``self`` minimal (et une fausse fenêtre) : on vérifie la
 confirmation des actions sensibles, le retour visuel, le mapping action -> clic
 unique (jamais deux déclenchements), et la collecte des échecs d'enregistrement
 global (avertissement quand keyboard/Windows refuse).
@@ -14,7 +15,8 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
+import shortcut_manager  # noqa: E402
+from shortcut_manager import ShortcutManager  # noqa: E402
 
 
 class FakeButton:
@@ -29,24 +31,25 @@ class FakeButton:
 
 class FakeDispatch:
     def __init__(self, confirm_pref=False, feedback=False, confirm_result=True):
-        self.confirm_sensitive_shortcuts = confirm_pref
-        self.shortcut_feedback = feedback
+        # Les préférences vivent sur la fenêtre, le manager les lit à la volée.
+        self.window = types.SimpleNamespace(
+            confirm_sensitive_shortcuts=confirm_pref, shortcut_feedback=feedback)
         self.confirm_result = confirm_result
         self.logger = logging.getLogger("test.shortcut_dispatch")
         self.performed = []
         self.feedbacks = []
         self.confirm_calls = []
-        self._dispatch_shortcut = types.MethodType(main.MainWindow._dispatch_shortcut, self)
+        self._dispatch_shortcut = types.MethodType(ShortcutManager._dispatch, self)
 
     # Helpers stubbés (les vrais ouvrent QMessageBox / notifications).
-    def _confirm_sensitive_action(self, label):
+    def _confirm(self, label):
         self.confirm_calls.append(label)
         return self.confirm_result
 
-    def _show_shortcut_feedback(self, label):
+    def _show_feedback(self, label):
         self.feedbacks.append(label)
 
-    def _perform_shortcut_action(self, action):
+    def perform(self, action):
         self.performed.append(action)
 
 
@@ -93,22 +96,33 @@ def test_sensitive_action_without_confirm_pref_runs_directly():
 
 # --- _perform_shortcut_action : mapping + clic unique -----------------------
 
-class FakePerform:
+class FakeWindow:
     def __init__(self):
         self.btn_next = FakeButton()
         self.btn_validate = FakeButton()
         self.btn_pause = FakeButton()
         self.recall_calls = 0
         self.deconnect_calls = 0
-        self.logger = logging.getLogger("test.shortcut_perform")
-        self._perform_shortcut_action = types.MethodType(
-            main.MainWindow._perform_shortcut_action, self)
 
     def recall(self):
         self.recall_calls += 1
 
     def deconnection(self):
         self.deconnect_calls += 1
+
+
+class FakePerform:
+    """Faux manager : la fenêtre porte les boutons, le manager exécute."""
+
+    def __init__(self):
+        self.window = FakeWindow()
+        self.logger = logging.getLogger("test.shortcut_perform")
+        self._perform_shortcut_action = types.MethodType(ShortcutManager.perform, self)
+
+    def __getattr__(self, name):
+        # Accès direct aux attributs de la fenêtre pour garder les assertions
+        # des tests lisibles (w.btn_next.clicks, w.recall_calls…).
+        return getattr(self.window, name)
 
 
 def test_perform_next_clicks_once():
@@ -136,7 +150,7 @@ def test_perform_recall_and_deconnect_once():
 def test_perform_missing_button_is_safe():
     # Sur l'écran de connexion, les boutons n'existent pas : pas de crash.
     w = FakePerform()
-    del w.btn_next
+    del w.window.btn_next
     w._perform_shortcut_action("next")  # ne doit pas lever
 
 
@@ -163,19 +177,25 @@ class FakeSignal:
 
 class FakeRegister:
     def __init__(self, texts):
-        (self.next_patient_shortcut, self.validate_patient_shortcut,
-         self.pause_shortcut, self.recall_shortcut, self.deconnect_shortcut) = texts
+        (next_text, validate_text, pause_text, recall_text, deconnect_text) = texts
+        self.window = types.SimpleNamespace(
+            next_patient_shortcut=next_text,
+            validate_patient_shortcut=validate_text,
+            pause_shortcut=pause_text,
+            recall_shortcut=recall_text,
+            deconnect_shortcut=deconnect_text)
         self.logger = logging.getLogger("test.shortcut_register")
-        self.shortcut_registration_failed = FakeSignal()
-        self._shortcut_items = types.MethodType(main.MainWindow._shortcut_items, self)
-        self._emit_shortcut = types.MethodType(main.MainWindow._emit_shortcut, self)
+        self.registration_failed = FakeSignal()
+        self.shortcut_registration_failed = self.registration_failed
+        self.items = types.MethodType(ShortcutManager.items, self)
+        self._emit = types.MethodType(ShortcutManager._emit, self)
         self._register_global_hotkeys = types.MethodType(
-            main.MainWindow._register_global_hotkeys, self)
+            ShortcutManager._register_global_hotkeys, self)
 
 
 def test_register_translates_and_skips_empty(monkeypatch):
     fake_kb = FakeKeyboard()
-    monkeypatch.setattr(main, "keyboard", fake_kb)
+    monkeypatch.setattr(shortcut_manager, "keyboard", fake_kb)
     # deconnect vide -> ignoré (rien à enregistrer).
     w = FakeRegister(["Alt+S", "Alt+V", "Ctrl+Maj+P", "Alt+R", ""])
     w._register_global_hotkeys()
@@ -189,7 +209,7 @@ def test_register_translates_and_skips_empty(monkeypatch):
 def test_register_collects_failures(monkeypatch):
     # keyboard refuse « alt+v » (validate) -> collecté et signalé.
     fake_kb = FakeKeyboard(fail_on="alt+v")
-    monkeypatch.setattr(main, "keyboard", fake_kb)
+    monkeypatch.setattr(shortcut_manager, "keyboard", fake_kb)
     w = FakeRegister(["Alt+S", "Alt+V", "Alt+P", "Alt+R", "Alt+D"])
     w._register_global_hotkeys()
     assert len(w.shortcut_registration_failed.emitted) == 1
@@ -205,7 +225,7 @@ def test_register_collects_failures(monkeypatch):
 
 def test_register_carries_action_args(monkeypatch):
     fake_kb = FakeKeyboard()
-    monkeypatch.setattr(main, "keyboard", fake_kb)
+    monkeypatch.setattr(shortcut_manager, "keyboard", fake_kb)
     w = FakeRegister(["Alt+S", "", "", "", ""])
     w._register_global_hotkeys()
     # Le callback reçoit le nom de l'action en argument (pour émettre le signal).

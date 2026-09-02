@@ -7,3 +7,9 @@
 -r requirements.txt
 
 pytest==9.1.1
+
+# Qualité de code (point 10.7) — mêmes versions que la CI :
+#   ruff  : lint (socle d'erreurs réelles, cf. ruff.toml)
+#   mypy  : vérification de types (cf. mypy.ini)
+ruff==0.6.9
+mypy==1.11.2

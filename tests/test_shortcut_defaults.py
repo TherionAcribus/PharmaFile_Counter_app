@@ -1,8 +1,8 @@
-"""Tests des défauts de raccourcis centralisés + migration Altl+P (point 18)."""
+"""Défauts de raccourcis centralisés + migration Altl+P (point 18) et lecture
+unifiée main.py / preferences.py (point 10.2)."""
 
 import os
 import sys
-import types
 
 import pytest
 
@@ -11,8 +11,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 import main  # noqa: E402
 from shortcut_defaults import (  # noqa: E402
     SHORTCUT_DEFAULTS,
+    UI_MODIFIERS,
     default_shortcut,
+    join_shortcut,
     migrate_shortcut,
+    read_shortcut,
+    split_shortcut,
 )
 
 _HERE = os.path.dirname(__file__)
@@ -65,7 +69,7 @@ def test_no_buggy_default_pattern_in_source():
         assert '", "Altl+P")' not in _read(f)
 
 
-# --- migration de bout en bout via main._load_shortcut ----------------------
+# --- lecture unifiée (read_shortcut) ---------------------------------------
 
 class FakeSettings:
     def __init__(self, data=None):
@@ -76,20 +80,80 @@ class FakeSettings:
         self._data[key] = val
 
 
-def _fake_window():
-    w = types.SimpleNamespace(logger=__import__("logging").getLogger("test.shortcut"))
-    w._load_shortcut = types.MethodType(main.MainWindow._load_shortcut, w)
-    return w
+def test_read_shortcut_uses_default_when_unset():
+    assert read_shortcut(FakeSettings(), "pause_shortcut") == "Alt+P"
 
 
-def test_load_shortcut_uses_default_when_unset():
-    w = _fake_window()
-    assert w._load_shortcut(FakeSettings(), "pause_shortcut") == "Alt+P"
-
-
-def test_load_shortcut_migrates_and_persists_legacy_value():
+def test_read_shortcut_migrates_and_persists_legacy_value():
     settings = FakeSettings({"pause_shortcut": "Altl+P"})
-    w = _fake_window()
-    assert w._load_shortcut(settings, "pause_shortcut") == "Alt+P"
+    assert read_shortcut(settings, "pause_shortcut") == "Alt+P"
     # La correction est persistée (plus de "Altl+P" au prochain démarrage).
     assert settings.value("pause_shortcut") == "Alt+P"
+
+
+def test_read_shortcut_persiste_meme_depuis_les_preferences():
+    """Régression du point 10.2 : la fenêtre de préférences migrait sans
+    persister, elle pouvait donc réécrire l'ancienne valeur erronée."""
+    settings = FakeSettings({"pause_shortcut": "Altl+P"})
+    dialog_value = read_shortcut(settings, "pause_shortcut")
+    startup_value = read_shortcut(settings, "pause_shortcut")
+    assert dialog_value == startup_value == "Alt+P"
+    assert settings.value("pause_shortcut") == "Alt+P"
+
+
+def test_read_shortcut_journalise_la_migration():
+    messages = []
+
+    class FakeLogger:
+        def info(self, msg, *args):
+            messages.append(msg % args)
+
+    read_shortcut(FakeSettings({"pause_shortcut": "Altl+P"}), "pause_shortcut", FakeLogger())
+    assert messages and "pause_shortcut" in messages[0]
+    # Aucun journal quand rien ne change.
+    messages.clear()
+    read_shortcut(FakeSettings({"pause_shortcut": "Alt+P"}), "pause_shortcut", FakeLogger())
+    assert messages == []
+
+
+# --- décomposition / recomposition pour l'interface ------------------------
+
+@pytest.mark.parametrize("value, modifiers, key", [
+    ("Alt+P", ["Alt"], "P"),
+    ("Ctrl+Maj+K", ["Ctrl", "Maj"], "K"),
+    ("F5", [], "F5"),
+    ("Alt", ["Alt"], ""),          # modificateur seul : pas de touche finale
+    ("Alt+", ["Alt"], ""),
+    ("", [], ""),
+    (None, [], ""),
+])
+def test_split_shortcut(value, modifiers, key):
+    assert split_shortcut(value) == (modifiers, key)
+
+
+@pytest.mark.parametrize("value", ["Alt+P", "Ctrl+Maj+K", "F5", "Ctrl+Alt+Maj+Win+X"])
+def test_split_join_aller_retour(value):
+    modifiers, key = split_shortcut(value)
+    assert join_shortcut(modifiers, key) == value
+
+
+def test_join_shortcut_ordre_canonique():
+    """L'ordre des modificateurs ne dépend pas de l'ordre de saisie."""
+    assert join_shortcut(["Maj", "Ctrl"], "K") == "Ctrl+Maj+K"
+    assert join_shortcut(UI_MODIFIERS, "") == "Ctrl+Alt+Maj+Win"
+
+
+# --- cliquet : une seule implémentation de lecture -------------------------
+
+def test_aucune_relecture_locale_des_raccourcis():
+    """main.py et preferences.py ne doivent plus lire/migrer un raccourci
+    eux-mêmes : read_shortcut est la seule porte d'entrée."""
+    for name in ("main.py", "preferences.py"):
+        source = _read(name)
+        assert "migrate_shortcut(" not in source, name
+        assert "default_shortcut(" not in source, name
+        assert "read_shortcut(" in source, name
+
+
+def test_main_ne_definit_plus_son_propre_loader():
+    assert not hasattr(main.MainWindow, "_load_shortcut")

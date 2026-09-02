@@ -5,6 +5,34 @@ on:
   pull_request:
 
 jobs:
+  # --- Lint + typage (bloquant) --------------------------------------------
+  # Périmètre volontairement restreint à de VRAIES erreurs (cf. ruff.toml et
+  # mypy.ini) : le job est vert sur le code existant sans campagne de style,
+  # mais il bloque les régressions réelles (import mort, variable morte,
+  # `except:` nu, attribut inexistant…).
+  lint:
+    name: lint (ruff) + typage (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les outils de qualité
+        run: pip install ruff==0.6.9 mypy==1.11.2
+
+      - name: Ruff
+        run: ruff check .
+
+      # PySide6 est nécessaire pour que mypy résolve les annotations Qt.
+      - name: Installer PySide6 (annotations Qt)
+        run: pip install -r requirements.txt
+
+      - name: Mypy
+        run: mypy --config-file mypy.ini
+
   deps-and-tests:
     name: audit des dépendances + tests
     runs-on: ubuntu-latest

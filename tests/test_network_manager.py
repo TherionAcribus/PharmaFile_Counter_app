@@ -155,12 +155,7 @@ def test_network_error_uniform_netresult(mgr_factory):
 
 
 def test_distinct_user_messages_per_status(mgr_factory):
-    cases = {401: "http://srv/401", 403: "http://srv/403", 423: "http://srv/423",
-             500: "http://srv/500"}
-    m = mgr_factory(FakeSession(get_responses=[
-        FakeResp(401, "a"), FakeResp(200, "{}"),  # 401 -> reauth -> re-send (200)
-    ], post_responses=[FakeResp(200, json_data={"token": "t"})]))
-    # 401 aboutit à un rejeu ; on teste plutôt le mapping directement :
+    # 401 aboutit à un rejeu (couvert ailleurs) : ici on teste le mapping seul.
     from net_result import user_message_for_status
     msgs = {s: user_message_for_status(s) for s in (0, 401, 403, 409, 423, 500)}
     assert len({msgs[401], msgs[403], msgs[423], msgs[500], msgs[0]}) == 5  # tous distincts

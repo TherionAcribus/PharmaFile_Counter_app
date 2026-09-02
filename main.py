@@ -1,41 +1,38 @@
 import sys
-import os
 import time
-import uuid
-import threading
-import keyboard
-from PySide6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon, QMenu, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QWidget, QCheckBox, QSizePolicy, QPlainTextEdit, QDockWidget, QBoxLayout, QFrame, QListView, QAbstractItemView, QDialog
-from PySide6.QtCore import QUrl, Signal, Slot, QSettings, QTimer, QThread, Qt, QCoreApplication, QFile, QTextStream, QObject, QDateTime
-from PySide6.QtGui import QIcon, QAction, QPainter, QGuiApplication, QShortcut, QKeySequence, QColor
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtSvg import QSvgRenderer
+from functools import partial
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QDialog
+from PySide6.QtCore import Signal, Slot, QSettings, QTimer, Qt
+from PySide6.QtGui import QIcon, QAction
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
-from buttons import DebounceButton, IconeButton
+from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
+from button_state import MALFORMED, resolve_patient_buttons
 from patient_list_model import PatientListModel
 from notification import CustomNotification, NotificationManager
 from connections import NetworkManager
+from counter_api import CounterApi
+import main_window_ui
+from login_view import create_login_widget
+from shortcut_manager import ShortcutManager
+from tray_manager import TrayManager
+from window_placement import WindowPlacement
+from session_controller import SessionController
+from audio import build_audio_player
+from loading_screen import LoadingScreen
 from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 from task_registry import TaskRegistry
-from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
+from resync_coordinator import snapshot_is_fresh
 from counter_id_utils import coerce_counter_id
-from shortcut_defaults import default_shortcut, migrate_shortcut
+from shortcut_defaults import read_shortcut
 from preferences_diff import needs_service_reconnect
-from window_geometry import resolve_target_geometry
+import endpoints
+import resources
 import settings_schema
 from accessibility import (
     validate_alert_text,
-)
-from panel_layout import (
-    VERTICAL, HORIZONTAL, DEFAULT_SNAP_THRESHOLD,
-    compact_panel_geometry, nearest_vertical_side, snap_to_edges,
-)
-from shortcut_config import (
-    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL, DEFAULT_MODE, ACTIONS,
-    ACTION_LABELS, SENSITIVE_ACTIONS,
-    to_keyboard_hotkey, to_qt_key_sequence,
 )
 
 import logging
@@ -48,161 +45,17 @@ logger = logging.getLogger("appcomptoir.main")
 def profile(func):
     return func
 
-class AudioPlayer(QObject):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.player.setAudioOutput(self.audio_output)
-        self.sounds = {}
 
-        # Ajout des callbacks
-        self.player.errorOccurred.connect(self.handle_error)
-
-    def add_sound(self, name, file_path):
-        self.sounds[name] = QUrl.fromLocalFile(file_path)
-        logger.debug("Son ajouté : %s", name)
-
-    def play_sound(self, name):
-        if name in self.sounds:
-            self.player.setSource(self.sounds[name])
-            self.player.play()
-        else:
-            logger.warning("Son non trouvé : %s", name)
-
-    def set_volume(self, volume):
-        self.audio_output.setVolume(volume / 100.0)
-        logger.debug("Volume réglé à : %s%%", volume)
-
-    @Slot(QMediaPlayer.Error, str)
-    def handle_error(self, error, error_string):
-        logger.error("Erreur de lecture audio : %s - %s", error, error_string)
+# Réexporté pour les appelants historiques : l'implémentation vit désormais dans
+# resources.py (source unique, testée, correcte en build onefile).
+resource_path = resources.resource_path
 
 
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-
-    return os.path.join(base_path, relative_path)
-
-def load_stylesheet(filename):
-    file = QFile(filename)
-    if file.open(QFile.ReadOnly | QFile.Text):
-        stream = QTextStream(file)
-        return stream.readAll()
-    return ""
-
-
-class LoadingScreen(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("PharmaFile")
-        self.setFixedSize(400, 200)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint)
-
-        # Configuration de l'interface utilisateur
-        self._setup_ui()
-        
-        # Obtention de l'instance du logger et ajout du handler UI
-        self.app_logger = AppLogger.get_instance()
-        self.ui_handler = self.app_logger.add_ui_handler(self.update_progress)
-        self.logger = self.app_logger.get_logger()
-
-    def _setup_ui(self):
-        """Configure l'interface utilisateur"""
-        layout = QVBoxLayout()
-        self.label = QLabel("Logging de l'application...")
-        self.progress = QPlainTextEdit()
-        self.progress.setReadOnly(True)
-
-        layout.addWidget(self.label)
-        layout.addWidget(self.progress)
-        self.setLayout(layout)
-
-    def update_progress(self, message):
-        """Met à jour l'affichage des logs dans l'interface"""
-        self.progress.appendPlainText(message)
-        self.progress.ensureCursorVisible()
-        QCoreApplication.processEvents()
-
-    def closeEvent(self, event):
-        """Gestionnaire d'événement de fermeture"""
-        if hasattr(self, 'ui_handler'):
-            self.logger.removeHandler(self.ui_handler)
-        super().closeEvent(event)
-
-class StartupWorker(QThread):
-    """ Exécute en arrière-plan la séquence réseau de démarrage (token + état
-    initial) pour ne pas geler le thread GUI pendant que le serveur répond. """
-    finished_startup = Signal(bool, object)  # connected, state (dict ou None)
-
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-
-    def run(self):
-        mw = self.main_window
-        connected = False
-        state = None
-
-        try:
-            mw.get_app_token()
-            # si on a un token, on se considère comme connecté
-            connected = True
-        except Exception as e:
-            logger.error("Erreur lors de l'obtention du token : %s", e)
-            connected = False
-
-        if connected:
-            # Une seule snapshot atomique (patient en cours + liste + réglages +
-            # révision) au lieu de deux requêtes séparées qui pouvaient se
-            # chevaucher avant l'ouverture de Socket.IO (course de démarrage).
-            state = mw.init_state()
-
-        self.finished_startup.emit(connected, state)
-
-
-class ResyncWorker(QThread):
-    """ Récupère en arrière-plan l'état courant (patient en cours + liste des
-    patients) après une reconnexion WebSocket.
-
-    SocketIO ne rejoue pas les évènements manqués pendant une coupure : sans
-    ça, un comptoir qui perd la connexion quelques secondes/minutes reste
-    figé sur son dernier état connu jusqu'au prochain évènement poussé, qui
-    peut ne jamais arriver si rien d'autre ne change côté serveur entretemps.
-    """
-    finished_resync = Signal(object)  # state (dict ou None)
-
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-
-    def run(self):
-        mw = self.main_window
-        # Même snapshot atomique qu'au démarrage : on récupère l'état autoritatif
-        # complet (dont la révision) en une requête.
-        state = mw.init_state()
-        self.finished_resync.emit(state)
 
 
 class MainWindow(QMainWindow):
 
     patient_data_received = Signal(object)
-
-    # Signal de raccourci clavier (point 27). Les callbacks de la bibliothèque
-    # `keyboard` (mode global) s'exécutent HORS du thread graphique : ils se
-    # contentent d'ÉMETTRE ce signal avec le nom de l'action (émission
-    # thread-safe). Les QShortcut (mode premier plan) l'émettent depuis le thread
-    # GUI. L'unique slot _dispatch_shortcut, connecté en QueuedConnection, exécute
-    # l'action (confirmation éventuelle, retour visuel, clic bouton) dans le
-    # thread GUI. Un seul mécanisme est actif à la fois selon le mode -> jamais de
-    # double déclenchement.
-    shortcut_triggered = Signal(str)
-    # Émis (depuis le thread d'enregistrement keyboard) si Windows/keyboard refuse
-    # un ou plusieurs raccourcis, pour en avertir l'utilisateur dans le thread GUI.
-    shortcut_registration_failed = Signal(object)
 
     # Passe à True au tout début de la fermeture : bloque toute nouvelle action
     # réseau et évite la réentrance de closeEvent.
@@ -235,17 +88,9 @@ class MainWindow(QMainWindow):
         self.disconnect_timer.setSingleShot(True)
         self.disconnect_timer.timeout.connect(self._handle_disconnection_timeout)
 
-        # Magnétisme aux bords (point 25) : on n'aimante pas à chaque pixel du
-        # glissement (ce qui « lutterait » contre la souris), mais peu après que
-        # l'utilisateur a relâché. Un timer débouncé, redémarré à chaque moveEvent,
-        # ne déclenche l'aimantation qu'une fois le déplacement terminé.
-        self._snap_timer = QTimer(self)
-        self._snap_timer.setSingleShot(True)
-        self._snap_timer.timeout.connect(self._apply_edge_snap)
-        # Vrai pendant qu'on repositionne la fenêtre par programme (application du
-        # mode panneau / aimantation) : évite que le moveEvent induit ne relance
-        # le timer de magnétisme en boucle.
-        self._applying_panel = False
+        # Placement de la fenêtre (point 10.12) : géométrie persistée,
+        # garde-fou multi-écran, mode panneau compact et magnétisme aux bords.
+        self.placement = WindowPlacement(self, logger=self.logger)
         self.current_reconnection_attempts = 0
         self.disconnect_notification_shown = False
         # Distinct de disconnect_notification_shown (qui dépend du réglage
@@ -277,8 +122,8 @@ class MainWindow(QMainWindow):
 
         # Si un moniteur est débranché/ajouté ou la géométrie d'un écran change,
         # on revérifie que la fenêtre reste dans une zone visible (point 24).
-        app.screenRemoved.connect(lambda _screen: self.ensure_visible_on_screen())
-        app.screenAdded.connect(lambda _screen: self.ensure_visible_on_screen())
+        app.screenRemoved.connect(lambda _screen: self.placement.ensure_visible())
+        app.screenAdded.connect(lambda _screen: self.placement.ensure_visible())
 
         self.logger.info("Test de la connexion...")
         self.app_token = None
@@ -290,7 +135,7 @@ class MainWindow(QMainWindow):
         # et idempotence. Les providers lisent web_url/app_secret à la volée
         # (rechargés dans load_preferences).
         self.network_manager = NetworkManager(
-            token_url_provider=lambda: f"{self.web_url}/api/get_app_token",
+            token_url_provider=lambda: endpoints.app_token(self.web_url),
             secret_provider=lambda: self.app_secret,
         )
         self.network_manager.token_refreshed.connect(self._on_token_refreshed)
@@ -304,23 +149,33 @@ class MainWindow(QMainWindow):
         # première est en cours.
         self._tasks = TaskRegistry()
 
-        # Coalescing des resynchronisations : une seule resync réseau active à la
-        # fois ; les demandes reçues pendant une resync sont fusionnées en une
-        # seule relance (pas de rafale de ResyncWorker).
-        self._resync = ResyncCoordinator()
+        # Couche d'accès au serveur (point 10.8) : toutes les requêtes REST du
+        # comptoir passent par elle. MainWindow ne connaît plus ni URL, ni méthode
+        # HTTP, ni clé d'idempotence — seulement des actions métier. Les providers
+        # évitent toute copie périmée de la configuration (rechargée par
+        # load_preferences et par un changement de connexion).
+        self.api = CounterApi(
+            self.network_manager, self._tasks,
+            url_provider=lambda: self.web_url,
+            counter_id_provider=lambda: self.counter_id,
+            logger=self.logger,
+            is_shutting_down=lambda: self.shutting_down,
+        )
 
-        # Sérialisation de l'(ré)installation des raccourcis (point 7) : un verrou
-        # garantit qu'une installation ne chevauche jamais une autre, et
-        # _shortcut_thread référence l'éventuel thread d'enregistrement global en
-        # cours (joint avant toute réinstallation pour éviter que unhook et
-        # add_hotkey ne s'exécutent en concurrence dans la bibliothèque keyboard).
-        self._shortcut_lock = threading.Lock()
-        self._shortcut_thread = None
+        # Séquences de fond (point 10.13) : démarrage et resynchronisation, hors
+        # thread graphique, avec coalescing des resyncs et suivi des threads.
+        self.session = SessionController(self, self._tasks, logger=self.logger)
 
-        # Connexion (UNE seule fois) des signaux de raccourci à leurs actions
-        # GUI, indépendamment des ré-enregistrements de hotkeys clavier faits à
-        # chaque changement de préférences.
-        self._connect_shortcut_signals()
+        # Raccourcis clavier (point 10.10) : installation sérialisée, hooks
+        # système ou QShortcut selon le mode, confirmation des actions sensibles.
+        # Le manager connecte ses signaux une seule fois, indépendamment des
+        # ré-enregistrements faits à chaque changement de préférences.
+        self.shortcuts = ShortcutManager(self, logger=self.logger)
+
+        # Icônes de la zone de notification (point 10.11) : créées plus tard, à
+        # l'initialisation de l'interface (setup_ui), mais le gestionnaire existe
+        # dès maintenant pour que la fermeture puisse toujours les retirer.
+        self.tray = TrayManager(self, logger=self.logger)
 
         # La séquence réseau de démarrage (token + patient courant + liste des
         # patients) se fait en arrière-plan pour ne pas geler l'UI si le
@@ -331,10 +186,7 @@ class MainWindow(QMainWindow):
     def _start_startup_sequence(self):
         """ (Re)lance la séquence réseau de démarrage en arrière-plan. Rappelée
         après (re)configuration d'un comptoir valide. """
-        worker = StartupWorker(self)
-        worker.finished_startup.connect(self._on_startup_ready)
-        self._track_worker(worker)
-        worker.start()
+        self.session.start_startup(self._on_startup_ready)
 
     def _on_startup_ready(self, connected, state):
         """ Suite de l'initialisation une fois la séquence réseau de démarrage terminée """
@@ -370,14 +222,14 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
         # Restaure la géométrie mémorisée AVANT show(), puis vérifie la visibilité
         # APRÈS show() (la géométrie de cadre n'est fiable qu'une fois affichée).
-        self.restore_window_geometry()
+        self.placement.restore()
         self.show()
-        self.ensure_visible_on_screen()
+        self.placement.ensure_visible()
 
         # Mode panneau compact : docke la fenêtre après show() (la géométrie de
         # cadre n'est fiable qu'une fois affichée), après la restauration/visibilité.
         if self.compact_mode:
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
 
         self.alert_if_not_connected()
 
@@ -410,16 +262,6 @@ class MainWindow(QMainWindow):
         self.logger.error("Configuration incomplète (URL ou comptoir manquant) : arrêt de l'application.")
         QApplication.instance().quit()
 
-    def _load_shortcut(self, settings, name):
-        """ Lit un raccourci depuis les préférences (défaut centralisé), applique
-        la migration des anciennes valeurs erronées et persiste la correction. """
-        stored = settings.value(name, default_shortcut(name))
-        migrated = migrate_shortcut(name, stored)
-        if migrated != stored:
-            settings.setValue(name, migrated)
-            self.logger.info("Raccourci '%s' migré vers %s", name, migrated)
-        return migrated
-
     def load_preferences(self):
         self.logger.info("Initialisation des préférences...")
 
@@ -445,11 +287,13 @@ class MainWindow(QMainWindow):
         self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
         # Raccourcis : défauts centralisés dans shortcut_defaults (source unique)
         # + migration transparente des anciennes valeurs erronées (ex: "Altl+P").
-        self.next_patient_shortcut = self._load_shortcut(settings, "next_patient_shortcut")
-        self.validate_patient_shortcut = self._load_shortcut(settings, "validate_patient_shortcut")
-        self.pause_shortcut = self._load_shortcut(settings, "pause_shortcut")
-        self.recall_shortcut = self._load_shortcut(settings, "recall_shortcut")
-        self.deconnect_shortcut = self._load_shortcut(settings, "deconnect_shortcut")
+        # Lecture via read_shortcut (shortcut_defaults) : MÊME fonction que celle
+        # utilisée par la fenêtre de préférences — plus de double logique.
+        self.next_patient_shortcut = read_shortcut(settings, "next_patient_shortcut", self.logger)
+        self.validate_patient_shortcut = read_shortcut(settings, "validate_patient_shortcut", self.logger)
+        self.pause_shortcut = read_shortcut(settings, "pause_shortcut", self.logger)
+        self.recall_shortcut = read_shortcut(settings, "recall_shortcut", self.logger)
+        self.deconnect_shortcut = read_shortcut(settings, "deconnect_shortcut", self.logger)
         # Mode des raccourcis (point 27) : désactivés / actifs au premier plan /
         # globaux. Défaut = global (comportement historique). + confirmation
         # facultative des actions sensibles et retour visuel de l'action.
@@ -500,11 +344,11 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         self.logger.info("Initialisation de l'interface...")
 
-        icon_path = os.path.join(os.path.dirname(__file__), 'assets/images', 'next.ico')
+        icon_path = resource_path('assets/images/next.ico')
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("PharmaFile")
 
-        self.setup_systray()
+        self.tray.setup()
 
         # self.list_patients a déjà été renseigné par _on_startup_ready()
         # (récupéré en arrière-plan par StartupWorker) avant l'appel à setup_ui().
@@ -516,122 +360,12 @@ class MainWindow(QMainWindow):
         self.load_skin()
 
         self.setup_global_shortcut()
-        
 
     def create_interface(self):
-        # Supprime l'ancien widget central s'il existe (changement d'orientation)
-        if self.centralWidget():
-            self.centralWidget().deleteLater()
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-
-        self.main_layout = QHBoxLayout(self.central_widget) if self.horizontal_mode else QVBoxLayout(self.central_widget)
-
-        # Créer un widget conteneur pour les éléments principaux
-        self.main_elements_container = QWidget() 
-        main_elements_layout = QHBoxLayout(self.main_elements_container) if self.horizontal_mode else QVBoxLayout(self.main_elements_container)
-        main_elements_layout.setContentsMargins(0, 0, 0, 0)
-        main_elements_layout.setSpacing(5)  # Ajustez l'espacement selon vos besoins
-
-        self.central_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.main_elements_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-        self._create_name()
-        self._create_label_patient()
-        self._create_main_button_container()
-        self._create_option_button_container()
-        self._create_icon_widget()
-        self._create_patient_list_widget()
-
-        # Ajouter les widgets au conteneur principal
-        main_elements_layout.addWidget(self.label_staff)
-        main_elements_layout.addWidget(self.label_patient)
-        main_elements_layout.addWidget(self.main_button_container)
-        main_elements_layout.addWidget(self.option_button_container)
-
-        # Configurer la politique de taille du conteneur principal
-        self.main_elements_container.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
-
-        # Ajouter le conteneur principal et les autres widgets au layout principal
-        self.main_layout.addWidget(self.main_elements_container)
-        self.main_layout.addWidget(self.icone_widget)
-
-        self.refresh_patient_lists()
-
-        # Ajouter un stretch pour pousser les widgets vers le haut/gauche
-        if self.horizontal_mode:
-            self.main_layout.addStretch(1)
-        else:
-            self.main_layout.addStretch(1)
-
-        # Mode panneau compact : resserre les marges/espacements et priorise
-        # visuellement les éléments essentiels dans une petite zone (point 25).
-        self._apply_compact_styling()
-
-    def _apply_compact_styling(self):
-        """Adapte l'interface au mode panneau compact.
-
-        On resserre marges et espacements pour tenir dans une petite zone, et on
-        garantit une hauteur minimale confortable aux boutons essentiels (Suivant/
-        Valider/Pause) pour qu'aucun ne soit tronqué et qu'ils restent lisibles.
-        En mode normal, on rétablit des valeurs standard (au cas où on quitte le
-        mode compact sans reconstruire depuis zéro)."""
-        compact = getattr(self, "compact_mode", False)
-        margin = 4 if compact else 9
-        spacing = 4 if compact else 6
-        self.main_layout.setContentsMargins(margin, margin, margin, margin)
-        self.main_layout.setSpacing(spacing)
-        if hasattr(self, "main_button_layout"):
-            self.main_button_layout.setSpacing(spacing)
-        # Hauteur minimale des boutons essentiels : lisibles et cliquables même
-        # dans un panneau étroit, sans être tronqués.
-        min_h = 44 if compact else 0
-        for name in ("btn_next", "btn_validate", "btn_pause"):
-            button = getattr(self, name, None)
-            if button is not None:
-                button.setMinimumHeight(min_h)
-
-    def _create_name(self):
-        self.label_staff = QLabel("")
-        self.label_staff.setAlignment(Qt.AlignCenter)
-
-    def _create_label_patient(self):
-        # Remplacer QLabel par QPushButton
-        self.label_patient = QPushButton("Pas de connexion !")
-        self.label_patient.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
-        self.label_patient.setMinimumWidth(0)
-        self.label_patient.setStyleSheet("text-align: left;")
-        self.label_patient.setCheckable(False)  # Le bouton n'est pas "toggle"
-        self.label_patient.setFlat(True)  # Le bouton ressemble davantage à un label
-
-        # Créer un menu d'actions
-        self.patient_menu = QMenu(self.label_patient)  # Stocké comme attribut de classe
-        self.action_wait = self.patient_menu.addAction("Remettre en attente")
-        
-        # on ne crée le sous-menu que si on a défini des "activités Staff"
-        if hasattr(self, 'activities_staff') and self.activities_staff:
-            # Créer un sous-menu pour "Remettre en attente pour..."
-            self.wait_for_submenu = QMenu("Remettre en attente pour...", self.patient_menu)
-            
-            # Ajouter chaque activité staff comme une action dans le sous-menu
-            for activity in self.activities_staff:
-                action = self.wait_for_submenu.addAction(activity['name'])
-                action.triggered.connect(lambda checked, a=activity: self.on_action_wait_for(a))
-            
-            # Ajouter le sous-menu au menu principal
-            self.patient_menu.addMenu(self.wait_for_submenu)
-
-        self.action_delete = self.patient_menu.addAction("Supprimer")
-
-        # Connecter les actions à des méthodes
-        self.action_wait.triggered.connect(self.on_action_wait)
-        self.action_delete.triggered.connect(self.on_action_delete)
-
-        # Associer le menu au bouton
-        self.label_patient.setMenu(self.patient_menu)
-
-        # Désactiver les actions par défaut
-        self._update_menu_actions(False)
+        """ (Re)construit l'interface principale. Le détail des widgets vit dans
+        ``main_window_ui`` ; la fenêtre garde la décision de QUAND reconstruire
+        (démarrage, changement d'orientation, retour de l'écran de connexion). """
+        main_window_ui.create_interface(self)
 
     def _update_menu_actions(self, enable):
         """Active ou désactive les actions du menu"""
@@ -643,8 +377,7 @@ class MainWindow(QMainWindow):
     def on_action_wait(self):
         # Logique pour remettre le patient en attente
         self.logger.debug("Patient remis en attente")
-        url = f'{self.web_url}/api/counter/put_standing_list/{self.patient_id}'
-        self._submit(url, method='POST', on_result=self.handle_result, key=f"put_standing:{self.patient_id}")
+        self.api.put_standing(self.patient_id, on_result=self.handle_result)
 
     def on_action_wait_for(self, activity, patient_id=None):
         """
@@ -652,12 +385,12 @@ class MainWindow(QMainWindow):
         """
         target_id = patient_id if patient_id is not None else self.patient_id
         self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
-        url = f'{self.web_url}/api/counter/put_standing_list/{target_id}/{activity["id"]}'
-        self._submit(url, method='POST', on_result=self.handle_result, key=f"put_standing:{target_id}")
+        self.api.put_standing(target_id, activity["id"], on_result=self.handle_result)
 
     def on_action_validate(self, patient_id):
-        url = f'{self.web_url}/api/counter/validate_patient/{patient_id}'
-        self.validate_my_patient(url)
+        # Patient désigné dans la file (menu contextuel) : route « file », pas
+        # celle du comptoir.
+        self.validate_my_patient(partial(self.api.validate_queued_patient, patient_id))
 
     def on_action_delete(self, patient_id=None):
         """
@@ -681,34 +414,7 @@ class MainWindow(QMainWindow):
         # Si l'utilisateur clique sur "Oui"
         if msg_box.clickedButton() == bouton_oui:
             self.logger.debug("Suppression du patient demandée")
-            url = f'{self.web_url}/api/counter/delete_patient/{target_id}'
-            self._submit(url, method='POST', on_result=self.handle_result, key=f"delete:{target_id}")
-
-    def _create_main_button_container(self):
-        self.main_button_container = QWidget()
-        self.main_button_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
-
-        buttons_config = [
-            ("btn_next", "Suivant", self.next_patient_shortcut, self.call_web_function_validate_and_call_next),
-            ("btn_validate", "Valider", self.validate_patient_shortcut, self.call_web_function_validate),
-            ("btn_pause", "Pause", self.pause_shortcut, self.call_web_function_pause)
-        ]
-
-        for attr_name, text, shortcut, callback in buttons_config:
-            base_label = f"{text}\n{shortcut}"
-            button = DebounceButton(base_label)
-            # Nom accessible = action (sans le raccourci), infobulle explicite :
-            # utile pour les lecteurs d'écran et au survol (point 28).
-            button.setAccessibleName(text)
-            button.setToolTip(f"{text} (raccourci : {shortcut})")
-            # Libellé de base mémorisé : permet de restaurer le texte après un
-            # marquage d'alerte (bouton Valider) sans reconstruire le bouton.
-            button._base_label = base_label
-            button.clicked.connect(callback)
-            setattr(self, attr_name, button)  # Stocke le bouton comme attribut de la classe
-            self.main_button_layout.addWidget(button)
-
-        self.main_button_container.setLayout(self.main_button_layout)
+            self.api.delete_patient(target_id, on_result=self.handle_result)
 
     def _set_validate_alert(self, active):
         """Marque (ou démarque) le bouton Valider comme « patient à valider ».
@@ -733,72 +439,7 @@ class MainWindow(QMainWindow):
             button.setToolTip("Valider")
 
 
-    def _create_option_button_container(self):
-        
-        self.option_button_container = QWidget()
-        self.option_button_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
 
-        self._create_choose_patient_button()
-        self._create_more_button()
-
-        self.option_button_layout.addWidget(self.btn_choose_patient)
-        self.option_button_layout.addWidget(self.btn_more)
-
-        self.option_button_container.setLayout(self.option_button_layout)
-
-    def _create_icon_widget(self):
-        self.icone_widget = QWidget()
-        self.icone_layout = QHBoxLayout()
-
-        self.connection_indicator = ConnectionStatusIndicator()
-        self.icone_layout.addWidget(self.connection_indicator)
-        
-        self._create_auto_calling_button()
-        self._create_paper_button()
-
-        self.icone_layout.addWidget(self.btn_auto_calling)
-        self.icone_layout.addWidget(self.btn_paper)
-
-        self.icone_widget.setLayout(self.icone_layout)       
-
-
-    def _create_icon_button(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, accessible_name=None):
-        return IconeButton(
-            icon_path=resource_path(icon_path),
-            icon_inactive_path=resource_path(icon_inactive_path),
-            flask_url=flask_url,
-            tooltip_text=tooltip_text,
-            tooltip_inactive_text=tooltip_inactive_text,
-            state=state,
-            parent=self,
-            is_always_visible=is_always_visible,
-            accessible_name=accessible_name,
-        )
-
-    def _create_auto_calling_button(self):
-        self.logger.info("Connexion pour charger le bouton d'appel automatique...")
-        self.btn_auto_calling = self._create_icon_button(
-            "assets/images/loop_yes.ico",
-            "assets/images/loop_no.ico",
-            f'{self.web_url}/app/counter/auto_calling',
-            "Desactiver l'appel automatique",
-            "Activer l'appel automatique",
-            self.autocalling,
-            accessible_name="Appel automatique des patients"
-        )
-
-    def _create_paper_button(self):
-        self.logger.info("Connexion pour charger l'icone de changement de papier...")
-        self.btn_paper = self._create_icon_button(
-            "assets/images/paper_add.ico",
-            "assets/images/paper.ico",
-            f'{self.web_url}/app/counter/paper_add',
-            "Indiquer que vous avez changé le papier",
-            "Indiquer qu'il faut changer le papier",
-            self.add_paper,
-            is_always_visible=False,
-            accessible_name="État du papier de l'imprimante")
-        
     def trigger_paper_button(self):
         if hasattr(self, 'btn_paper'):
             self.logger.debug("trigger_paper_button (état=%s)", self.btn_paper.state)
@@ -813,15 +454,10 @@ class MainWindow(QMainWindow):
                 self.paper_action.setText("Changement papier nécessaire")
 
     def call_web_function_validate_and_call_next(self):
-        url = f'{self.web_url}/validate_and_call_next/{self.counter_id}'
-        # Clé d'idempotence : une nouvelle par action utilisateur. Si la requête
-        # est renvoyée (relance réseau, ou relance automatique après un 401),
-        # le serveur reconnaît la même clé et ne fait pas avancer la file deux
-        # fois. La clé est portée par le gestionnaire réseau (spec.idempotency_key),
-        # donc le rejeu interne après 401 réutilise bien la même valeur.
-        headers = {'X-Idempotency-Key': str(uuid.uuid4())}
-        self._submit(url, method='POST', headers=headers, on_result=self.handle_result,
-                     key="validate_and_call_next", busy_button=self.btn_next)
+        # L'idempotence de cette action (ne pas faire avancer la file deux fois
+        # si la requête est rejouée) est garantie par la couche d'accès.
+        self.api.validate_and_call_next(on_result=self.handle_result,
+                                        busy_button=self.btn_next)
         self.update_my_buttons(self.my_patient)
         self.close_please_validate_notification()
 
@@ -829,16 +465,17 @@ class MainWindow(QMainWindow):
     def call_web_function_validate(self):
         self.logger.debug("Validation du patient (call_web_function_validate)")
         self.close_please_validate_notification()
-        url = f'{self.web_url}/validate_patient/{self.counter_id}/{self.patient_id}'
-        self.validate_my_patient(url)                    
+        self.validate_my_patient(partial(self.api.validate_current_patient, self.patient_id))
 
 
-    def validate_my_patient(self, url):
+    def validate_my_patient(self, send):
+        """ Valide le patient s'il y en a un. ``send`` est la requête à envoyer,
+        déjà liée au patient concerné (celui du comptoir, ou un patient désigné
+        dans la file) : cette méthode ne décide que du « faut-il envoyer ». """
         self.logger.debug("Validation du patient en cours")
         self.close_please_validate_notification()
         if self.my_patient:
-            self._submit(url, method='POST', on_result=self.handle_result,
-                         key="validate", busy_button=self.btn_validate)
+            send(on_result=self.handle_result, busy_button=self.btn_validate)
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
             self.update_my_buttons(self.my_patient)
@@ -852,199 +489,10 @@ class MainWindow(QMainWindow):
 
     def call_web_function_pause(self):
         self.logger.debug("Mise en pause du patient")
-        url = f'{self.web_url}/pause_patient/{self.counter_id}/{self.patient_id}'
-        self._submit(url, method='POST', on_result=self.handle_result,
-                     key="pause", busy_button=self.btn_pause)
+        self.api.pause_current_patient(self.patient_id, on_result=self.handle_result,
+                                       busy_button=self.btn_pause)
 
-    @profile
-    def _create_choose_patient_button(self):
-        self.btn_choose_patient = DebounceButton("Patients")
-        self.choose_patient_menu = QMenu()
-        # Menu reconstruit paresseusement à l'ouverture (plus de reconstruction
-        # à chaque évènement de file) : il lit self.list_patients courant.
-        self.choose_patient_menu.aboutToShow.connect(self._rebuild_choose_patient_menu)
-        self.btn_choose_patient.setMenu(self.choose_patient_menu)
 
-        # self.my_patient/self.list_patients sont normalement déjà remplis par
-        # _on_startup_ready() (StartupWorker) avant le premier appel à cette
-        # méthode. Ce qui suit est un filet de sécurité (ex: reconstruction de
-        # l'interface après un changement d'orientation) au cas où ils seraient
-        # encore vides, pas le chemin normal de démarrage.
-        if not self.my_patient:
-            self.logger.info("__ Connexion pour charger le patient en cours...")
-            self.my_patient = self.init_patient()
-        # uniquement si chargement des patients réussi (pas de connexion)
-        if self.my_patient:
-            self.update_my_patient(self.my_patient)
-            self.update_my_buttons(self.my_patient)
-
-        if not self.list_patients:
-            self.logger.info("__ Connexion pour charger la liste des patients...")
-            self.list_patients = self.init_list_patients()
-        # Le menu est reconstruit à son ouverture ; ici on ne fait qu'actualiser
-        # le compteur visible du bouton. La vue (modèle) est mise à jour plus tard
-        # dans create_interface, une fois _create_patient_list_widget appelé.
-        self._update_patient_count_label()
-
-    def _create_more_button(self):
-        self.btn_more = DebounceButton("Menu")
-        self.more_menu = QMenu()
-
-        # Créer l'action pour le papier séparément pour pouvoir la mettre à jour
-        self.paper_action = QAction("Changement papier nécessaire", self)
-        self.paper_action.triggered.connect(self.trigger_paper_button)
-        self.update_paper_action_text(self.add_paper)  # Mettre à jour le texte initial
-
-        actions = [
-            ("Relancer l'appel ", self.recall_shortcut, self.recall),
-            (None, None, self.paper_action),
-            ("Changer l'orientation", None, self.toggle_orientation),
-            ("Basculer le mode compact", None, self.toggle_compact_mode),
-            ("Deconnexion ", self.deconnect_shortcut, self.deconnection),
-            ("Préférences", None, self.show_preferences_dialog),
-            ("Afficher/Masquer Liste Patients", None, self.toggle_patient_list),
-            ("Réinitialiser la position", None, self.reset_window_position),
-        ]
-
-        for text, shortcut, callback in actions:
-            if isinstance(callback, QAction):  # Si c'est déjà une action
-                self.more_menu.addAction(callback)
-            else:
-                action = QAction(f"{text}{shortcut if shortcut else ''}", self)
-                action.triggered.connect(callback)
-                self.more_menu.addAction(action)
-
-        self.btn_more.setMenu(self.more_menu)
-
-    # --- Persistance de la géométrie de la fenêtre (taille/position/moniteur) ---
-
-    GEOMETRY_KEY = "window_geometry"
-    SCREEN_KEY = "window_screen_name"
-    DEFAULT_WINDOW_SIZE = (400, 300)  # taille par défaut après réinitialisation
-
-    def save_window_geometry(self):
-        """Mémorise taille, position (état maximisé inclus) et nom du moniteur.
-        Appelé à la fermeture. saveGeometry() encode aussi l'écran/DPI."""
-        settings = QSettings()
-        settings.setValue(self.GEOMETRY_KEY, self.saveGeometry())
-        screen = self.screen()
-        settings.setValue(self.SCREEN_KEY, screen.name() if screen else "")
-
-    def restore_window_geometry(self):
-        """Restaure la géométrie mémorisée. La vérification de visibilité est faite
-        séparément (ensure_visible_on_screen) APRÈS show(), quand la géométrie de
-        cadre est fiable. Retourne True si une géométrie a été restaurée."""
-        settings = QSettings()
-        geometry = settings.value(self.GEOMETRY_KEY)
-        if not geometry:
-            return False  # premier lancement : on laisse Qt placer la fenêtre
-        try:
-            return bool(self.restoreGeometry(geometry))
-        except (TypeError, ValueError) as e:
-            self.logger.warning("Géométrie enregistrée illisible : %s", e)
-            return False
-
-    def _screen_rects(self):
-        """Zones utiles (hors barre des tâches) de tous les écrans, en tuples."""
-        rects = []
-        for screen in QGuiApplication.screens():
-            g = screen.availableGeometry()
-            rects.append((g.x(), g.y(), g.width(), g.height()))
-        return rects
-
-    @Slot()
-    def ensure_visible_on_screen(self):
-        """Vérifie que la fenêtre reste dans une zone visible. Si son moniteur
-        d'origine a disparu ou qu'elle n'est plus assez visible (déconnexion,
-        changement d'écran, résolution réduite), on la recentre sur l'écran
-        principal."""
-        if self.shutting_down or not self.isVisible():
-            return
-        frame = self.frameGeometry()
-        window = (frame.x(), frame.y(), frame.width(), frame.height())
-        primary = QGuiApplication.primaryScreen()
-        if primary is None:
-            return
-        pa = primary.availableGeometry()
-        stored_name = QSettings().value(self.SCREEN_KEY) or None
-        target = resolve_target_geometry(
-            window,
-            self._screen_rects(),
-            (pa.x(), pa.y(), pa.width(), pa.height()),
-            stored_screen_name=stored_name,
-            available_screen_names=[s.name() for s in QGuiApplication.screens()],
-        )
-        if target is not None:
-            self.logger.info("Fenêtre hors zone visible : recentrage sur l'écran principal")
-            x, y, w, h = target
-            self.resize(w, h)
-            self.move(x, y)
-
-    def reset_window_position(self):
-        """Commande « Réinitialiser la position » : oublie la géométrie mémorisée
-        et recentre la fenêtre (taille par défaut) sur l'écran principal."""
-        settings = QSettings()
-        settings.remove(self.GEOMETRY_KEY)
-        settings.remove(self.SCREEN_KEY)
-        if self.isMaximized() or self.isFullScreen():
-            self.showNormal()
-        primary = QGuiApplication.primaryScreen()
-        if primary is None:
-            return
-        pa = primary.availableGeometry()
-        # Taille par défaut raisonnable, bornée à l'écran.
-        default_w = min(self.DEFAULT_WINDOW_SIZE[0], pa.width())
-        default_h = min(self.DEFAULT_WINDOW_SIZE[1], pa.height())
-        x = pa.x() + (pa.width() - default_w) // 2
-        y = pa.y() + (pa.height() - default_h) // 2
-        self.resize(default_w, default_h)
-        self.move(x, y)
-        self.logger.info("Position de la fenêtre réinitialisée (écran principal)")
-
-    # --- Mode panneau compact (point 25) ---------------------------------
-
-    def _current_screen_avail(self):
-        """Zone utile de l'écran courant de la fenêtre (ou principal en secours),
-        en tuple ``(x, y, w, h)`` ; None si aucun écran."""
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        if screen is None:
-            return None
-        g = screen.availableGeometry()
-        return (g.x(), g.y(), g.width(), g.height())
-
-    def apply_panel_mode(self):
-        """Redimensionne/positionne la fenêtre en panneau compact docké.
-
-        En mode vertical, colonne étroite (largeur = épaisseur configurée) sur le
-        bord gauche/droit le plus proche de la position actuelle ; en mode
-        horizontal, barre fine en haut de l'écran (« au-dessus du progiciel »). La
-        fenêtre reste ensuite librement redimensionnable à la souris.
-
-        Sans effet si le mode compact est désactivé."""
-        if not getattr(self, "compact_mode", False):
-            return
-        avail = self._current_screen_avail()
-        if avail is None:
-            return
-        frame = self.frameGeometry()
-        window = (frame.x(), frame.y(), frame.width(), frame.height())
-        if self.horizontal_mode:
-            # Barre horizontale dockée en haut (zone au-dessus du progiciel).
-            target = compact_panel_geometry(HORIZONTAL, avail, self.panel_thickness, "top")
-        else:
-            # Colonne verticale dockée du côté le plus proche.
-            side = nearest_vertical_side(window, avail)
-            target = compact_panel_geometry(VERTICAL, avail, self.panel_thickness, side)
-        x, y, w, h = target
-        self._applying_panel = True
-        try:
-            if self.isMaximized() or self.isFullScreen():
-                self.showNormal()
-            self.resize(w, h)
-            self.move(x, y)
-        finally:
-            self._applying_panel = False
-        self.logger.debug("Mode panneau appliqué : %s", target)
 
     def toggle_compact_mode(self):
         """Bascule rapide du mode panneau compact (menu « Menu »). Persiste le
@@ -1055,119 +503,14 @@ class MainWindow(QMainWindow):
         self.logger.info("Mode panneau compact : %s", self.compact_mode)
         self.create_interface()
         if self.compact_mode:
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
 
     def moveEvent(self, event):
-        """Déplacement de la fenêtre : (re)démarre le timer de magnétisme si le
-        magnétisme aux bords est actif. Ignoré pendant nos propres repositionnements
-        (``_applying_panel``) pour ne pas boucler."""
+        """Déplacement de la fenêtre (surcharge Qt) : le magnétisme aux bords est
+        décidé par ``WindowPlacement``."""
         super().moveEvent(event)
-        if (getattr(self, "panel_snap", False)
-                and not self._applying_panel
-                and not self.shutting_down
-                and self.isVisible()):
-            self._snap_timer.start(200)
+        self.placement.on_window_moved()
 
-    @Slot()
-    def _apply_edge_snap(self):
-        """Aimante la fenêtre au bord d'écran le plus proche (déclenché peu après
-        la fin d'un déplacement manuel)."""
-        if not self.panel_snap or self.shutting_down or not self.isVisible():
-            return
-        avail = self._current_screen_avail()
-        if avail is None:
-            return
-        frame = self.frameGeometry()
-        window = (frame.x(), frame.y(), frame.width(), frame.height())
-        x, y, _w, _h = snap_to_edges(window, avail, DEFAULT_SNAP_THRESHOLD)
-        if (x, y) != (window[0], window[1]):
-            self._applying_panel = True
-            try:
-                self.move(x, y)
-            finally:
-                self._applying_panel = False
-            self.logger.debug("Fenêtre aimantée au bord (%s, %s)", x, y)
-
-    def _create_patient_list_widget(self):
-        # Create the dock widget if it doesn't exist
-        if not hasattr(self, 'patient_list_dock'):
-            # Create the dock widget
-            self.patient_list_dock = QDockWidget("Liste des patients", self)
-            self.patient_list_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
-            
-            # Create main container widget
-            container_widget = QWidget()
-            container_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            
-            # Utiliser un QVBoxLayout pour le conteneur principal
-            container_layout = QVBoxLayout(container_widget)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.setSpacing(0)
-
-            # Vue de la file : QListView adossé à un QAbstractListModel. La vue
-            # virtualise le rendu (seuls les éléments visibles sont peints) et les
-            # mises à jour du modèle sont différentielles — pas de reconstruction
-            # complète ni de perte de la position de défilement (cf. point 21).
-            self.patient_model = PatientListModel(self, font_size=self.patient_list_font_size)
-            self.patient_list_view = QListView()
-            self.patient_list_view.setModel(self.patient_model)
-            self.patient_list_view.setUniformItemSizes(True)  # perf avec beaucoup d'éléments
-            # Navigation clavier (point 28) : la liste devient focusable et
-            # sélectionnable au clavier (Tab pour l'atteindre, flèches pour se
-            # déplacer, Entrée pour appeler le patient, touche Menu pour le menu
-            # contextuel). L'ancien NoSelection empêchait toute navigation clavier.
-            self.patient_list_view.setSelectionMode(QAbstractItemView.SingleSelection)
-            self.patient_list_view.setFocusPolicy(Qt.StrongFocus)
-            self.patient_list_view.setTabKeyNavigation(True)
-            self.patient_list_view.setAccessibleName("Liste des patients en attente")
-            self.patient_list_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
-            self.patient_list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.patient_list_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.patient_list_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-            self.patient_list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            # Clic (souris) sur un patient : même action que l'ancien PatientButton.
-            self.patient_list_view.clicked.connect(self._on_patient_list_clicked)
-            # `activated` couvre l'équivalent clavier (Entrée sur la ligne courante).
-            self.patient_list_view.activated.connect(self._on_patient_list_activated)
-            # Menu contextuel par patient conservé, désormais porté par la vue.
-            # Avec CustomContextMenu, la touche « Menu » du clavier déclenche aussi
-            # ce signal sur la ligne sélectionnée.
-            self.patient_list_view.setContextMenuPolicy(Qt.CustomContextMenu)
-            self.patient_list_view.customContextMenuRequested.connect(
-                self._on_patient_list_context_menu)
-
-            container_layout.addWidget(self.patient_list_view, 1)  # priorité d'expansion
-            
-            # Set the container as the dock widget's content
-            self.patient_list_dock.setWidget(container_widget)
-            
-            # Add dock widget to main window
-            self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
-            
-            # Adjust minimum size
-            self.patient_list_dock.setMinimumHeight(100)
-            
-            # Remove borders and make it look cleaner
-            self.patient_list_dock.setStyleSheet("""
-                QDockWidget {
-                    border: none;
-                    padding: 0;
-                }
-                QListView {
-                    border: none;
-                }
-            """)
-        
-        # Update visibility based on preferences
-        self.patient_list_dock.setVisible(self.display_patient_list)
-        
-        # Adjust dock widget position based on preferences
-        if (self.horizontal_mode and self.patient_list_position_horizontal == "bottom") or \
-            (not self.horizontal_mode and self.patient_list_position_vertical == "bottom"):
-            self.addDockWidget(Qt.BottomDockWidgetArea, self.patient_list_dock)
-        elif (self.horizontal_mode and self.patient_list_position_horizontal == "right") or \
-            (not self.horizontal_mode and self.patient_list_position_vertical == "right"):
-            self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
 
     def toggle_patient_list(self):
         if self.patient_list_dock.isVisible():
@@ -1238,49 +581,19 @@ class MainWindow(QMainWindow):
         # Le passage vertical/horizontal redocke le panneau dans la bonne
         # dimension (colonne <-> barre) sans perdre l'état fonctionnel.
         if self.compact_mode and self.isVisible():
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
 
-    def _update_layout(self):
-        # Créer un nouveau layout avec la nouvelle orientation
-        new_layout = QHBoxLayout() if self.horizontal_mode else QVBoxLayout()
-        
-        # Transférer tous les widgets de l'ancien layout vers le nouveau
-        while self.main_layout.count():
-            item = self.main_layout.takeAt(0)
-            new_layout.addWidget(item.widget())
-
-        # Remplacer l'ancien layout par le nouveau
-        self.centralWidget().setLayout(new_layout)
-        self.main_layout = new_layout
-
-        # Mettre à jour la position du dock widget
-        if self.horizontal_mode:
-            self.addDockWidget(Qt.RightDockWidgetArea, self.patient_list_dock)
-        else:
-            self.addDockWidget(Qt.BottomDockWidgetArea, self.patient_list_dock)
-
-        # Forcer le recalcul du layout
-        self.centralWidget().updateGeometry()
-        self.adjustSize()
 
     def init_list_patients(self):
-        url = f'{self.web_url}/api/patients_list_for_pyside'
-        result = self.network_manager.request_blocking(url, method='GET')
-        if result.status == 200 and isinstance(result.data, list):
-            self.logger.debug("Liste des patients récupérée")
-            return result.data
-        self.logger.warning("Échec de récupération de la liste (statut=%s)", result.status)
-        return []
+        return self.api.fetch_patients_list()
 
     def recall(self):
-        url = f"{self.web_url}/app/counter/relaunch_patient_call/{self.counter_id}"
-        self._submit(url, method='POST', key="recall")
+        self.api.relaunch_call()
 
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
         self.logger.info("Paramétrage de l'utilisateur...")
-        url = f'{self.web_url}/api/counter/is_staff_on_counter/{self.counter_id}'
-        self._submit(url, method='GET', on_result=self.handle_user_result, key="setup_user")
+        self.api.fetch_staff(on_result=self.handle_user_result)
 
     def _notify_network_error(self, result):
         """ Affiche un message utilisateur court (distinct selon le statut :
@@ -1378,12 +691,7 @@ class MainWindow(QMainWindow):
         (patient en cours + liste + réglages + révision). Utilisé au démarrage et
         à chaque resynchronisation pour garantir un état cohérent, plutôt que
         d'agréger plusieurs snapshots susceptibles de se contredire. """
-        url = f'{self.web_url}/api/counter/{self.counter_id}/state'
-        result = self.network_manager.request_blocking(url, method='GET')
-        if result.status == 200 and isinstance(result.data, dict):
-            return result.data
-        self.logger.warning("Échec de récupération de l'état (statut=%s)", result.status)
-        return None
+        return self.api.fetch_state()
 
     def _apply_state(self, state):
         """ Applique une snapshot d'état autoritative aux champs de données (sans
@@ -1400,30 +708,13 @@ class MainWindow(QMainWindow):
             self.activities_staff = state["activities_staff"]
 
     def _request_resync(self):
-        """ Déclenche une resynchronisation de l'état autoritatif en garantissant
-        qu'UNE SEULE resync réseau est active à la fois.
-
-        Si une resync est déjà en cours, on mémorise seulement qu'une nouvelle
-        passe est demandée (coalescing) : une rafale d'évènements ou de
-        reconnexions ne crée donc pas une rafale de ResyncWorker. La passe en
-        attente est relancée une seule fois à la fin (cf. _on_resync_ready). """
-        if self.shutting_down:
-            return
-        if not self._resync.request():
-            return  # une resync est déjà active : demande mémorisée
-        worker = ResyncWorker(self)
-        worker.finished_resync.connect(self._on_resync_ready)
-        self._track_worker(worker)
-        worker.start()
+        """ Demande une resynchronisation de l'état autoritatif. Le contrôleur de
+        session garantit qu'une seule passe réseau est active à la fois et fusionne
+        les demandes reçues entretemps. """
+        self.session.request_resync(self._on_resync_ready)
 
     def init_patient(self):
-        url = f'{self.web_url}/api/counter/is_patient_on_counter/{self.counter_id}'
-        result = self.network_manager.request_blocking(url, method='GET')
-        if result.status == 200 and isinstance(result.data, dict):
-            self.logger.debug("Patient courant récupéré")
-            return result.data
-        self.logger.warning("Échec de récupération du patient (statut=%s)", result.status)
-        return None
+        return self.api.fetch_current_patient()
 
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
@@ -1463,7 +754,7 @@ class MainWindow(QMainWindow):
         et rafraîchit l'UI. Libère le verrou de resync et relance UNE passe si une
         a été demandée entretemps. Un snapshot périmé (révision plus ancienne que
         l'état connu) n'est jamais appliqué. """
-        relaunch = self._resync.finish()
+        relaunch = self.session.finish_resync()
         try:
             if state and snapshot_is_fresh(state.get("revision"), self.queue_revision):
                 self._apply_resync_state(state)
@@ -1603,74 +894,44 @@ class MainWindow(QMainWindow):
             self.logger.error("Donnée patient invalide (type %s)", type(patient).__name__)
 
     def update_my_buttons(self, patient):
-        #TEMPORAIRE
-        try:
-            # cas de la suppression quotidienne de la liste des patients
-            if not patient:
-                    self.btn_pause.setEnabled(False)
-                    self.btn_validate.setEnabled(False)
-                    self._set_validate_alert(False)
-                    self.call_timer.stop()  # bloque le timer "calling" si plus personne
+        """ Applique l'état des boutons Valider/Pause et du minuteur d'appel pour
+        ``patient``.
+
+        La DÉCISION est prise par ``button_state.resolve_patient_buttons`` (pure,
+        testée) ; cette méthode ne fait que l'appliquer. Elle remplace l'ancien
+        ``except:`` nu « #TEMPORAIRE » qui masquait aussi bien une donnée serveur
+        malformée qu'une faute de frappe dans le code.
+
+        Deux cas laissent volontairement l'interface inchangée : une mise à jour
+        concernant un autre comptoir, et une donnée inexploitable (journalisée).
+        Les widgets peuvent aussi ne pas exister (écran de connexion) : on le
+        vérifie explicitement au lieu de compter sur une exception avalée.
+        """
+        decision, reason = resolve_patient_buttons(patient, self.counter_id)
+        if decision is None:
+            if reason == MALFORMED:
+                # Aucune valeur patient dans le journal (données de santé) :
+                # seulement le type et, pour un dict, les noms de champs reçus.
+                shape = sorted(patient) if isinstance(patient, dict) else type(patient).__name__
+                self.logger.warning(
+                    "Boutons patient non recalculés : %s (reçu : %s)", reason, shape)
             else:
-                if patient["counter_id"] == self.counter_id:
-                    if patient["id"] is None:
-                        self.btn_pause.setEnabled(False)
-                        self.btn_validate.setEnabled(False)
-                        self._set_validate_alert(False)
-                        self.call_timer.stop()  # bloque le timer "calling" si plus personne
-                    else:
-                        if patient["status"] == "calling":
-                            self.btn_pause.setEnabled(False)
-                            self.btn_validate.setEnabled(True)
-                            self.call_timer.start()  # démarre le timer "calling" si le patient en appel
-                        elif patient["status"] == "ongoing":
-                            self.btn_pause.setEnabled(True)
-                            self.btn_validate.setEnabled(False)
-                            self._set_validate_alert(False)
-                            self.call_timer.stop()  # bloque le timer "calling" si patient pris en charge
-        except:
-            pass
+                self.logger.debug("Boutons patient inchangés : %s", reason)
+            return
+        if not hasattr(self, "btn_pause") or not hasattr(self, "btn_validate"):
+            # Interface de connexion affichée : les boutons n'existent pas encore.
+            self.logger.debug("Boutons patient absents (écran de connexion) : %s", reason)
+            return
+        self.logger.debug("Boutons patient : %s", reason)
+        self.btn_pause.setEnabled(decision.pause_enabled)
+        self.btn_validate.setEnabled(decision.validate_enabled)
+        if decision.validate_alert is not None:
+            self._set_validate_alert(decision.validate_alert)
+        if decision.start_call_timer:
+            self.call_timer.start()   # patient en appel : minuteur de relance
+        else:
+            self.call_timer.stop()    # plus personne à valider : minuteur arrêté
 
-    def create_login_widget(self):
-        login_widget = QWidget()
-        login_layout = QVBoxLayout()
-
-        # Ajouter un label
-        self.label_connexion = QLabel("Connectez-vous")
-        self.label_connexion.setAlignment(Qt.AlignCenter)  # Centre le texte
-        font = self.label_connexion.font()
-        font.setPointSize(16)  # Augmente la taille de la police (ajustez selon vos besoins)
-        font.setBold(True)  # Met le texte en gras
-        self.label_connexion.setFont(font)
-        login_layout.addWidget(self.label_connexion)
-
-        # Ajouter un champ pour les initiales
-        self.initials_input = QLineEdit()
-        self.initials_input.setPlaceholderText("Entrez vos initiales")
-        login_layout.addWidget(self.initials_input)
-
-        # Checkbox pour la deconnexion sur tous les autres postes
-        self.checkbox_on_all = QCheckBox("Déconnexion sur tous les autres postes")
-        self.checkbox_on_all.setChecked(True)
-        login_layout.addWidget(self.checkbox_on_all)
-
-        # Ajouter un bouton de validation
-        validate_button = DebounceButton("Valider")
-        validate_button.clicked.connect(self.validate_login)
-        login_layout.addWidget(validate_button)
-
-        # Ajouter un bouton de préférences
-        preferences_button = QPushButton("Préférences")
-        preferences_button.clicked.connect(self.show_preferences_dialog)
-        login_layout.addWidget(preferences_button)
-
-        login_widget.setLayout(login_layout)
-
-        # Connecter la touche Enter à la fonction de validation
-        self.initials_input.returnPressed.connect(self.validate_login)
-
-        return login_widget
-    
     def deconnection(self):
         """ Déconnexion demandée par l'utilisateur. On affiche « Déconnexion en
         cours » et on NE bascule PAS immédiatement sur l'écran de connexion : la
@@ -1688,7 +949,7 @@ class MainWindow(QMainWindow):
     def deconnexion_interface(self):
         self.logger.debug("Affichage de l'interface de connexion")
         # Créer et définir le widget de connexion
-        login_widget = self.create_login_widget()
+        login_widget = create_login_widget(self)
         self.setCentralWidget(login_widget)
 
         self.hide_patient_list()
@@ -1705,10 +966,7 @@ class MainWindow(QMainWindow):
         handle_disconnect_result (finalise l'UI après confirmation). Le chemin
         automatique (staff déjà absent côté serveur, 204) l'appelle sans handler
         (fire-and-forget), l'UI ayant déjà été mise à jour selon l'état serveur. """
-        url = f'{self.web_url}/app/counter/remove_staff'
-        data = {'counter_id': self.counter_id}
-        self._submit(url, method='POST', data=data,
-                     on_result=on_result, key="disconnect")
+        self.api.logout_staff(on_result=on_result)
 
     def enable_initials_input(self):
         """ Permet d'activer le champ des initiales lors de l'initialisation + focus
@@ -1759,11 +1017,8 @@ class MainWindow(QMainWindow):
         cb_deconnexion_on_all = self.checkbox_on_all.isChecked()
 
         if initials:
-            url = f'{self.web_url}/app/counter/update_staff'
-            data = {'initials': initials, 'counter_id': self.counter_id, "deconnect": cb_deconnexion_on_all, "app": True}
-
-            self._submit(url, method='POST', data=data,
-                         on_result=self.handle_login_result, key="login")
+            self.api.login_staff(initials, cb_deconnexion_on_all,
+                                 on_result=self.handle_login_result)
 
     @Slot(object)
     def handle_login_result(self, result):
@@ -1806,7 +1061,7 @@ class MainWindow(QMainWindow):
         # est déjà affichée (connexion staff, resync), on rétablit le panneau
         # compact docké si le mode est actif.
         if self.compact_mode and self.isVisible():
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
     
     def show_preferences_dialog(self):
         # Un SEUL mécanisme d'application (point 7) : le dialogue se contente de
@@ -1818,205 +1073,16 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.apply_preferences()
 
-    def _shortcut_items(self):
-        """ Couples (action, texte du raccourci) dans un ordre stable. """
-        texts = {
-            "next": self.next_patient_shortcut,
-            "validate": self.validate_patient_shortcut,
-            "pause": self.pause_shortcut,
-            "recall": self.recall_shortcut,
-            "deconnect": self.deconnect_shortcut,
-        }
-        return [(action, texts[action]) for action in ACTIONS]
 
     def setup_global_shortcut(self):
         """ (Ré)installe les raccourcis selon le mode courant. Nom conservé car
-        appelé au démarrage (setup_ui) et après changement de préférences. """
-        self._install_shortcuts()
+        appelé au démarrage (setup_ui) et après changement de préférences ; le
+        mécanisme lui-même vit dans ``ShortcutManager``. """
+        self.shortcuts.install()
 
-    def _install_shortcuts(self):
-        """ Retire tous les raccourcis existants (hooks keyboard + QShortcut) puis
-        installe le mécanisme correspondant au mode : aucun (désactivés), QShortcut
-        actifs au premier plan, ou hooks globaux. Un SEUL mécanisme est actif à la
-        fois -> pas de double déclenchement.
 
-        SÉRIALISÉ (point 7) : un verrou empêche deux installations de se chevaucher,
-        et on attend la fin de l'éventuel thread d'enregistrement global précédent
-        AVANT de retirer/réinstaller — sinon unhook_all_hotkeys et add_hotkey
-        pourraient s'exécuter en concurrence (la bibliothèque keyboard n'est pas
-        thread-safe), laissant des hooks orphelins ou dupliqués. """
-        # Verrou créé paresseusement : robustesse si l'objet n'est pas passé par
-        # __init__ (faux self de tests).
-        lock = getattr(self, "_shortcut_lock", None)
-        if lock is None:
-            lock = self._shortcut_lock = threading.Lock()
-        with lock:
-            prev = getattr(self, "_shortcut_thread", None)
-            if prev is not None and prev.is_alive():
-                # Attente bornée : l'enregistrement global précédent doit être
-                # terminé avant de toucher aux hooks.
-                prev.join(timeout=2.0)
-            self._shortcut_thread = None
-            self._remove_all_shortcuts()
-            mode = getattr(self, "shortcut_mode", DEFAULT_MODE)
-            if mode == MODE_DISABLED:
-                self.logger.info("Raccourcis clavier désactivés.")
-                return
-            if mode == MODE_FOCUSED:
-                self._install_focused_shortcuts()
-            else:
-                self._install_global_shortcuts()
-
-    def _remove_all_shortcuts(self):
-        """ Désinstalle hooks keyboard globaux ET QShortcut premier plan. Retirer
-        les anciens avant d'ajouter évite l'empilement de hooks (une pression
-        déclenchait l'action autant de fois que de hooks accumulés). """
-        try:
-            keyboard.unhook_all_hotkeys()
-        except Exception as e:
-            self.logger.debug("unhook_all_hotkeys : %s", e)
-        for sc in getattr(self, "_qshortcuts", []):
-            try:
-                sc.setEnabled(False)
-                sc.deleteLater()
-            except RuntimeError:
-                pass
-        self._qshortcuts = []
-
-    def _install_focused_shortcuts(self):
-        """ Mode « premier plan » : QShortcut avec contexte ApplicationShortcut ->
-        n'agissent que lorsqu'une fenêtre de PharmaFile est active. Aucun hook
-        système : pas de conflit avec le progiciel quand l'utilisateur travaille
-        ailleurs. """
-        self._qshortcuts = []
-        for action, text in self._shortcut_items():
-            seq = to_qt_key_sequence(text)
-            if not seq:
-                continue
-            shortcut = QShortcut(QKeySequence(seq), self)
-            shortcut.setContext(Qt.ApplicationShortcut)
-            shortcut.activated.connect(lambda a=action: self.shortcut_triggered.emit(a))
-            self._qshortcuts.append(shortcut)
-        self.logger.info("Raccourcis actifs au premier plan (%s installés).",
-                         len(self._qshortcuts))
-
-    def _install_global_shortcuts(self):
-        """ Mode « global » : hooks système via la bibliothèque keyboard. Comme
-        l'installation peut être un peu lente, elle se fait en arrière-plan ; les
-        échecs (touche invalide, refus de Windows) sont collectés et signalés au
-        thread GUI. """
-        self._shortcut_thread = threading.Thread(
-            target=self._register_global_hotkeys, daemon=True)
-        self._shortcut_thread.start()
-
-    def _register_global_hotkeys(self):
-        """ Enregistre chaque raccourci global (hors thread GUI). Chaque callback
-        ne fait QU'ÉMETTRE le signal (thread-safe) ; aucune manipulation de widget
-        ici. Les échecs sont remontés via shortcut_registration_failed. """
-        failures = []
-        installed = 0
-        for action, text in self._shortcut_items():
-            hotkey = to_keyboard_hotkey(text)
-            if not hotkey:
-                continue
-            try:
-                keyboard.add_hotkey(hotkey, self._emit_shortcut, args=(action,))
-                installed += 1
-            except Exception as e:
-                # Touche inconnue ou refus de l'OS : on n'interrompt pas les
-                # autres, on collecte pour avertir l'utilisateur.
-                self.logger.warning("Raccourci '%s' (%s) refusé : %s", action, text, e)
-                failures.append((ACTION_LABELS.get(action, action), text, str(e)))
-        self.logger.info("Raccourcis globaux installés (%s).", installed)
-        if failures:
-            self.shortcut_registration_failed.emit(failures)
-
-    def _emit_shortcut(self, action):
-        """ Callback keyboard (hors thread GUI) : émission thread-safe uniquement. """
-        self.shortcut_triggered.emit(action)
-
-    def _connect_shortcut_signals(self):
-        """ Connecte (UNE seule fois, dans __init__) le signal de raccourci à son
-        unique slot de traitement et le signal d'échec à l'avertissement. La
-        QueuedConnection garantit que le traitement (manipulation de widgets)
-        s'exécute dans le thread graphique, jamais dans le thread keyboard. """
-        self.shortcut_triggered.connect(self._dispatch_shortcut, Qt.QueuedConnection)
-        self.shortcut_registration_failed.connect(
-            self._warn_shortcut_failures, Qt.QueuedConnection)
-
-    @Slot(str)
-    def _dispatch_shortcut(self, action):
-        """ Point d'entrée unique de toute action déclenchée par raccourci (mode
-        global ou premier plan), exécuté dans le thread GUI : confirmation
-        éventuelle des actions sensibles, retour visuel bref, puis exécution. """
-        label = ACTION_LABELS.get(action, action)
-        # Confirmation facultative des actions sensibles (ex. déconnexion).
-        if action in SENSITIVE_ACTIONS and getattr(self, "confirm_sensitive_shortcuts", False):
-            if not self._confirm_sensitive_action(label):
-                self.logger.debug("Action sensible '%s' annulée par l'utilisateur", action)
-                return
-        # Affiche brièvement quelle action a été déclenchée.
-        if getattr(self, "shortcut_feedback", False):
-            self._show_shortcut_feedback(label)
-        self._perform_shortcut_action(action)
-
-    def _perform_shortcut_action(self, action):
-        """ Exécute l'action. Pour next/validate/pause, on simule le CLIC du bouton
-        (déjà connecté à la bonne fonction + anti-rebond) : appeler la fonction en
-        plus déclencherait l'action deux fois. Gardes hasattr : sans effet sur
-        l'écran de connexion (boutons absents). """
-        if action == "next":
-            if hasattr(self, 'btn_next'):
-                self.btn_next.animateClick()
-        elif action == "validate":
-            if hasattr(self, 'btn_validate'):
-                self.btn_validate.animateClick()
-        elif action == "pause":
-            if hasattr(self, 'btn_pause'):
-                self.btn_pause.animateClick()
-        elif action == "recall":
-            self.recall()
-        elif action == "deconnect":
-            self.logger.debug("Raccourci de déconnexion déclenché")
-            self.deconnection()
-
-    def _confirm_sensitive_action(self, label):
-        """ Demande confirmation avant une action sensible déclenchée par raccourci.
-        Retourne True si l'utilisateur confirme. """
-        box = QMessageBox(self)
-        box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("Confirmer l'action")
-        box.setText(f"Confirmer l'action « {label} » déclenchée par raccourci ?")
-        yes = box.addButton("Oui", QMessageBox.YesRole)
-        box.addButton("Non", QMessageBox.NoRole)
-        box.setDefaultButton(yes)
-        box.exec()
-        return box.clickedButton() is yes
-
-    def _show_shortcut_feedback(self, label):
-        """ Notification brève indiquant l'action déclenchée. force=True : ce retour
-        a sa propre préférence (shortcut_feedback), indépendante du filtre général
-        des notifications. """
-        self.show_notification(
-            {"origin": "shortcut_feedback", "message": f"Raccourci : {label}"},
-            internal=True, force=True)
-
-    @Slot(object)
-    def _warn_shortcut_failures(self, failures):
-        """ Avertit l'utilisateur quand Windows/keyboard a refusé un ou plusieurs
-        raccourcis globaux (touche invalide, combinaison réservée…). """
-        lines = "\n".join(f"• {label} ({text})" for label, text, _err in failures)
-        QMessageBox.warning(
-            self, "Raccourcis non enregistrés",
-            "Windows a refusé l'enregistrement de ces raccourcis globaux :\n\n"
-            f"{lines}\n\nModifiez-les dans les préférences ou passez en mode "
-            "« actifs au premier plan ».")
-        
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
-            url = f'{self.web_url}/call_specific_patient/{self.counter_id}/{patient_select_id}'
-            self._submit(url, method='POST', on_result=self.handle_result,
-                         key=f"call_specific:{patient_select_id}")
+        self.api.call_specific_patient(patient_select_id, on_result=self.handle_result)
 
 
     def _on_token_refreshed(self, token):
@@ -2030,17 +1096,15 @@ class MainWindow(QMainWindow):
         self.app_token = None
 
     def get_app_token(self):
-        """ Récupère un token applicatif via le gestionnaire réseau (qui l'installe
-        sur sa session pour que toutes les requêtes l'envoient automatiquement).
+        """ Demande un jeton applicatif à la couche d'accès (bloquant, à appeler
+        depuis un thread de fond : StartupWorker) et met à jour le miroir local.
         Lève une exception si l'authentification échoue, pour que l'appelant
-        (démarrage, renouvellement) le sache clairement.
-
-        À appeler depuis un thread de fond (StartupWorker) : bloque le temps de la
-        requête. """
-        token = self.network_manager.fetch_token_blocking()
-        if not token:
+        (démarrage, renouvellement) le sache clairement. """
+        try:
+            token = self.api.fetch_token()
+        except Exception:
             self.app_token = None
-            raise RuntimeError("Échec de l'obtention du token")
+            raise
         # _on_token_refreshed a déjà (ou va) mettre self.app_token à jour via le
         # signal ; on le pose aussi ici pour ne pas dépendre de l'ordonnancement.
         self.app_token = token
@@ -2056,63 +1120,6 @@ class MainWindow(QMainWindow):
             self.logger.warning("Échec du renouvellement du token : %s", e)
             return False
 
-    def make_request_thread(self, url, method='GET', data=None, headers=None):
-        """ Crée un RequestHandle via le gestionnaire réseau centralisé : la
-        requête est traitée par l'unique worker (jeton courant ajouté au moment de
-        l'appel, timeout, renouvellement sur 401 avec un seul rejeu). L'appelant
-        connecte ``result``/``finished`` puis appelle ``start()`` (comme avant). """
-        idempotency_key = None
-        if headers and "X-Idempotency-Key" in headers:
-            # On passe la clé d'idempotence par le canal dédié du gestionnaire.
-            headers = dict(headers)
-            idempotency_key = headers.pop("X-Idempotency-Key")
-        return self.network_manager.make_handle(url, method=method, data=data,
-                                                headers=headers, idempotency_key=idempotency_key)
-
-    def _submit(self, url, method='GET', data=None, headers=None,
-                on_result=None, key=None, busy_button=None):
-        """ Crée, suit et démarre une requête réseau de façon sûre.
-
-        - Conserve une référence forte au handle jusqu'à ``finished`` (le handle
-          n'est plus écrasé dans un self.thread partagé -> plus de perte de suivi
-          ni de signal perdu).
-        - ``key`` : si fournie et déjà active, la requête est refusée (interdit une
-          seconde action identique tant que la première est en cours).
-        - ``busy_button`` : passé en état occupé au lancement et rétabli à la fin
-          (le rétablissement est branché AVANT start() -> pas de course).
-        Retourne le handle, ou None si l'action a été refusée (doublon/arrêt). """
-        if self.shutting_down:
-            self.logger.debug("Action ignorée (arrêt en cours) : %s", key)
-            return None
-        if self._tasks.is_active(key):
-            self.logger.debug("Action ignorée (déjà en cours) : %s", key)
-            return None
-
-        handle = self.make_request_thread(url, method=method, data=data, headers=headers)
-        self._tasks.add(handle, key)
-        if busy_button is not None:
-            busy_button.set_busy(True)
-        if on_result is not None:
-            handle.result.connect(on_result)
-
-        def _cleanup():
-            self._tasks.remove(handle, key)
-            if busy_button is not None:
-                busy_button.set_busy(False)
-
-        # Branché avant start() : même si le worker répond très vite, le nettoyage
-        # (et le rétablissement du bouton) ne peut pas être manqué.
-        handle.finished.connect(_cleanup)
-        handle.start()
-        return handle
-
-    def _track_worker(self, worker):
-        """ Garde une référence à un QThread (StartupWorker/ResyncWorker) jusqu'à
-        sa fin, pour ne pas le détruire prématurément s'il est encore en cours
-        ("QThread: Destroyed while thread is still running"). """
-        self._tasks.add(worker)
-        worker.finished.connect(lambda: self._tasks.remove(worker))
-        return worker
 
     def apply_preferences(self):
         """ Appelé après enregistrement des préférences. Compare les anciennes et
@@ -2169,7 +1176,7 @@ class MainWindow(QMainWindow):
         # Applique (ou retire) la forme de panneau compact. Utile aussi sur l'écran
         # de connexion : la fenêtre prend/quitte la forme d'un panneau docké.
         if self.compact_mode and self.isVisible():
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
 
     def _reconnect_services(self, old_config, old_staff_present):
         """ Reconnexion complète après changement de serveur/secret/comptoir, dans
@@ -2201,8 +1208,8 @@ class MainWindow(QMainWindow):
         #    déconnecté (l'utilisateur se ré-identifiera sur le nouveau comptoir).
         self.app_token = None
         self.staff_id = None
-        if hasattr(self, "network_manager"):
-            self.network_manager.clear_token()
+        if hasattr(self, "api"):
+            self.api.clear_token()
 
         # Repartir d'un état local vierge (rien de l'ancien comptoir).
         self.queue_revision = -1
@@ -2210,11 +1217,9 @@ class MainWindow(QMainWindow):
         self.list_patients = []
         self.socket_was_disconnected = False
 
-        # 5. Nouveau jeton + snapshot en arrière-plan.
-        worker = StartupWorker(self)
-        worker.finished_startup.connect(self._on_reconnect_ready)
-        self._track_worker(worker)
-        worker.start()
+        # 5. Nouveau jeton + snapshot en arrière-plan (même séquence qu'au
+        #    démarrage, mais la suite reprend la connexion plutôt que l'init).
+        self.session.start_startup(self._on_reconnect_ready)
 
     def _on_reconnect_ready(self, connected, state):
         """ Fin de la reconnexion : applique le snapshot du nouveau comptoir,
@@ -2233,7 +1238,7 @@ class MainWindow(QMainWindow):
         self.create_interface()
         self.load_skin()
         if self.compact_mode and self.isVisible():
-            self.apply_panel_mode()
+            self.placement.apply_panel_mode()
         self.setup_user()
         # Le WebSocket est relancé sur le NOUVEau serveur (nouvelle URL) dans tous
         # les cas : s'il est momentanément injoignable, la boucle de reconnexion
@@ -2266,14 +1271,9 @@ class MainWindow(QMainWindow):
             self.show_preferences_dialog()
 
     def init_audio(self):
-        self.audio_player = AudioPlayer(self)
-        sound_path = resource_path("assets/sounds/already_taken.mp3")
-        self.audio_player.add_sound("patient_taken", sound_path)
-        sound_path = resource_path("assets/sounds/ding.mp3")
-        self.audio_player.add_sound("ding", sound_path)
-        sound_path = resource_path("assets/sounds/please_validate.mp3")
-        self.audio_player.add_sound("please_validate", sound_path)
-        self.audio_player.set_volume(self.sound_volume) 
+        """ Prépare les sons de l'application (chargés une fois, rejoués ensuite
+        par leur nom : « ding », « patient_taken », « please_validate »). """
+        self.audio_player = build_audio_player(self, self.sound_volume)
 
     def closeEvent(self, event):
         # Arrêt propre, ordonné et BORNÉ dans le temps. Chaque étape a un délai
@@ -2286,23 +1286,17 @@ class MainWindow(QMainWindow):
         # Mémorise taille/position/moniteur AVANT de marquer l'arrêt (la fenêtre
         # est encore valide et affichée).
         try:
-            self.save_window_geometry()
+            self.placement.save()
         except Exception as e:
             self.logger.debug("Sauvegarde de la géométrie à la fermeture : %s", e)
 
         self.shutting_down = True
         self.logger.info("Fermeture de l'App : arrêt propre en cours")
 
-        # 1. Plus aucune nouvelle action déclenchée par les raccourcis clavier.
-        #    On attend d'abord (borné) la fin d'un enregistrement global en cours
-        #    pour qu'il ne rajoute pas de hook APRÈS le unhook (point 7).
-        prev_shortcut_thread = getattr(self, "_shortcut_thread", None)
-        if prev_shortcut_thread is not None and prev_shortcut_thread.is_alive():
-            prev_shortcut_thread.join(timeout=2.0)
-        try:
-            keyboard.unhook_all_hotkeys()
-        except Exception as e:
-            self.logger.debug("unhook_all_hotkeys à l'arrêt : %s", e)
+        # 1. Plus aucune nouvelle action déclenchée par les raccourcis clavier
+        #    (attente bornée de l'enregistrement en cours puis retrait des hooks).
+        if hasattr(self, "shortcuts"):
+            self.shortcuts.shutdown()
 
         # 2. Arrêt des timers.
         if hasattr(self, 'call_timer'):
@@ -2318,12 +1312,12 @@ class MainWindow(QMainWindow):
 
         # 5. Arrêt du gestionnaire réseau (worker unique) : purge la file et
         #    débloque les appels bloquants éventuels des workers.
-        if hasattr(self, 'network_manager'):
-            self.network_manager.stop(timeout_ms=3000)
+        if hasattr(self, 'api'):
+            self.api.stop(timeout_ms=3000)
 
         # 6. Attente bornée des workers encore actifs (StartupWorker/ResyncWorker),
         #    désormais débloqués, avant destruction -> pas de "QThread: Destroyed".
-        self._wait_active_workers(total_timeout_ms=2000)
+        self.session.wait_active_workers(total_timeout_ms=2000)
 
         # 7. Fenêtre de chargement.
         if self.loading_screen:
@@ -2342,31 +1336,10 @@ class MainWindow(QMainWindow):
         serveur/comptoir courants (fermeture de l'application). La libération doit
         se faire AVANT d'invalider le jeton (le jeton courant vaut pour l'ancien
         serveur). """
-        if not hasattr(self, 'network_manager'):
+        if not hasattr(self, 'api'):
             return
-        base_url = url if url is not None else self.web_url
-        target_counter = counter_id if counter_id is not None else self.counter_id
-        url = f'{base_url}/app/counter/remove_staff'
-        data = {'counter_id': target_counter}
-        try:
-            result = self.network_manager.request_blocking(
-                url, method='POST', data=data, timeout=(2, 3), timeout_s=4)
-            if result.status == 200:
-                self.logger.info("Comptoir libéré côté serveur")
-            else:
-                self.logger.warning("Libération du comptoir : statut %s", result.status)
-        except Exception as e:
-            self.logger.warning("Libération du comptoir échouée : %s", e)
+        self.api.release_counter_blocking(url=url, counter_id=counter_id)
 
-    def _wait_active_workers(self, total_timeout_ms=2000):
-        """ Attend (borné) la fin des QThread encore actifs avant destruction, en
-        partageant un budget de temps global. """
-        deadline = time.monotonic() + total_timeout_ms / 1000.0
-        for task in self._tasks.snapshot():
-            if isinstance(task, QThread) and task.isRunning():
-                remaining = int(max(0.0, deadline - time.monotonic()) * 1000)
-                if not task.wait(remaining or 1):
-                    self.logger.warning("Un worker n'a pas terminé dans le délai d'arrêt")
 
     # Note : l'ancien couple connexion_for_app_init()/handle_init_app() (requête
     # /app/counter/init_app pour autocalling + papier + activités staff +
@@ -2432,18 +1405,6 @@ class MainWindow(QMainWindow):
         self.list_patients = patient
         self.refresh_patient_lists()
 
-    def _rebuild_tray_patient_menu(self):
-        """Reconstruit le menu contextuel du systray « Prochain patient » (appelé
-        à son ouverture via aboutToShow)."""
-        menu = self.tray_patient_menu
-        menu.clear()
-        for patient in (self.list_patients or []):
-            try:
-                action_text = f"{patient['call_number']} - {patient['activity']}"
-            except (KeyError, TypeError):
-                continue
-            action = menu.addAction(action_text)
-            action.triggered.connect(lambda checked, p=patient: self.select_patient(p['id']))
 
     def update_patient_widget(self):
         """Met la vue de la file à jour via son modèle, de façon différentielle :
@@ -2534,88 +1495,30 @@ class MainWindow(QMainWindow):
         self.call_web_function_validate_and_call_specifique(patient_select_id)
 
 
-    def on_tray_icon_validation_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.call_web_function_validate()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            pass
-
-
-    def on_tray_icon_call_next_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.call_web_function_validate_and_call_next()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            pass
-        
-    def on_tray_icon_pause_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.call_web_function_pause()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            pass
 
     def load_skin(self):
-        if self.selected_skin:
-            qss_file = os.path.join("skins", f"{self.selected_skin}.qss")
-            if os.path.exists(qss_file):
-                with open(qss_file, "r") as f:
-                    qss = f.read()
-                    self.setStyleSheet(qss)
-                    # Appliquer le style à toute l'application
-                    QApplication.instance().setStyleSheet(qss)
+        """ Applique le skin choisi. Le fichier est localisé par ``resources``
+        (chemin absolu) : le skin s'applique donc aussi dans un build PyInstaller
+        onefile et quel que soit le répertoire de lancement. """
+        if not self.selected_skin:
+            return
+        qss = resources.read_skin(self.selected_skin)
+        if qss is None:
+            self.logger.warning("Skin '%s' introuvable ou illisible : style par défaut conservé",
+                                self.selected_skin)
+            return
+        self.setStyleSheet(qss)
+        # Appliquer le style à toute l'application
+        QApplication.instance().setStyleSheet(qss)
 
-    def setup_systray(self):
-        """ Création du Systray"""        
-        self.logger.info("Création du Systray...")
-        icon_path = resource_path("assets/images/pause.ico")
-        self.trayIcon1 = QSystemTrayIcon(QIcon(icon_path), self)
-        self.trayIcon1.setToolTip("Pause")
-        tray_menu1 = QMenu()
-        open_action1 = tray_menu1.addAction("Open Main Window")
-        open_action1.triggered.connect(self.call_web_function_pause)
-        self.trayIcon1.setContextMenu(tray_menu1)
-        self.trayIcon1.activated.connect(self.on_tray_icon_pause_activated)
-        self.trayIcon1.setVisible(True)
-        self.trayIcon1.show()
-
-
-        icon_path = resource_path("assets/images/next_orange.ico")
-        self.trayIcon2 = QSystemTrayIcon(QIcon(icon_path), self)
-        self.trayIcon2.setToolTip("Prochain patient")
-        # Menu persistant reconstruit à son ouverture (aboutToShow) : la liste des
-        # patients n'est plus reconstruite dans le systray à chaque évènement.
-        self.tray_patient_menu = QMenu()
-        self.tray_patient_menu.aboutToShow.connect(self._rebuild_tray_patient_menu)
-        self.trayIcon2.setContextMenu(self.tray_patient_menu)
-        self.trayIcon2.activated.connect(self.on_tray_icon_call_next_activated)
-        self.trayIcon2.setVisible(True)
-        self.trayIcon2.show()
-
-
-        icon_path = resource_path("assets/images/check.ico")
-        self.trayIcon3 = QSystemTrayIcon(QIcon(icon_path), self)
-        self.trayIcon3.setToolTip("Valider patient")
-        tray_menu3 = QMenu()
-        open_action3 = tray_menu3.addAction("Call Web Function")
-        open_action3.triggered.connect(self.call_web_function_validate)
-        self.trayIcon3.setContextMenu(tray_menu3)
-        self.trayIcon3.activated.connect(self.on_tray_icon_validation_activated)
-        self.trayIcon3.setVisible(True)
-        self.trayIcon3.show()
 
     def cleanup_systray(self):
-        # Arrêt propre du worker réseau (fermeture de l'App)
-        if hasattr(self, 'network_manager'):
-            self.network_manager.stop()
-        # Supprime les icônes de la barre d'état système (fermeture de l'App)
-        if hasattr(self, 'trayIcon1'):
-            self.trayIcon1.setVisible(False)
-            self.trayIcon1.deleteLater()
-        if hasattr(self, 'trayIcon2'):
-            self.trayIcon2.setVisible(False)
-            self.trayIcon2.deleteLater()
-        if hasattr(self, 'trayIcon3'):
-            self.trayIcon3.setVisible(False)
-            self.trayIcon3.deleteLater()
+        """ Fermeture de l'application : arrêt du worker réseau puis retrait des
+        icônes de la zone de notification (sinon elles peuvent survivre au
+        processus jusqu'au prochain survol de la souris). """
+        if hasattr(self, 'api'):
+            self.api.stop()
+        self.tray.cleanup()
 
     def alert_if_not_connected(self):
         """ Affiche une alerte si le serveur n'est pas accessible"""
@@ -2631,135 +1534,18 @@ class MainWindow(QMainWindow):
         self.call_timer = QTimer(self)
         self.call_timer.setInterval(self.timer_after_calling * 1000)
         self.call_timer.timeout.connect(self.call_timer_delay_expired)
+def setup_application(app):
+    """ Prépare l'application Qt AVANT toute lecture de configuration : identité
+    (dont dépend l'emplacement de QSettings) puis reprise des réglages laissés
+    par les versions qui s'annonçaient encore sous l'identité d'exemple. """
+    apply_identity(app)
+    migrate_legacy_settings(QSettings(), legacy_sources(QSettings))
+    return app
 
-
-class ConnectionStatusIndicator(QWidget):
-    # Couleur de teinte par état (pour ceux qui perçoivent la couleur).
-    _STATUS_COLOR = {
-        "connected": "#2e7d32",     # vert
-        "connecting": "#e67e22",    # orange
-        "disconnected": "#c0392b",  # rouge
-    }
-    # Libellé texte par état (nom accessible + infobulle) : l'état ne repose pas
-    # que sur la couleur/la forme, il est aussi nommé pour les lecteurs d'écran.
-    _STATUS_LABEL = {
-        "connected": "Temps réel connecté",
-        "connecting": "Reconnexion en cours",
-        "disconnected": "Temps réel déconnecté",
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(30, 30)
-        self.status = "connected"
-        self.last_connection_time = None
-        self.reconnection_attempts = 0
-        self.setMouseTracking(True)
-
-        # Charger les SVG avec vos noms de fichiers
-        self.renderers = {}
-        status_files = {
-            "connected": "connection_true.svg",
-            "connecting": "connection_standing.svg",
-            "disconnected": "connection_false.svg"
-        }
-
-        for status, filename in status_files.items():
-            renderer = QSvgRenderer()
-            svg_path = resource_path(f"assets/images/{filename}")
-            if renderer.load(svg_path):
-                self.renderers[status] = renderer
-            else:
-                logger.warning("Erreur lors du chargement de %s", filename)
-
-        self._refresh_accessibility()
-
-    def set_status(self, status, reconnection_attempts=None):
-        logger.debug("Indicateur de connexion : %s", status)
-        try:
-            if self.isVisible():
-                self.status = status
-                if status == "connected":
-                    self.last_connection_time = QDateTime.currentDateTime()
-                    self.reconnection_attempts = 0
-                elif reconnection_attempts is not None:
-                    self.reconnection_attempts = reconnection_attempts
-                self.update_tooltip()
-                self.update()
-        except RuntimeError:
-            pass
-
-    def _status_tooltip(self):
-        """Texte d'état complet (base + horodatage/tentatives)."""
-        base = self._STATUS_LABEL.get(self.status, self._STATUS_LABEL["disconnected"])
-        if self.status == "connected":
-            if self.last_connection_time:
-                time_str = self.last_connection_time.toString("HH:mm:ss")
-                return f"{base} depuis {time_str}"
-            return base
-        if self.reconnection_attempts > 0:
-            return f"{base}\nNombre de tentatives de reconnexion : {self.reconnection_attempts}"
-        return base
-
-    def _refresh_accessibility(self):
-        """Nom accessible = état courant, pour les lecteurs d'écran (point 28)."""
-        label = self._STATUS_LABEL.get(self.status, self._STATUS_LABEL["disconnected"])
-        self.setAccessibleName(f"État de la connexion temps réel : {label}")
-        self.setAccessibleDescription(self._status_tooltip())
-
-    def update_tooltip(self):
-        try:
-            if self.isVisible():
-                self.setToolTip(self._status_tooltip())
-                self._refresh_accessibility()
-        except RuntimeError:
-            pass
-
-    def paintEvent(self, event):
-        try:
-            if self.isVisible() and self.status in self.renderers:
-                painter = QPainter(self)
-                painter.setRenderHint(QPainter.Antialiasing)
-                self.renderers[self.status].render(painter, self.rect())
-
-                # Teinte l'icône selon l'état : garde la forme (anti-aliasée) mais
-                # la recolore (SourceIn ne peint que là où l'icône a de l'alpha).
-                color = self._STATUS_COLOR.get(self.status)
-                if color is not None:
-                    painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
-                    painter.fillRect(self.rect(), QColor(color))
-                    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-
-                # « connecting » utilise le même dessin SVG que « connected » : la
-                # couleur seule ne suffirait pas à les distinguer en niveaux de
-                # gris. On superpose trois points (badge « en cours ») pour une
-                # distinction non colorée.
-                if self.status == "connecting":
-                    self._paint_progress_dots(painter)
-        except RuntimeError:
-            pass
-
-    def _paint_progress_dots(self, painter):
-        rect = self.rect()
-        dot_r = max(1, rect.width() // 12)
-        gap = dot_r * 3
-        cy = rect.bottom() - dot_r - 1
-        cx0 = rect.center().x() - gap
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#1a1a1a"))
-        for i in range(3):
-            painter.drawEllipse(cx0 + i * gap - dot_r, cy - dot_r, dot_r * 2, dot_r * 2)
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    
-    app.setApplicationName("PySide6 Web Browser Example2")
-    app.setOrganizationName("MyCompany2")
-    app.setOrganizationDomain("mycompany.com")
+    app = setup_application(QApplication(sys.argv))
 
-    #stylesheet = load_stylesheet("Incrypt.qss")
-    #app.setStyleSheet(stylesheet)
-    
     # MainWindow.show() est appelé en interne une fois l'initialisation
     # asynchrone terminée (_on_startup_ready), pas ici : l'appeler tout de
     # suite afficherait une fenêtre encore vide pendant le chargement.

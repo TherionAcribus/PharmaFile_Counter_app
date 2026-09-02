@@ -17,13 +17,24 @@ Pour éviter les erreurs connues lors de la compilation :
 
 ## 2. Le fichier de configuration (.spec)
 
-Le fichier `PharmaFile.spec` contient toute la configuration pour PyInstaller.
+`PharmaFile.spec` est le **seul** fichier de configuration PyInstaller du projet.
+(Un `main.spec` obsolète — sans les exclusions serveur, sans les backends
+`keyring` et sans les dossiers `skins/`/`templates/` — traînait à la racine :
+il a été supprimé pour qu'il n'y ait aucun doute sur le fichier à utiliser.)
+
 Il gère déjà l'inclusion des dossiers nécessaires :
 - `assets/` (images, sons)
 - `skins/` (thèmes)
 - `templates/` (fichiers HTML)
 
 Si vous ajoutez de nouveaux dossiers de ressources, pensez à les ajouter dans la section `datas=[]` du fichier `.spec`.
+
+> **Accès aux ressources dans le binaire.** Un build onefile décompresse ces
+> dossiers dans un répertoire temporaire (`sys._MEIPASS`) : un chemin relatif
+> n'y désigne rien. Toute ressource doit donc être ouverte via
+> `resources.resource_path()` (ou `resources.read_skin()` pour un thème) —
+> jamais avec un chemin du type `"skins/Xxx.qss"`. Un test le vérifie
+> (`tests/test_resources.py`).
 
 Exemple de configuration importante dans `exe = EXE(...)` :
 - `console=False` : Pour ne pas avoir de fenêtre noire (invite de commande) au lancement.

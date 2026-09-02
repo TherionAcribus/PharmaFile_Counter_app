@@ -7,9 +7,9 @@ DÉSENREGISTREMENT systématique (unhook des hooks keyboard + désactivation/
 suppression des QShortcut) avant toute (ré)installation — sinon les hooks
 s'empileraient et une pression déclencherait l'action plusieurs fois.
 
-On appelle les vraies méthodes avec un faux ``self`` ; ``main.keyboard`` est
-monkeypatché (aucun hook système réel) et les installateurs concrets
-(_install_focused_shortcuts / _install_global_shortcuts) sont stubbés pour ne
+On appelle les vraies méthodes de ``ShortcutManager`` avec un faux ``self`` ;
+``shortcut_manager.keyboard`` est monkeypatché (aucun hook système réel) et les installateurs concrets
+(_install_focused / _install_global) sont stubbés pour ne
 tester ici que l'aiguillage.
 """
 
@@ -23,6 +23,11 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import main  # noqa: E402
+import shortcut_manager  # noqa: E402
+from shortcut_manager import ShortcutManager  # noqa: E402
+from shortcut_config import (  # noqa: E402
+    MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
+)
 
 
 class FakeKeyboard:
@@ -65,21 +70,25 @@ class FakeThread:
 @pytest.fixture
 def fake_keyboard(monkeypatch):
     kb = FakeKeyboard()
-    monkeypatch.setattr(main, "keyboard", kb)
+    monkeypatch.setattr(shortcut_manager, "keyboard", kb)
     return kb
 
 
 def _win(mode, existing_shortcuts=None):
+    """Faux manager : le MODE est une préférence de la fenêtre."""
     w = types.SimpleNamespace(
         logger=logging.getLogger("test.shortcut_install"),
-        shortcut_mode=mode,
+        window=types.SimpleNamespace(shortcut_mode=mode),
         _qshortcuts=list(existing_shortcuts or []),
         calls={"focused": 0, "global": 0},
     )
-    w._install_focused_shortcuts = lambda: w.calls.__setitem__("focused", w.calls["focused"] + 1)
-    w._install_global_shortcuts = lambda: w.calls.__setitem__("global", w.calls["global"] + 1)
-    w._remove_all_shortcuts = types.MethodType(main.MainWindow._remove_all_shortcuts, w)
-    w._install_shortcuts = types.MethodType(main.MainWindow._install_shortcuts, w)
+    w._install_focused = lambda: w.calls.__setitem__("focused", w.calls["focused"] + 1)
+    w._install_global = lambda: w.calls.__setitem__("global", w.calls["global"] + 1)
+    w.remove_all = types.MethodType(ShortcutManager.remove_all, w)
+    w.install = types.MethodType(ShortcutManager.install, w)
+    # Alias historiques : les tests ci-dessous gardent leurs noms d'appel.
+    w._remove_all_shortcuts = w.remove_all
+    w._install_shortcuts = w.install
     return w
 
 
@@ -87,7 +96,7 @@ def _win(mode, existing_shortcuts=None):
 
 def test_remove_unhooks_keyboard_and_clears_qshortcuts(fake_keyboard):
     sc1, sc2 = FakeQShortcut(), FakeQShortcut()
-    w = _win(main.MODE_GLOBAL, existing_shortcuts=[sc1, sc2])
+    w = _win(MODE_GLOBAL, existing_shortcuts=[sc1, sc2])
     w._remove_all_shortcuts()
     assert fake_keyboard.unhook_calls == 1       # hooks système retirés
     assert sc1.enabled is False and sc1.deleted is True
@@ -96,7 +105,7 @@ def test_remove_unhooks_keyboard_and_clears_qshortcuts(fake_keyboard):
 
 
 def test_remove_is_safe_without_existing_shortcuts(fake_keyboard):
-    w = _win(main.MODE_DISABLED)
+    w = _win(MODE_DISABLED)
     w._remove_all_shortcuts()                    # ne doit pas lever
     assert fake_keyboard.unhook_calls == 1
     assert w._qshortcuts == []
@@ -105,7 +114,7 @@ def test_remove_is_safe_without_existing_shortcuts(fake_keyboard):
 # --- _install_shortcuts (aiguillage selon le mode) --------------------------
 
 def test_install_disabled_removes_and_installs_nothing(fake_keyboard):
-    w = _win(main.MODE_DISABLED, existing_shortcuts=[FakeQShortcut()])
+    w = _win(MODE_DISABLED, existing_shortcuts=[FakeQShortcut()])
     w._install_shortcuts()
     assert fake_keyboard.unhook_calls == 1        # désenregistrement quand même
     assert w.calls["focused"] == 0
@@ -114,7 +123,7 @@ def test_install_disabled_removes_and_installs_nothing(fake_keyboard):
 
 
 def test_install_focused_removes_then_installs_focused(fake_keyboard):
-    w = _win(main.MODE_FOCUSED, existing_shortcuts=[FakeQShortcut()])
+    w = _win(MODE_FOCUSED, existing_shortcuts=[FakeQShortcut()])
     w._install_shortcuts()
     assert fake_keyboard.unhook_calls == 1        # ancien mécanisme retiré d'abord
     assert w.calls["focused"] == 1
@@ -122,7 +131,7 @@ def test_install_focused_removes_then_installs_focused(fake_keyboard):
 
 
 def test_install_global_removes_then_installs_global(fake_keyboard):
-    w = _win(main.MODE_GLOBAL, existing_shortcuts=[FakeQShortcut()])
+    w = _win(MODE_GLOBAL, existing_shortcuts=[FakeQShortcut()])
     w._install_shortcuts()
     assert fake_keyboard.unhook_calls == 1
     assert w.calls["global"] == 1
@@ -133,7 +142,7 @@ def test_reinstall_clears_previous_qshortcuts_before_installing(fake_keyboard):
     # Ré-enregistrement : les anciens QShortcut sont désactivés/supprimés avant
     # que le nouveau mécanisme ne soit installé (pas d'empilement).
     old = FakeQShortcut()
-    w = _win(main.MODE_GLOBAL, existing_shortcuts=[old])
+    w = _win(MODE_GLOBAL, existing_shortcuts=[old])
     w._install_shortcuts()
     assert old.deleted is True
     assert w._qshortcuts == []
@@ -146,30 +155,80 @@ def test_install_joins_previous_running_thread_before_reinstall(fake_keyboard):
     # Un enregistrement global précédent encore actif doit être attendu (join)
     # AVANT de retirer/réinstaller, pour ne pas faire courir unhook et add_hotkey.
     prev = FakeThread(alive=True)
-    w = _win(main.MODE_GLOBAL)
-    w._shortcut_thread = prev          # pas de _shortcut_lock -> créé paresseusement
+    w = _win(MODE_GLOBAL)
+    w._thread = prev          # pas de _lock -> créé paresseusement
     w._install_shortcuts()
     assert prev.join_calls == 1
     assert prev.join_timeout is not None   # attente bornée
     assert w.calls["global"] == 1
     # Référence consommée : le vrai _install_global_shortcuts (ici stubbé) en
     # reposera une neuve ; l'aiguillage ne doit pas conserver l'ancienne.
-    assert w._shortcut_thread is None
+    assert w._thread is None
 
 
 def test_install_does_not_join_finished_thread(fake_keyboard):
     prev = FakeThread(alive=False)
-    w = _win(main.MODE_FOCUSED)
-    w._shortcut_thread = prev
+    w = _win(MODE_FOCUSED)
+    w._thread = prev
     w._install_shortcuts()
     assert prev.join_calls == 0
     assert w.calls["focused"] == 1
-    assert w._shortcut_thread is None
+    assert w._thread is None
 
 
 def test_install_creates_lock_lazily_without_init(fake_keyboard):
-    # Faux self sans _shortcut_lock ni _shortcut_thread : ne doit pas lever.
-    w = _win(main.MODE_DISABLED, existing_shortcuts=[FakeQShortcut()])
+    # Faux self sans _lock ni _thread : ne doit pas lever.
+    w = _win(MODE_DISABLED, existing_shortcuts=[FakeQShortcut()])
     w._install_shortcuts()
     assert fake_keyboard.unhook_calls == 1
     assert w.calls["global"] == 0 and w.calls["focused"] == 0
+
+
+# --- shutdown : arrêt propre des raccourcis (point 10.10) -------------------
+
+def _manager_arret(thread=None):
+    return types.SimpleNamespace(
+        logger=logging.getLogger("test.shortcut_install"),
+        _thread=thread,
+        shutdown=None,
+    )
+
+
+def test_shutdown_attend_l_enregistrement_en_cours_avant_de_retirer(fake_keyboard):
+    """Sinon l'enregistrement ajouterait des hooks APRÈS le retrait : ils
+    survivraient à la fenêtre fermée (point 7)."""
+    thread = FakeThread(alive=True)
+    m = _manager_arret(thread)
+    m.shutdown = types.MethodType(ShortcutManager.shutdown, m)
+    m.shutdown()
+    assert thread.join_calls == 1
+    assert thread.join_timeout == 2.0
+    assert fake_keyboard.unhook_calls == 1
+    assert m._thread is None
+
+
+def test_shutdown_sans_thread_retire_quand_meme(fake_keyboard):
+    m = _manager_arret(None)
+    m.shutdown = types.MethodType(ShortcutManager.shutdown, m)
+    m.shutdown()
+    assert fake_keyboard.unhook_calls == 1
+
+
+def test_shutdown_survit_a_un_echec_de_unhook(monkeypatch):
+    """La fermeture ne doit jamais être bloquée par la bibliothèque keyboard."""
+    class KeyboardCassé:
+        def unhook_all_hotkeys(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(shortcut_manager, "keyboard", KeyboardCassé())
+    m = _manager_arret(None)
+    m.shutdown = types.MethodType(ShortcutManager.shutdown, m)
+    m.shutdown()   # ne doit pas lever
+
+
+def test_close_event_delegue_l_arret_des_raccourcis():
+    """main.py ne manipule plus la bibliothèque keyboard directement."""
+    import inspect
+    source = inspect.getsource(main.MainWindow.closeEvent)
+    assert "self.shortcuts.shutdown()" in source
+    assert "keyboard." not in source

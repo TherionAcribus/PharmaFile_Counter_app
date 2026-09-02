@@ -39,6 +39,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout  # noqa: E40
 
 import main  # noqa: E402
 from buttons import DebounceButton  # noqa: E402
+from window_placement import WindowPlacement  # noqa: E402
 
 
 # --- toggle_orientation : logique de branchement (faux self, mocks) ---------
@@ -53,7 +54,8 @@ def _toggle_stub(horizontal_mode=False, compact_mode=False, visible=False):
         horizontal_mode=horizontal_mode,
         compact_mode=compact_mode,
         create_interface=mock.MagicMock(),
-        apply_panel_mode=mock.MagicMock(),
+        # Le dockage du panneau appartient au gestionnaire de placement (10.12).
+        placement=mock.MagicMock(),
         isVisible=mock.MagicMock(return_value=visible),
     )
 
@@ -75,13 +77,13 @@ def test_toggle_orientation_rebuilds_interface():
 def test_toggle_orientation_redocks_panel_when_compact_and_visible():
     stub = _toggle_stub(compact_mode=True, visible=True)
     main.MainWindow.toggle_orientation(stub)
-    stub.apply_panel_mode.assert_called_once()
+    stub.placement.apply_panel_mode.assert_called_once()
 
 
 def test_toggle_orientation_skips_panel_when_not_compact():
     stub = _toggle_stub(compact_mode=False, visible=True)
     main.MainWindow.toggle_orientation(stub)
-    stub.apply_panel_mode.assert_not_called()
+    stub.placement.apply_panel_mode.assert_not_called()
 
 
 def test_toggle_orientation_skips_panel_when_not_visible():
@@ -89,7 +91,7 @@ def test_toggle_orientation_skips_panel_when_not_visible():
     # on ne redocke pas encore le panneau même en mode compact.
     stub = _toggle_stub(compact_mode=True, visible=False)
     main.MainWindow.toggle_orientation(stub)
-    stub.apply_panel_mode.assert_not_called()
+    stub.placement.apply_panel_mode.assert_not_called()
 
 
 # --- create_interface : vraie construction sur une vraie QMainWindow --------
@@ -107,6 +109,9 @@ def _make_main_window(horizontal_mode=False, compact_mode=False):
     win.logger = logging.getLogger("test.main_window")
     # Réseau / audio / WebSocket : mockés, jamais sollicités par create_interface.
     win.network_manager = mock.MagicMock()
+    # Couche d'accès au serveur (point 10.8) : mockée, aucune requête ne doit
+    # partir pendant la construction de l'interface.
+    win.api = mock.MagicMock()
     win.audio_player = mock.MagicMock()
     win.socket_io_client = mock.MagicMock()
     win.notification_manager = None
@@ -137,7 +142,9 @@ def _make_main_window(horizontal_mode=False, compact_mode=False):
     win.panel_snap = True
     win.panel_thickness = 300
     win.shutting_down = False
-    win._applying_panel = False
+    # Placement réel (point 10.12) : le menu « Réinitialiser la position » s'y
+    # branche à la construction de l'interface.
+    win.placement = WindowPlacement(win, logger=win.logger)
 
     win.display_patient_list = False
     win.patient_list_position_vertical = "bottom"
@@ -198,6 +205,8 @@ def test_create_interface_does_not_touch_network(window):
     # Aucun appel réseau réel pendant la construction de l'interface.
     window.network_manager.request_blocking.assert_not_called()
     window.network_manager.make_handle.assert_not_called()
+    window.api.make_handle.assert_not_called()
+    window.api.fetch_state.assert_not_called()
 
 
 def test_toggle_orientation_rebuilds_layout_end_to_end(window):
@@ -216,3 +225,4 @@ def test_toggle_orientation_rebuilds_layout_end_to_end(window):
 
     # Toujours pas de réseau réel après reconstruction.
     window.network_manager.request_blocking.assert_not_called()
+    window.api.make_handle.assert_not_called()

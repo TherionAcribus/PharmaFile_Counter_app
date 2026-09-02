@@ -1,5 +1,5 @@
 """Réapplication des paramètres de connexion (point 8) : _reconnect_services /
-_on_reconnect_ready, avec un faux ``self`` et un StartupWorker factice.
+_on_reconnect_ready, avec un faux ``self`` et un contrôleur de session factice.
 
 On vérifie l'ordre/les effets clés du changement de serveur/secret/comptoir :
 libération de l'ANCIEN comptoir (avec l'ancienne URL/numéro) quand un staff y était,
@@ -47,7 +47,9 @@ class FakeSocket:
         return True
 
 
-class FakeNM:
+class FakeApi:
+    """Double de CounterApi : seule l'invalidation du jeton est sollicitée ici."""
+
     def __init__(self):
         self.cleared = False
 
@@ -55,12 +57,26 @@ class FakeNM:
         self.cleared = True
 
 
+class FakeSession:
+    """Double de SessionController : on ne vérifie que le lancement de la
+    séquence de démarrage (jeton + snapshot) et le callback branché."""
+
+    def __init__(self):
+        self.started_with = None
+
+    def start_startup(self, on_ready):
+        self.started_with = on_ready
+        worker = FakeWorker(None)
+        worker.start()
+        return worker
+
+
 def _win(monkeypatch, staff_id=7):
-    monkeypatch.setattr(main, "StartupWorker", FakeWorker)
     w = types.SimpleNamespace(
         logger=logging.getLogger("test.reconnect"),
         socket_io_client=FakeSocket(),
-        network_manager=FakeNM(),
+        api=FakeApi(),
+        session=FakeSession(),
         staff_id=staff_id,
         app_token="ancien-jeton",
         queue_revision=42,
@@ -72,7 +88,6 @@ def _win(monkeypatch, staff_id=7):
         released=[],
     )
     w._release_counter_blocking = lambda url=None, counter_id=None: w.released.append((url, counter_id))
-    w._track_worker = lambda worker: worker
     w._on_reconnect_ready = lambda connected, state: None
     w._reconnect_services = types.MethodType(main.MainWindow._reconnect_services, w)
     return w
@@ -100,7 +115,7 @@ def test_reconnect_invalidates_token_and_state(monkeypatch):
     assert w.socket_io_client is None          # ancien WebSocket fermé
     assert w.app_token is None                  # jeton invalidé
     assert w.staff_id is None                   # staff de l'ancien comptoir oublié
-    assert w.network_manager.cleared is True    # session réseau purgée
+    assert w.api.cleared is True                # session réseau purgée
     assert w.queue_revision == -1
     assert w.my_patient is None
     assert w.list_patients == []
@@ -108,11 +123,13 @@ def test_reconnect_invalidates_token_and_state(monkeypatch):
 
 
 def test_reconnect_starts_new_token_worker(monkeypatch):
+    """La reconnexion relance la séquence de démarrage (nouveau jeton + snapshot)
+    et branche la SUITE de la reconnexion, pas celle du démarrage initial."""
     w = _win(monkeypatch, staff_id=7)
     w._reconnect_services(OLD, old_staff_present=True)
     assert FakeWorker.last is not None
     assert FakeWorker.last.started is True
-    assert FakeWorker.last.finished_startup.slot is not None
+    assert w.session.started_with is w._on_reconnect_ready
 
 
 # --- _on_reconnect_ready : succès vs échec ----------------------------------
