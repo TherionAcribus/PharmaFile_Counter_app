@@ -12,8 +12,10 @@ Pour éviter les erreurs connues lors de la compilation :
   ```bash
   pip install "setuptools<70.0.0"
   ```
-- **line_profiler** ne doit pas être utilisé dans le code de production. 
-  - Si vous utilisez le décorateur `@profile`, assurez-vous de le remplacer par un décorateur "vide" dans `main.py` avant de compiler, ou de supprimer l'import `line_profiler`.
+- **line_profiler** ne doit pas être utilisé dans le code de production.
+  - Le code ne contient plus aucun décorateur `@profile` ni de décorateur "vide"
+    de substitution dans `main.py`. Si vous en ajoutez un le temps d'un profilage,
+    retirez-le avant de compiler (cf. § Dépannage).
 
 ## 2. Le fichier de configuration (.spec)
 

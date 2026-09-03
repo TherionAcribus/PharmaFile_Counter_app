@@ -41,10 +41,6 @@ import logging
 # n'ont pas de self.logger (ex. AudioPlayer).
 logger = logging.getLogger("appcomptoir.main")
 
-# from line_profiler import profile
-def profile(func):
-    return func
-
 
 # Réexporté pour les appelants historiques : l'implémentation vit désormais dans
 # resources.py (source unique, testée, correcte en build onefile).

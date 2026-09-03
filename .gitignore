@@ -5,3 +5,8 @@ logs/
 __pycache__/
 pysidedeploy.spec
 application.log
+.venv/
+*.lprof
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
