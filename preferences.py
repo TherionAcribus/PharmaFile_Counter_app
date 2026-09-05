@@ -172,6 +172,14 @@ class PreferencesDialog(QDialog):
         self._workers = {}
         self._closing = False
 
+        # Volume enregistré (celui du lecteur principal à l'ouverture) et drapeau
+        # « un aperçu a modifié le volume du lecteur ». Le bouton « Tester la
+        # notification » joue le son au volume EN COURS D'ÉDITION : sans ce
+        # rappel, fermer les préférences sans enregistrer laissait le lecteur au
+        # volume d'essai (le thème, lui, était bien restauré).
+        self.current_volume = None
+        self._volume_previewed = False
+
         self.main_layout = QHBoxLayout(self)
         
         self.navigation_list = QListWidget()
@@ -657,7 +665,9 @@ class PreferencesDialog(QDialog):
         corner_value = settings_schema.read(settings, "notification_corner")
         corner_index = self.notification_corner_combo.findData(corner_value)
         self.notification_corner_combo.setCurrentIndex(corner_index if corner_index >= 0 else 0)
-        self.volume_slider.setValue(settings_schema.read(settings, "notification_volume"))
+        volume = settings_schema.read(settings, "notification_volume")
+        self.volume_slider.setValue(volume)
+        self.current_volume = volume
 
         self.always_on_top_checkbox.setChecked(settings_schema.read(settings, "always_on_top"))
         self.horizontal_mode.setChecked(settings_schema.read(settings, "vertical_mode"))
@@ -870,6 +880,12 @@ class PreferencesDialog(QDialog):
         if not self._sync_and_verify(settings):
             return
 
+        # Enregistrement effectif : le volume édité devient le volume de
+        # référence, un aperçu antérieur n'a donc plus rien à restaurer (c'est
+        # apply_preferences, côté fenêtre, qui l'applique au lecteur).
+        self.current_volume = self.volume_slider.value()
+        self._volume_previewed = False
+
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
         # dans QSettings. save_secret efface aussi toute copie en clair héritée.
         # Si le magasin sécurisé est indisponible, save_secret retombe sur un
@@ -994,14 +1010,42 @@ class PreferencesDialog(QDialog):
             self.parent().setStyleSheet(qss)
 
     def reject(self):
-        # Réapplique le skin enregistré si l'utilisateur ferme sans sauvegarder
+        # Réapplique le skin ET le volume enregistrés si l'utilisateur ferme sans
+        # sauvegarder : le test de notification est un APERÇU, il ne doit rien
+        # laisser derrière lui.
         self.preview_skin(self.current_skin)
+        self.restore_volume()
         super().reject()
+
+    def _set_player_volume(self, volume):
+        """Applique un volume au lecteur de la fenêtre principale.
+
+        Renvoie True si le lecteur existait (absent en test, ou avant sa
+        création au démarrage)."""
+        player = getattr(self.parent(), "audio_player", None)
+        if player is None:
+            return False
+        player.set_volume(volume)
+        return True
+
+    def restore_volume(self):
+        """Annule le volume d'aperçu posé par « Tester la notification ».
+
+        Ne touche au lecteur que si un aperçu a réellement eu lieu, pour ne pas
+        écraser un volume réglé ailleurs entre-temps."""
+        if not self._volume_previewed or self.current_volume is None:
+            return
+        if self._set_player_volume(self.current_volume):
+            logger.debug("Volume d'aperçu annulé, retour à %s%%", self.current_volume)
+        self._volume_previewed = False
 
     def test_notification(self):
         data = {"origin": "test_notification", "message": "Test de notification"}
         font_size = self.notification_font_size_spinbox.value()
-        self.parent().audio_player.set_volume(self.volume_spinbox.value())
+        # Aperçu : on joue au volume en cours d'édition, en mémorisant qu'il
+        # faudra revenir au volume enregistré si l'utilisateur annule.
+        if self._set_player_volume(self.volume_spinbox.value()):
+            self._volume_previewed = True
         # Passe par le gestionnaire (écran de l'app, coin configuré, sans focus) ;
         # force=True car le test doit s'afficher même notifications désactivées.
         self.parent().show_notification(data, internal=True, font_size=font_size, force=True)
