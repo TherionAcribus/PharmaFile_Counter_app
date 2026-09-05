@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -14,6 +14,7 @@ from counter_id_utils import coerce_counter_id
 from shortcut_defaults import (
     UI_MODIFIERS, join_shortcut, read_shortcut, split_shortcut,
 )
+import notification_rules
 import settings_schema
 from panel_layout import MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS
 from shortcut_config import (
@@ -377,20 +378,42 @@ class PreferencesDialog(QDialog):
         self.notifications_layout = QVBoxLayout()
         self.notifications_page.setLayout(self.notifications_layout)
         
-        self.show_current_patient_checkbox = QCheckBox("Afficher le patient en cours", self.notifications_page)
-        self.notifications_layout.addWidget(self.show_current_patient_checkbox)
+        # Une ligne PAR CATÉGORIE de notification, avec deux réglages distincts :
+        # « Afficher » et « Son ». Chaque catégorie est indépendante : décocher
+        # l'une ne fait plus taire les autres (auparavant « activités
+        # spécifiques » servait de filtre général à toutes les notifications).
+        self.notification_categories_label = QLabel(
+            "Notifications par catégorie :", self.notifications_page)
+        self.notifications_layout.addWidget(self.notification_categories_label)
 
-        self.notification_autocalling_new_patient_checkbox = QCheckBox("Afficher si un nouveau patient est appelé via l'autocalling", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_autocalling_new_patient_checkbox)
-        
-        self.notification_specific_acts_checkbox = QCheckBox("Afficher les activités spécifiques (Vaccins, Tests... voir le paramètrage du serveur)", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_specific_acts_checkbox)
+        self.notification_categories_grid = QGridLayout()
+        self.notification_categories_grid.setColumnStretch(0, 1)
+        self.notification_categories_grid.addWidget(
+            QLabel("Afficher", self.notifications_page), 0, 1, Qt.AlignHCenter)
+        self.notification_categories_grid.addWidget(
+            QLabel("Son", self.notifications_page), 0, 2, Qt.AlignHCenter)
 
-        self.notification_add_paper_checkbox = QCheckBox("Afficher les alertes pour remplacer le papier", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_add_paper_checkbox)
-
-        self.notification_connection_checkbox = QCheckBox("Afficher en cas de problème de connexion", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_connection_checkbox)
+        # catégorie -> case à cocher (remplies/relues par load/save_preferences).
+        self.notification_display_checkboxes = {}
+        self.notification_sound_checkboxes = {}
+        for row, category in enumerate(notification_rules.CATEGORIES, start=1):
+            label_text = notification_rules.CATEGORY_LABELS[category]
+            hint = notification_rules.CATEGORY_HINTS[category]
+            label = QLabel(label_text, self.notifications_page)
+            label.setWordWrap(True)
+            label.setToolTip(hint)
+            self.notification_categories_grid.addWidget(label, row, 0)
+            for column, (boxes, action) in enumerate(
+                    ((self.notification_display_checkboxes, "Afficher"),
+                     (self.notification_sound_checkboxes, "Jouer un son pour")), start=1):
+                # Case sans texte (le libellé est dans la colonne 0) : on lui donne
+                # un nom accessible explicite pour les lecteurs d'écran.
+                checkbox = QCheckBox(self.notifications_page)
+                checkbox.setAccessibleName(f"{action} : {label_text}")
+                checkbox.setToolTip(f"{action} — {hint}")
+                self.notification_categories_grid.addWidget(checkbox, row, column, Qt.AlignHCenter)
+                boxes[category] = checkbox
+        self.notifications_layout.addLayout(self.notification_categories_grid)
 
         # Ajout de l'option pour le temps pour une notification après déconnexion
         self.notification_after_deconnection_layout = QHBoxLayout()
@@ -618,11 +641,12 @@ class PreferencesDialog(QDialog):
         self.shortcut_feedback_checkbox.setChecked(
             settings_schema.read(settings, "shortcut_feedback"))
 
-        self.show_current_patient_checkbox.setChecked(settings_schema.read(settings, "notification_current_patient"))
-        self.notification_autocalling_new_patient_checkbox.setChecked(settings_schema.read(settings, "notification_autocalling_new_patient"))
-        self.notification_specific_acts_checkbox.setChecked(settings_schema.read(settings, "notification_specific_acts"))
-        self.notification_add_paper_checkbox.setChecked(settings_schema.read(settings, "notification_add_paper"))
-        self.notification_connection_checkbox.setChecked(settings_schema.read(settings, "notification_connection"))
+        for category, checkbox in self.notification_display_checkboxes.items():
+            checkbox.setChecked(settings_schema.read(
+                settings, notification_rules.DISPLAY_KEYS[category]))
+        for category, checkbox in self.notification_sound_checkboxes.items():
+            checkbox.setChecked(settings_schema.read(
+                settings, notification_rules.SOUND_KEYS[category]))
         self.notification_after_deconnection_spinbox.setValue(settings_schema.read(settings, "notification_after_deconnection"))
         self.notification_after_calling_spinbox.setValue(settings_schema.read(settings, "notification_after_calling"))
         self.notification_duration_spinbox.setValue(settings_schema.read(settings, "notification_duration"))
@@ -814,11 +838,10 @@ class PreferencesDialog(QDialog):
         settings.setValue("shortcut_feedback", self.shortcut_feedback_checkbox.isChecked())
         
         # notifications
-        settings.setValue("notification_current_patient", self.show_current_patient_checkbox.isChecked())
-        settings.setValue("notification_autocalling_new_patient", self.notification_autocalling_new_patient_checkbox.isChecked())
-        settings.setValue("notification_specific_acts", self.notification_specific_acts_checkbox.isChecked())
-        settings.setValue("notification_add_paper", self.notification_add_paper_checkbox.isChecked())
-        settings.setValue("notification_connection", self.notification_connection_checkbox.isChecked())
+        for category, checkbox in self.notification_display_checkboxes.items():
+            settings.setValue(notification_rules.DISPLAY_KEYS[category], checkbox.isChecked())
+        for category, checkbox in self.notification_sound_checkboxes.items():
+            settings.setValue(notification_rules.SOUND_KEYS[category], checkbox.isChecked())
         settings.setValue("notification_after_deconnection", self.notification_after_deconnection_spinbox.value())
         settings.setValue("notification_duration", self.notification_duration_spinbox.value())
         settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())

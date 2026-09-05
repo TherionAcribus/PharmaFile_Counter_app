@@ -100,12 +100,13 @@ def test_new_patient_malformed_payload_does_not_crash(payload):
 
 # --- handle_socket_connection : reconnexion -> resynchronisation (#7) --------
 
-def _wsc(socket_was_disconnected=False, notify=True):
+def _wsc(socket_was_disconnected=False):
+    # Le filtrage par catégorie vit désormais dans show_notification
+    # (notification_rules) : handle_socket_connection ne lit plus de préférence.
     w = types.SimpleNamespace(
         logger=logging.getLogger("test.convergence.socket"),
         socket_was_disconnected=socket_was_disconnected,
         disconnect_notification_shown=False,
-        notification_connection=notify,
         calls={"resync": 0, "status": [], "notify": []},
     )
     w.connection_indicator = types.SimpleNamespace(

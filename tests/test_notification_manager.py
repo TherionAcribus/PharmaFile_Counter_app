@@ -179,3 +179,41 @@ def test_colors_are_valid_and_contrasted(main_window):
 def test_unknown_origin_falls_back_to_origin_text(main_window):
     notif = _make_notif(main_window, "origine_inconnue")
     assert "origine_inconnue" in notif.title
+
+
+# --- Son : réglage distinct de l'affichage --------------------------------
+
+class FakeAudioPlayer:
+    def __init__(self):
+        self.played = []
+
+    def play_sound(self, name):
+        self.played.append(name)
+
+
+def test_sound_is_played_when_allowed(main_window):
+    main_window.audio_player = FakeAudioPlayer()
+    mgr = NotificationManager(main_window)
+    mgr.notify(_data("please_validate", "valider"), internal=True, play_sound=True)
+    assert main_window.audio_player.played == ["please_validate"]
+
+
+def test_notification_can_be_shown_without_sound(main_window):
+    # « Afficher » et « jouer un son » sont deux réglages indépendants : une
+    # catégorie dont le son est coupé s'affiche quand même, en silence.
+    main_window.audio_player = FakeAudioPlayer()
+    mgr = NotificationManager(main_window)
+    notif = mgr.notify(_data("please_validate", "valider"), internal=True, play_sound=False)
+    assert notif is not None and notif.isVisible()
+    assert main_window.audio_player.played == []
+
+
+def test_queued_notification_keeps_its_own_sound_setting(main_window):
+    # Une notification mise en file garde le réglage de son décidé à l'émission.
+    main_window.audio_player = FakeAudioPlayer()
+    mgr = NotificationManager(main_window, max_visible=1)
+    first = mgr.notify(_data("connection", "1"), internal=True, play_sound=True)
+    mgr.notify(_data("connection", "2"), internal=True, play_sound=False)
+    assert len(mgr.pending) == 1
+    first.close()                      # libère la place : la file se vide
+    assert main_window.audio_player.played == ["ding"]   # la 2e est restée muette

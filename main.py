@@ -10,7 +10,10 @@ from preferences import PreferencesDialog
 from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
 from button_state import MALFORMED, resolve_patient_buttons
 from patient_list_model import PatientListModel
-from notification import CustomNotification, NotificationManager
+import notification_rules
+from notification import (
+    CustomNotification, NotificationManager, extract_origin_message,
+)
 from connections import NetworkManager
 from counter_api import CounterApi
 import main_window_ui
@@ -296,11 +299,13 @@ class MainWindow(QMainWindow):
         self.shortcut_mode = settings_schema.read(settings, "shortcut_mode")
         self.confirm_sensitive_shortcuts = settings_schema.read(settings, "confirm_sensitive_shortcuts")
         self.shortcut_feedback = settings_schema.read(settings, "shortcut_feedback")
-        self.notification_current_patient = settings_schema.read(settings, "notification_current_patient")
-        self.notification_autocalling_new_patient = settings_schema.read(settings, "notification_autocalling_new_patient")
-        self.notification_specific_acts = settings_schema.read(settings, "notification_specific_acts")
-        self.notification_add_paper = settings_schema.read(settings, "notification_add_paper")
-        self.notification_connection = settings_schema.read(settings, "notification_connection")
+        # Notifications : un réglage « afficher » ET un réglage « son » PAR
+        # CATÉGORIE (notification_rules). Auparavant une seule case (« activités
+        # spécifiques ») servait de filtre général dans show_notification() et
+        # faisait taire toutes les autres alertes ; chaque catégorie est
+        # désormais indépendante, et le filtrage a lieu à un seul endroit.
+        self.notification_prefs = {key: settings_schema.read(settings, key)
+                                   for key in notification_rules.ALL_KEYS}
         self.notification_after_deconnection = settings_schema.read(settings, "notification_after_deconnection")
         self.timer_after_calling = settings_schema.read(settings, "notification_after_calling")
         self.notification_duration = settings_schema.read(settings, "notification_duration")
@@ -595,7 +600,8 @@ class MainWindow(QMainWindow):
         """ Affiche un message utilisateur court (distinct selon le statut :
         401/403/409-423/5xx/timeout) et journalise le détail technique. Le détail
         n'est jamais montré à l'utilisateur. """
-        if result.message and getattr(self, "notification_connection", True):
+        if result.message:
+            # Catégorie « connexion » : le filtrage est fait par show_notification.
             self.show_notification({"origin": "connection", "message": result.message}, internal=True)
         if result.detail:
             self.logger.warning("Erreur réseau (statut=%s) : %s", result.status, result.detail)
@@ -609,7 +615,7 @@ class MainWindow(QMainWindow):
             if isinstance(data, dict):
                 self.update_my_patient(data)
                 self.update_my_buttons(data)
-                if self.notification_current_patient and data.get("call_number"):
+                if data.get("call_number"):
                     message = f"Nouveau patient : {data['call_number']} pour '{data.get('activity', '')}'"
                     self.show_notification({"origin": "new_patient", "message": message}, internal=True)
             else:
@@ -715,15 +721,14 @@ class MainWindow(QMainWindow):
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
         self.label_patient.setText("Patient déjà attribué")
-        self.audio_player.play_sound("patient_taken")
+        self.play_notification_sound("patient_taken", "patient_taken")
 
 
     def handle_socket_connection(self, status, reconnection_attempts=0, display_notification=True):
         if status is None:  # Connecting
             self.connection_indicator.set_status("connecting", reconnection_attempts)
         elif status:  # Connected
-            should_notify = self.disconnect_notification_shown and display_notification and self.notification_connection
-            if should_notify:
+            if self.disconnect_notification_shown and display_notification:
                 self.show_notification({
                     "origin": "socket_connection_true",
                     "message": "La connexion temps réel est (r)établie !"
@@ -737,7 +742,7 @@ class MainWindow(QMainWindow):
             self.connection_indicator.set_status("connected")
         else:  # Disconnected
             self.socket_was_disconnected = True
-            if display_notification and self.notification_connection:
+            if display_notification:
                 self.disconnect_notification_shown = True
                 self.show_notification({
                     "origin": "socket_connection_false",
@@ -1420,11 +1425,30 @@ class MainWindow(QMainWindow):
         return self.notification_manager
 
     def show_notification(self, data, internal=False, font_size=None, force=False):
-        # `force` = afficher même si les notifications sont désactivées (bouton de
-        # test des préférences).
-        if force or self.notification_specific_acts:
-            self._ensure_notification_manager().notify(
-                data, internal=internal, font_size=font_size)
+        """Point de filtrage UNIQUE des notifications.
+
+        La catégorie est déduite de l'origine (notification_rules) : chaque
+        catégorie a sa propre case « afficher » et sa propre case « son », et ne
+        peut donc plus faire taire les autres. `force` = afficher et sonner quels
+        que soient les réglages (bouton de test des préférences, retour visuel
+        d'un raccourci, qui ont leur propre préférence).
+        """
+        origin, _message = extract_origin_message(data, internal)
+        prefs = getattr(self, "notification_prefs", None)
+        if not notification_rules.should_display(origin, prefs, force=force):
+            self.logger.debug("Notification filtrée par les préférences (origin=%s)", origin)
+            return
+        play_sound = notification_rules.should_play_sound(origin, prefs, force=force)
+        self._ensure_notification_manager().notify(
+            data, internal=internal, font_size=font_size, play_sound=play_sound)
+
+    def play_notification_sound(self, origin, sound):
+        """Joue un son d'alerte NON accompagné d'une notification (p. ex. patient
+        déjà pris). Respecte la préférence de son de la catégorie correspondante,
+        pour que « couper le son » d'une catégorie la coupe partout."""
+        if not notification_rules.should_play_sound(origin, getattr(self, "notification_prefs", None)):
+            return
+        self.audio_player.play_sound(sound)
 
     def _handle_connection_lost(self, reconnection_attempts):
         """Gère la perte de connexion"""
@@ -1446,9 +1470,9 @@ class MainWindow(QMainWindow):
     def change_paper(self, data):
         self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
         self.btn_paper.update_button_icon(self.add_paper)
-        if self.notification_add_paper:
-            message = "On est quasiment au bout du rouleau" if self.add_paper == "active" else "Une gentille personne a remis du papier"
-            self.show_notification({"origin": "low_paper", "message": message}, internal=True)
+        message = ("On est quasiment au bout du rouleau" if self.add_paper == "active"
+                   else "Une gentille personne a remis du papier")
+        self.show_notification({"origin": "low_paper", "message": message}, internal=True)
         
     def change_paper_button(self, origin):
         """ Appelé lors d'une notification venant de l'imprimante via le serveur. Le but est de ne pas redéclencher une seconde notification """
@@ -1473,9 +1497,8 @@ class MainWindow(QMainWindow):
         #patient["counter_id"] = self.counter_id
         self.update_my_patient(patient)
         self.update_my_buttons(patient)
-        if self.notification_autocalling_new_patient:
-            message = f"Appel automatique du patient {patient['call_number']} pour '{patient['activity']}'"
-            self.show_notification({"origin": "autocalling", "message": message}, internal=True)
+        message = f"Appel automatique du patient {patient['call_number']} pour '{patient['activity']}'"
+        self.show_notification({"origin": "autocalling", "message": message}, internal=True)
 
     def disconnect_user(self, data):
         self.logger.info("Déconnexion du comptoir demandée par un autre poste")

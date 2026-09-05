@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, namedtuple
 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QMetaObject, Slot
@@ -27,9 +27,10 @@ from accessibility import (
 logger = logging.getLogger("appcomptoir.notification")
 
 
-def _extract_origin_message(data, internal):
+def extract_origin_message(data, internal):
     """Origine + message d'une notification, quel que soit le format d'entrée
-    (dict interne ou chaîne JSON venue du serveur). Sert au calcul de signature."""
+    (dict interne ou chaîne JSON venue du serveur). Sert au calcul de signature
+    et, côté fenêtre principale, au filtrage par catégorie (notification_rules)."""
     payload = data
     if not internal and isinstance(data, str):
         try:
@@ -39,6 +40,10 @@ def _extract_origin_message(data, internal):
     if isinstance(payload, dict):
         return (payload.get("origin", ""), payload.get("message", ""))
     return (str(payload), "")
+
+
+#: Notification en attente d'affichage (file du gestionnaire).
+_Spec = namedtuple("_Spec", "data internal font_size signature play_sound")
 
 
 class NotificationManager:
@@ -59,10 +64,12 @@ class NotificationManager:
 
     # --- API publique ---------------------------------------------------
 
-    def notify(self, data, internal=False, font_size=None):
+    def notify(self, data, internal=False, font_size=None, play_sound=True):
         """Point d'entrée unique. Déduplique, puis affiche ou met en file.
+        ``play_sound`` : le son est un réglage distinct de l'affichage (la
+        décision est prise par l'appelant, cf. notification_rules).
         Retourne la notification affichée, ou None (dupliquée / mise en file)."""
-        origin, message = _extract_origin_message(data, internal)
+        origin, message = extract_origin_message(data, internal)
         signature = notification_signature(origin, message)
 
         # Déjà visible : on ne l'empile pas, on prolonge simplement son affichage.
@@ -73,11 +80,11 @@ class NotificationManager:
             return None
 
         # Déjà en file : on ignore le doublon.
-        if any(sig == signature for (_d, _i, _f, sig) in self.pending):
+        if any(spec.signature == signature for spec in self.pending):
             logger.debug("Notification dupliquée déjà en file (origin=%s)", origin)
             return None
 
-        spec = (data, internal, font_size, signature)
+        spec = _Spec(data, internal, font_size, signature, play_sound)
         if should_queue(len(self.active_notifications), self.max_visible):
             self.pending.append(spec)
             logger.debug("Notification mise en file (%s en attente)", len(self.pending))
@@ -100,13 +107,12 @@ class NotificationManager:
     # --- Interne --------------------------------------------------------
 
     def _create_and_show(self, spec):
-        data, internal, font_size, signature = spec
-        notif = CustomNotification(data=data, font_size=font_size,
-                                   parent=self.main_window, internal=internal,
-                                   manager=self)
-        notif.signature = signature
+        notif = CustomNotification(data=spec.data, font_size=spec.font_size,
+                                   parent=self.main_window, internal=spec.internal,
+                                   manager=self, play_sound=spec.play_sound)
+        notif.signature = spec.signature
         self.active_notifications.append(notif)
-        self._active_signatures[signature] = notif
+        self._active_signatures[spec.signature] = notif
         notif.closed.connect(lambda n=notif: self._on_closed(n))
         notif.show_without_activating()
         self.update_positions()
@@ -125,7 +131,7 @@ class NotificationManager:
         """Affiche les notifications en file tant qu'il reste de la place."""
         while self.pending and len(self.active_notifications) < self.max_visible:
             spec = self.pending.popleft()
-            if spec[3] in self._active_signatures:
+            if spec.signature in self._active_signatures:
                 continue  # devenue redondante entre-temps
             self._create_and_show(spec)
 
@@ -148,7 +154,8 @@ class CustomNotification(QDialog):
 
     closed = Signal()
 
-    def __init__(self, data, font_size=None, parent=None, internal=False, manager=None):
+    def __init__(self, data, font_size=None, parent=None, internal=False, manager=None,
+                 play_sound=True):
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating : la notification ne
         # vole jamais le focus au progiciel de l'utilisateur.
         super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -158,6 +165,9 @@ class CustomNotification(QDialog):
 
         self.internal = internal
         self.manager = manager
+        # Son joué à l'affichage : décidé par l'appelant (préférence de son de la
+        # catégorie), indépendamment du fait que la notification soit affichée.
+        self.play_sound = play_sound
         self.audio_player = self.parent().audio_player
 
         # Timer d'auto-fermeture réutilisable (permet de prolonger l'affichage
@@ -259,7 +269,7 @@ class CustomNotification(QDialog):
         """Affiche la notification sans lui donner le focus (le progiciel de
         l'utilisateur garde le focus) et joue le son associé."""
         super().show()
-        if self.audio_player:
+        if self.audio_player and self.play_sound:
             self.audio_player.play_sound(self.sound)
 
     def start_auto_close(self, milliseconds):

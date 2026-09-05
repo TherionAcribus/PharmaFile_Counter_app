@@ -86,6 +86,23 @@ SETTINGS = {
     "notification_specific_acts": Setting(default=True, kind=bool),
     "notification_add_paper": Setting(default=True, kind=bool),
     "notification_connection": Setting(default=True, kind=bool),
+    # Rappel « pensez à valider » et alertes diverses (imprimante, déconnexion
+    # par un autre poste, transfert...) : jusqu'ici sans réglage propre, elles
+    # étaient muettes dès que « activités spécifiques » était décochée.
+    "notification_validation": Setting(default=True, kind=bool),
+    "notification_system": Setting(default=True, kind=bool),
+
+    # --- Notifications (son, par catégorie) ----------------------------------
+    # « Afficher » et « jouer un son » sont deux réglages distincts : on peut
+    # vouloir voir une alerte sans qu'elle sonne (ou l'inverse). Clés dérivées
+    # des catégories de notification_rules.SOUND_KEYS.
+    "notification_current_patient_sound": Setting(default=True, kind=bool),
+    "notification_autocalling_new_patient_sound": Setting(default=True, kind=bool),
+    "notification_specific_acts_sound": Setting(default=True, kind=bool),
+    "notification_add_paper_sound": Setting(default=True, kind=bool),
+    "notification_connection_sound": Setting(default=True, kind=bool),
+    "notification_validation_sound": Setting(default=True, kind=bool),
+    "notification_system_sound": Setting(default=True, kind=bool),
 
     # --- Notifications (délais / tailles) ------------------------------------
     "notification_after_deconnection": Setting(default=10, kind=int, bounds=(0, 99)),
