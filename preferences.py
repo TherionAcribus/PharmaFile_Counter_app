@@ -33,6 +33,18 @@ def dev_insecure_allowed():
 from accessibility import (
     MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
 )
+from audio import SOUNDS
+
+#: Libellés affichés pour chaque son dans le sélecteur « Tester un son ».
+#: Les clés viennent de ``audio.SOUNDS`` : si un son est ajouté côté lecteur,
+#: il apparaît automatiquement ici (avec son nom technique si aucun libellé
+#: convivial n'est défini).
+SOUND_LABELS = {
+    "ding": "Ding (nouveau patient)",
+    "patient_taken": "Patient déjà pris",
+    "please_validate": "Pensez à valider",
+}
+
 
 class TestConnectionWorker(QThread):
     connection_tested = Signal(bool, str)
@@ -514,6 +526,21 @@ class PreferencesDialog(QDialog):
         self.volume_layout.addWidget(self.volume_slider)
         self.volume_layout.addWidget(self.volume_spinbox)
         self.notifications_layout.addLayout(self.volume_layout)
+
+        # Test direct d'un son (indépendant du gestionnaire de notifications :
+        # chaque clic rejoue le son, sans déduplication). Sert au réglage du
+        # volume — l'utilisateur peut écouter chacun des trois sons.
+        self.sound_test_layout = QHBoxLayout()
+        self.sound_test_label = QLabel("Tester un son:", self.notifications_page)
+        self.sound_test_combo = QComboBox(self.notifications_page)
+        for name in SOUNDS:
+            self.sound_test_combo.addItem(SOUND_LABELS.get(name, name), name)
+        self.sound_test_button = QPushButton("Jouer", self.notifications_page)
+        self.sound_test_button.clicked.connect(self.test_sound)
+        self.sound_test_layout.addWidget(self.sound_test_label)
+        self.sound_test_layout.addWidget(self.sound_test_combo)
+        self.sound_test_layout.addWidget(self.sound_test_button)
+        self.notifications_layout.addLayout(self.sound_test_layout)
 
         # Bouton de test des notifications
         self.test_notification_button = QPushButton("Tester la notification", self.notifications_page)
@@ -1049,4 +1076,21 @@ class PreferencesDialog(QDialog):
         # Passe par le gestionnaire (écran de l'app, coin configuré, sans focus) ;
         # force=True car le test doit s'afficher même notifications désactivées.
         self.parent().show_notification(data, internal=True, font_size=font_size, force=True)
+
+    def test_sound(self):
+        """Joue directement le son sélectionné via le lecteur audio, SANS passer
+        par le gestionnaire de notifications : chaque clic rejoue le son, même
+        rapproché (pas de déduplication). Sert au réglage du volume.
+
+        Le volume d'aperçu est posé et sera restauré à l'annulation, comme pour
+        « Tester la notification »."""
+        sound_name = self.sound_test_combo.currentData()
+        if not sound_name:
+            return
+        player = getattr(self.parent(), "audio_player", None)
+        if player is None:
+            return
+        if self._set_player_volume(self.volume_spinbox.value()):
+            self._volume_previewed = True
+        player.play_sound(sound_name)
 

@@ -184,3 +184,108 @@ def test_son_inconnu_ne_leve_pas(qapp, caplog):
     with caplog.at_level(logging.WARNING, logger="appcomptoir.audio"):
         player.play_sound("inexistant")
     assert any("inexistant" in r.getMessage() for r in caplog.records)
+
+
+# --- test direct d'un son dans les préférences ------------------------------
+# Le bouton « Tester un son » joue via audio_player.play_sound, SANS passer par
+# le gestionnaire de notifications : deux clics rapprochés rejouent le son
+# (pas de déduplication, contrairement à « Tester la notification »).
+
+def test_test_sound_joue_directement_sans_deduplication(qapp):
+    from unittest.mock import Mock, call
+    import types
+
+    from PySide6.QtWidgets import QComboBox, QSpinBox
+    import preferences as prefs
+
+    audio_player = Mock()
+    parent = types.SimpleNamespace(audio_player=audio_player)
+
+    dialog = types.SimpleNamespace(
+        _volume_previewed=False,
+        current_volume=50,
+        volume_spinbox=QSpinBox(),
+        sound_test_combo=QComboBox(),
+        parent=lambda: parent,
+    )
+    dialog.volume_spinbox.setValue(70)
+    for name in audio.SOUNDS:
+        dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
+    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
+    dialog._set_player_volume = types.MethodType(
+        prefs.PreferencesDialog._set_player_volume, dialog)
+
+    # Premier clic : joue le son par défaut (« ding », premier de SOUNDS).
+    dialog.test_sound()
+    assert audio_player.play_sound.call_count == 1
+
+    # Second clic rapproché : REJOUE le son (pas de déduplication).
+    dialog.test_sound()
+    assert audio_player.play_sound.call_count == 2
+
+    # Changement de son : joue le son sélectionné.
+    dialog.sound_test_combo.setCurrentIndex(1)
+    dialog.test_sound()
+    assert audio_player.play_sound.call_args == call(
+        dialog.sound_test_combo.currentData())
+
+
+def test_test_sound_applique_le_volume_d_aperçu(qapp):
+    """Le volume du spinbox est appliqué au lecteur avant de jouer le son."""
+    from unittest.mock import Mock
+    import types
+
+    from PySide6.QtWidgets import QComboBox, QSpinBox
+    import preferences as prefs
+
+    audio_player = Mock()
+    parent = types.SimpleNamespace(audio_player=audio_player)
+
+    dialog = types.SimpleNamespace(
+        _volume_previewed=False,
+        current_volume=50,
+        volume_spinbox=QSpinBox(),
+        sound_test_combo=QComboBox(),
+        parent=lambda: parent,
+    )
+    dialog.volume_spinbox.setValue(80)
+    for name in audio.SOUNDS:
+        dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
+    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
+    dialog._set_player_volume = types.MethodType(
+        prefs.PreferencesDialog._set_player_volume, dialog)
+
+    dialog.test_sound()
+    audio_player.set_volume.assert_called_once_with(80)
+    assert dialog._volume_previewed is True
+
+
+def test_test_sound_sans_lecteur_ne_leve_pas(qapp):
+    """Pas de lecteur audio (tests, ou avant init_audio) : ne lève pas."""
+    import types
+
+    from PySide6.QtWidgets import QComboBox, QSpinBox
+    import preferences as prefs
+
+    parent = types.SimpleNamespace(audio_player=None)
+    dialog = types.SimpleNamespace(
+        _volume_previewed=False,
+        current_volume=50,
+        volume_spinbox=QSpinBox(),
+        sound_test_combo=QComboBox(),
+        parent=lambda: parent,
+    )
+    for name in audio.SOUNDS:
+        dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
+    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
+    dialog._set_player_volume = types.MethodType(
+        prefs.PreferencesDialog._set_player_volume, dialog)
+
+    # Ne doit pas lever.
+    dialog.test_sound()
+
+
+def test_options_test_son_couvrivent_les_sons_embarques():
+    """Le sélecteur « Tester un son » propose exactement les sons de audio.SOUNDS."""
+    import preferences as prefs
+    assert set(prefs.SOUND_LABELS) == set(audio.SOUNDS)
