@@ -189,7 +189,8 @@ def test_son_inconnu_ne_leve_pas(qapp, caplog):
 # --- test direct d'un son dans les préférences ------------------------------
 # Le bouton « Tester un son » joue via audio_player.play_sound, SANS passer par
 # le gestionnaire de notifications : deux clics rapprochés rejouent le son
-# (pas de déduplication, contrairement à « Tester la notification »).
+# (pas de déduplication, contrairement à « Tester la notification »). D'où
+# force=True, qui court-circuite aussi la politique des sons rapprochés.
 
 def test_test_sound_joue_directement_sans_deduplication(qapp):
     from unittest.mock import Mock, call
@@ -227,7 +228,7 @@ def test_test_sound_joue_directement_sans_deduplication(qapp):
     dialog.sound_test_combo.setCurrentIndex(1)
     dialog.test_sound()
     assert audio_player.play_sound.call_args == call(
-        dialog.sound_test_combo.currentData())
+        dialog.sound_test_combo.currentData(), force=True)
 
 
 def test_test_sound_applique_le_volume_d_aperçu(qapp):
@@ -289,3 +290,96 @@ def test_options_test_son_couvrivent_les_sons_embarques():
     """Le sélecteur « Tester un son » propose exactement les sons de audio.SOUNDS."""
     import preferences as prefs
     assert set(prefs.SOUND_LABELS) == set(audio.SOUNDS)
+
+
+# --- sons rapprochés (point 3) ----------------------------------------------
+# La politique elle-même est testée à part (test_audio_policy.py, sans Qt) ;
+# ici on vérifie le CÂBLAGE : ce que le lecteur Qt fait vraiment des décisions.
+
+@pytest.fixture
+def fake_player(qapp):
+    """Lecteur réel dont le QMediaPlayer est remplacé par un espion.
+
+    Rien n'est joué (pas de périphérique audio en CI) : on observe les appels à
+    setSource/play et on simule les fins de lecture.
+    """
+    from unittest.mock import Mock
+
+    player = audio.build_audio_player(None, volume=50)
+    player.player = Mock()
+    return player
+
+
+def _sources(fake_player):
+    """Noms logiques des sons réellement envoyés au QMediaPlayer, dans l'ordre."""
+    by_url = {url: name for name, url in fake_player.sounds.items()}
+    return [by_url[call.args[0]] for call in fake_player.player.setSource.call_args_list]
+
+
+def _end_of_media(player):
+    from PySide6.QtMultimedia import QMediaPlayer
+    player._handle_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+
+
+def test_un_ding_ne_coupe_plus_une_alerte_parlee(fake_player):
+    """Le défaut d'origine : la source était remplacée à chaque demande."""
+    fake_player.play_sound("please_validate")
+    fake_player.play_sound("ding")
+    assert _sources(fake_player) == ["please_validate"]
+
+
+def test_une_alerte_coupe_le_ding_en_cours(fake_player):
+    fake_player.play_sound("ding")
+    fake_player.play_sound("patient_taken")
+    assert _sources(fake_player) == ["ding", "patient_taken"]
+
+
+def test_une_alerte_en_attente_part_a_la_fin_de_la_precedente(fake_player):
+    fake_player.play_sound("patient_taken")
+    fake_player.play_sound("please_validate")
+    assert _sources(fake_player) == ["patient_taken"]
+    _end_of_media(fake_player)
+    assert _sources(fake_player) == ["patient_taken", "please_validate"]
+    assert fake_player.player.play.call_count == 2
+
+
+def test_le_bouton_de_test_rejoue_toujours(fake_player):
+    """« Tester un son » (force=True) : chaque clic s'entend, même rapproché."""
+    fake_player.play_sound("ding", force=True)
+    fake_player.play_sound("ding", force=True)
+    assert _sources(fake_player) == ["ding", "ding"]
+
+
+def test_une_erreur_du_lecteur_debloque_la_file(fake_player):
+    """Sans cela, un son qui ne s'achève jamais gèlerait tous les suivants."""
+    fake_player.play_sound("patient_taken")
+    fake_player.play_sound("please_validate")
+    fake_player.handle_error("erreur", "périphérique disparu")
+    assert _sources(fake_player) == ["patient_taken", "please_validate"]
+
+
+def test_le_delai_de_garde_debloque_la_file(fake_player):
+    """Aucun signal de fin ne vient : le garde-fou enchaîne quand même."""
+    fake_player.play_sound("patient_taken")
+    fake_player.play_sound("please_validate")
+    assert fake_player._watchdog.isActive()
+    fake_player._watchdog.timeout.emit()
+    assert _sources(fake_player) == ["patient_taken", "please_validate"]
+
+
+def test_un_media_illisible_pendant_le_demarrage_ne_boucle_pas(fake_player):
+    """Qt peut signaler l'échec DANS setSource : pas de réentrance dans _start."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    fake_player.player.setSource.side_effect = lambda url: fake_player._handle_media_status(
+        QMediaPlayer.MediaStatus.InvalidMedia)
+    fake_player.play_sound("patient_taken")
+    assert _sources(fake_player) == ["patient_taken"]
+    assert fake_player.scheduler.current is None   # la file est libre
+
+
+def test_un_son_inconnu_ne_touche_pas_a_la_lecture_en_cours(fake_player):
+    fake_player.play_sound("please_validate")
+    fake_player.play_sound("inexistant")
+    assert _sources(fake_player) == ["please_validate"]
+    assert fake_player.scheduler.current == "please_validate"

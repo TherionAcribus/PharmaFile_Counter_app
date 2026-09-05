@@ -1080,7 +1080,9 @@ class PreferencesDialog(QDialog):
     def test_sound(self):
         """Joue directement le son sélectionné via le lecteur audio, SANS passer
         par le gestionnaire de notifications : chaque clic rejoue le son, même
-        rapproché (pas de déduplication). Sert au réglage du volume.
+        rapproché (pas de déduplication) et en coupant le son en cours
+        (``force``, qui court-circuite la politique des sons rapprochés). Sert au
+        réglage du volume.
 
         Le volume d'aperçu est posé et sera restauré à l'annulation, comme pour
         « Tester la notification »."""
@@ -1092,5 +1094,5 @@ class PreferencesDialog(QDialog):
             return
         if self._set_player_volume(self.volume_spinbox.value()):
             self._volume_previewed = True
-        player.play_sound(sound_name)
+        player.play_sound(sound_name, force=True)
 
