@@ -149,10 +149,12 @@ def _window(**overrides):
         notification_prefs=_prefs(**overrides),
         shown=[],
         played=[],
+        notified_patients=[],
     )
-    def _notify_spy(data, internal=False, font_size=None, play_sound=True):
+    def _notify_spy(data, internal=False, font_size=None, play_sound=True, patient_id=None):
         origin, _message = extract_origin_message(data, internal)
         w.shown.append((origin, play_sound))
+        w.notified_patients.append(patient_id)
 
     manager = types.SimpleNamespace(notify=_notify_spy)
     w._ensure_notification_manager = lambda: manager
@@ -204,3 +206,58 @@ def test_standalone_sound_follows_its_category_preference():
     muted = _window(notification_system_sound=False)
     muted.play_notification_sound("patient_taken", "patient_taken")
     assert muted.played == []
+
+
+# --- Rappel « pensez à valider » : annulation et obsolescence -------------
+
+def _validate_window(patient_id=None):
+    """Fenêtre minimale portant les méthodes liées au rappel de validation."""
+    w = _window()
+    w.patient_id = patient_id
+    w.dismissed = []
+    w.notification_manager = types.SimpleNamespace(
+        dismiss=lambda origin, **kw: w.dismissed.append((origin, kw)))
+    w.close_please_validate_notification = types.MethodType(
+        main.MainWindow.close_please_validate_notification, w)
+    w.is_notification_obsolete = types.MethodType(
+        main.MainWindow.is_notification_obsolete, w)
+    return w
+
+
+def test_validation_dismisses_reminders_visible_and_queued():
+    w = _validate_window(patient_id=42)
+    w.close_please_validate_notification()
+    # Le gestionnaire est chargé d'annuler les deux (visibles ET en file).
+    assert w.dismissed == [("please_validate", {})]
+
+
+def test_validation_without_notification_manager_is_harmless():
+    w = _validate_window(patient_id=42)
+    w.notification_manager = None
+    w.close_please_validate_notification()   # ne doit pas lever
+
+
+def test_reminder_is_obsolete_once_the_patient_has_changed():
+    w = _validate_window(patient_id=8)
+    assert w.is_notification_obsolete("please_validate", 7) is True   # patient précédent
+    assert w.is_notification_obsolete("please_validate", 8) is False  # patient courant
+
+
+def test_reminder_is_obsolete_when_there_is_no_patient_left():
+    w = _validate_window(patient_id=None)
+    assert w.is_notification_obsolete("please_validate", 7) is True
+
+
+def test_other_notifications_never_become_obsolete():
+    w = _validate_window(patient_id=8)
+    assert w.is_notification_obsolete("connection", 7) is False
+    assert w.is_notification_obsolete("please_validate", None) is False
+
+
+def test_reminder_carries_the_patient_it_concerns():
+    w = _validate_window(patient_id=42)
+    w.call_timer_delay_expired = types.MethodType(main.MainWindow.call_timer_delay_expired, w)
+    w._set_validate_alert = lambda alert: None
+    w.call_timer_delay_expired()
+    assert [origin for origin, _sound in w.shown] == ["please_validate"]
+    assert w.notified_patients == [42]

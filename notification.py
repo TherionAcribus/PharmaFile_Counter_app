@@ -42,8 +42,13 @@ def extract_origin_message(data, internal):
     return (str(payload), "")
 
 
-#: Notification en attente d'affichage (file du gestionnaire).
-_Spec = namedtuple("_Spec", "data internal font_size signature play_sound")
+#: Notification en attente d'affichage (file du gestionnaire). ``patient_id``
+#: rattache la notification à un patient précis : un rappel devenu caduc (patient
+#: déjà validé) peut ainsi être annulé, en file comme à l'écran.
+_Spec = namedtuple("_Spec", "data internal font_size signature play_sound origin patient_id")
+
+#: Sentinelle « quel que soit le patient » pour ``NotificationManager.dismiss``.
+ANY_PATIENT = object()
 
 
 class NotificationManager:
@@ -64,10 +69,14 @@ class NotificationManager:
 
     # --- API publique ---------------------------------------------------
 
-    def notify(self, data, internal=False, font_size=None, play_sound=True):
+    def notify(self, data, internal=False, font_size=None, play_sound=True,
+               patient_id=None):
         """Point d'entrée unique. Déduplique, puis affiche ou met en file.
         ``play_sound`` : le son est un réglage distinct de l'affichage (la
         décision est prise par l'appelant, cf. notification_rules).
+        ``patient_id`` : patient concerné, s'il y en a un ; il permet d'annuler
+        la notification (``dismiss``) et de ne jamais sortir de la file un rappel
+        devenu caduc.
         Retourne la notification affichée, ou None (dupliquée / mise en file)."""
         origin, message = extract_origin_message(data, internal)
         signature = notification_signature(origin, message)
@@ -84,12 +93,43 @@ class NotificationManager:
             logger.debug("Notification dupliquée déjà en file (origin=%s)", origin)
             return None
 
-        spec = _Spec(data, internal, font_size, signature, play_sound)
+        spec = _Spec(data, internal, font_size, signature, play_sound, origin, patient_id)
         if should_queue(len(self.active_notifications), self.max_visible):
             self.pending.append(spec)
             logger.debug("Notification mise en file (%s en attente)", len(self.pending))
             return None
         return self._create_and_show(spec)
+
+    def dismiss(self, origin, patient_id=ANY_PATIENT):
+        """Annule les notifications d'une ``origin`` donnée : celles affichées
+        ET CELLES ENCORE EN FILE D'ATTENTE.
+
+        Ne fermer que les notifications visibles laissait un rappel en file
+        ressortir — avec son son — dès qu'une place se libérait, alors qu'il était
+        déjà sans objet. ``patient_id`` restreint l'annulation au patient
+        concerné ; par défaut tous les rappels de cette origine sont annulés.
+        Retourne le nombre de notifications annulées."""
+        def matches(spec_origin, spec_patient):
+            return spec_origin == origin and (patient_id is ANY_PATIENT
+                                              or spec_patient == patient_id)
+
+        # La file est purgée AVANT de fermer les notifications visibles : leur
+        # fermeture déclenche _drain(), qui ne doit plus rien trouver à afficher.
+        queued = [spec for spec in self.pending if matches(spec.origin, spec.patient_id)]
+        if queued:
+            self.pending = deque(spec for spec in self.pending
+                                 if not matches(spec.origin, spec.patient_id))
+
+        visible = [notif for notif in self.active_notifications
+                   if matches(getattr(notif, "origin", None),
+                              getattr(notif, "patient_id", None))]
+        for notif in visible:
+            notif.close()
+
+        if queued or visible:
+            logger.debug("Notifications annulées (origin=%s) : %s visible(s), %s en file",
+                         origin, len(visible), len(queued))
+        return len(queued) + len(visible)
 
     def update_positions(self):
         """Repositionne toutes les notifications visibles sur l'écran courant de
@@ -111,6 +151,7 @@ class NotificationManager:
                                    parent=self.main_window, internal=spec.internal,
                                    manager=self, play_sound=spec.play_sound)
         notif.signature = spec.signature
+        notif.patient_id = spec.patient_id
         self.active_notifications.append(notif)
         self._active_signatures[spec.signature] = notif
         notif.closed.connect(lambda n=notif: self._on_closed(n))
@@ -133,7 +174,20 @@ class NotificationManager:
             spec = self.pending.popleft()
             if spec.signature in self._active_signatures:
                 continue  # devenue redondante entre-temps
+            if self._is_obsolete(spec):
+                logger.debug("Notification en file devenue caduque, non affichée (origin=%s)",
+                             spec.origin)
+                continue
             self._create_and_show(spec)
+
+    def _is_obsolete(self, spec):
+        """Une notification peut perdre son objet entre sa mise en file et son
+        affichage (le patient a été validé entre-temps). La fenêtre principale
+        tranche quand elle sait le faire ; sinon la notification reste valable."""
+        check = getattr(self.main_window, "is_notification_obsolete", None)
+        if check is None:
+            return False
+        return bool(check(spec.origin, spec.patient_id))
 
     def _target_screen(self):
         """Écran où se trouve la fenêtre principale (windowHandle().screen() puis
@@ -165,6 +219,9 @@ class CustomNotification(QDialog):
 
         self.internal = internal
         self.manager = manager
+        # Patient concerné, renseigné par le gestionnaire : sert à annuler un
+        # rappel devenu sans objet (cf. NotificationManager.dismiss).
+        self.patient_id = None
         # Son joué à l'affichage : décidé par l'appelant (préférence de son de la
         # catégorie), indépendamment du fait que la notification soit affichée.
         self.play_sound = play_sound

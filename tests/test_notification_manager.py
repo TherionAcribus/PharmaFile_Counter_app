@@ -217,3 +217,88 @@ def test_queued_notification_keeps_its_own_sound_setting(main_window):
     assert len(mgr.pending) == 1
     first.close()                      # libère la place : la file se vide
     assert main_window.audio_player.played == ["ding"]   # la 2e est restée muette
+
+
+# --- Annulation d'un rappel devenu sans objet (point 2) -------------------
+
+def test_dismiss_drops_the_reminder_still_queued(main_window):
+    """Un rappel « pensez à valider » encore EN FILE au moment de la validation
+    ne doit jamais ressortir : il sonnait quand une place se libérait."""
+    main_window.audio_player = FakeAudioPlayer()
+    mgr = NotificationManager(main_window, max_visible=1)
+    visible = mgr.notify(_data("connection", "serveur"), internal=True)
+    mgr.notify(_data("please_validate", "valider"), internal=True, patient_id=42)
+    assert len(mgr.pending) == 1
+
+    assert mgr.dismiss("please_validate") == 1     # le patient vient d'être validé
+    assert len(mgr.pending) == 0
+
+    visible.close()                                # une place se libère
+    assert mgr.active_notifications == []
+    assert "please_validate" not in main_window.audio_player.played
+
+
+def test_dismiss_closes_visible_and_queued_together(main_window):
+    main_window.audio_player = FakeAudioPlayer()
+    mgr = NotificationManager(main_window, max_visible=1)
+    mgr.notify(_data("please_validate", "valider"), internal=True, patient_id=42)
+    mgr.notify(_data("please_validate", "valider (2e message)"), internal=True, patient_id=42)
+    assert len(mgr.active_notifications) == 1 and len(mgr.pending) == 1
+
+    assert mgr.dismiss("please_validate") == 2
+    assert mgr.active_notifications == [] and len(mgr.pending) == 0
+
+
+def test_dismiss_leaves_other_origins_alone(main_window):
+    mgr = NotificationManager(main_window, max_visible=1)
+    mgr.notify(_data("connection", "serveur"), internal=True)
+    mgr.notify(_data("new_patient", "arrivée"), internal=True)   # en file
+
+    assert mgr.dismiss("please_validate") == 0
+    assert len(mgr.active_notifications) == 1 and len(mgr.pending) == 1
+
+
+def test_dismiss_can_target_a_single_patient(main_window):
+    mgr = NotificationManager(main_window, max_visible=1)
+    mgr.notify(_data("please_validate", "patient A"), internal=True, patient_id=1)
+    mgr.notify(_data("please_validate", "patient B"), internal=True, patient_id=2)
+
+    assert mgr.dismiss("please_validate", patient_id=2) == 1   # seul B est annulé
+    assert len(mgr.pending) == 0
+    assert len(mgr.active_notifications) == 1
+    assert mgr.active_notifications[0].patient_id == 1
+
+
+def test_queued_reminder_is_dropped_when_its_patient_is_gone(main_window):
+    """Filet de sécurité : même sans annulation explicite, un rappel rattaché à
+    un patient qui n'est plus celui du comptoir ne sort pas de la file."""
+    main_window.audio_player = FakeAudioPlayer()
+    main_window.patient_id = 7
+    main_window.is_notification_obsolete = (
+        lambda origin, patient_id: origin == "please_validate"
+        and patient_id is not None and patient_id != main_window.patient_id)
+
+    mgr = NotificationManager(main_window, max_visible=1)
+    visible = mgr.notify(_data("connection", "serveur"), internal=True)
+    mgr.notify(_data("please_validate", "valider"), internal=True, patient_id=7)
+    main_window.patient_id = 8            # patient suivant : le rappel est caduc
+
+    visible.close()
+    assert mgr.active_notifications == []
+    assert "please_validate" not in main_window.audio_player.played
+
+
+def test_queued_reminder_of_the_current_patient_is_still_shown(main_window):
+    main_window.audio_player = FakeAudioPlayer()
+    main_window.patient_id = 7
+    main_window.is_notification_obsolete = (
+        lambda origin, patient_id: origin == "please_validate"
+        and patient_id is not None and patient_id != main_window.patient_id)
+
+    mgr = NotificationManager(main_window, max_visible=1)
+    visible = mgr.notify(_data("connection", "serveur"), internal=True)
+    mgr.notify(_data("please_validate", "valider"), internal=True, patient_id=7)
+
+    visible.close()
+    assert len(mgr.active_notifications) == 1
+    assert main_window.audio_player.played == ["ding", "please_validate"]

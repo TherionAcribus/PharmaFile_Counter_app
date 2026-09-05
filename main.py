@@ -11,9 +11,7 @@ from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
 from button_state import MALFORMED, resolve_patient_buttons
 from patient_list_model import PatientListModel
 import notification_rules
-from notification import (
-    CustomNotification, NotificationManager, extract_origin_message,
-)
+from notification import NotificationManager, extract_origin_message
 from connections import NetworkManager
 from counter_api import CounterApi
 import main_window_ui
@@ -482,11 +480,13 @@ class MainWindow(QMainWindow):
             self.update_my_buttons(self.my_patient)
 
     def close_please_validate_notification(self):
-        # Fermeture des notification qui appele à valider le patient si il y a en a ouverte et que l'on clique sur le bouton "Valider"
-        if getattr(self, 'notification_manager', None) is not None:
-            for notification in self.notification_manager.active_notifications[:]:  # Create a copy of the list to avoid modification during iteration
-                if isinstance(notification, CustomNotification) and getattr(notification, 'origin', None) == "please_validate":
-                    notification.close()
+        """Annule le rappel « pensez à valider » quand le patient vient d'être
+        validé : les notifications affichées ET celles encore en file d'attente.
+        Ne fermer que les notifications visibles laissait un rappel en file
+        ressortir — avec son son — dès qu'une place se libérait."""
+        manager = getattr(self, 'notification_manager', None)
+        if manager is not None:
+            manager.dismiss("please_validate")
 
     def call_web_function_pause(self):
         self.logger.debug("Mise en pause du patient")
@@ -1424,14 +1424,17 @@ class MainWindow(QMainWindow):
             self.notification_manager = NotificationManager(self)
         return self.notification_manager
 
-    def show_notification(self, data, internal=False, font_size=None, force=False):
+    def show_notification(self, data, internal=False, font_size=None, force=False,
+                          patient_id=None):
         """Point de filtrage UNIQUE des notifications.
 
         La catégorie est déduite de l'origine (notification_rules) : chaque
         catégorie a sa propre case « afficher » et sa propre case « son », et ne
         peut donc plus faire taire les autres. `force` = afficher et sonner quels
         que soient les réglages (bouton de test des préférences, retour visuel
-        d'un raccourci, qui ont leur propre préférence).
+        d'un raccourci, qui ont leur propre préférence). `patient_id` rattache la
+        notification à un patient : un rappel le concernant est annulable et ne
+        ressort jamais de la file une fois ce patient validé.
         """
         origin, _message = extract_origin_message(data, internal)
         prefs = getattr(self, "notification_prefs", None)
@@ -1440,7 +1443,17 @@ class MainWindow(QMainWindow):
             return
         play_sound = notification_rules.should_play_sound(origin, prefs, force=force)
         self._ensure_notification_manager().notify(
-            data, internal=internal, font_size=font_size, play_sound=play_sound)
+            data, internal=internal, font_size=font_size, play_sound=play_sound,
+            patient_id=patient_id)
+
+    def is_notification_obsolete(self, origin, patient_id):
+        """Consultée par le gestionnaire avant de sortir une notification de la
+        file : un rappel « pensez à valider » rattaché à un patient n'a plus
+        d'objet dès que ce patient n'est plus celui du comptoir (validé, repris
+        par un autre poste, file vidée…)."""
+        if origin != "please_validate" or patient_id is None:
+            return False
+        return patient_id != getattr(self, "patient_id", None)
 
     def play_notification_sound(self, origin, sound):
         """Joue un son d'alerte NON accompagné d'une notification (p. ex. patient
@@ -1546,7 +1559,8 @@ class MainWindow(QMainWindow):
 
     def call_timer_delay_expired(self):
         self._set_validate_alert(True)
-        self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."}, internal=True)
+        self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."},
+                               internal=True, patient_id=self.patient_id)
 
     def create_call_timer(self):
         """ Permet de définir un timer qui envoye une alerte si le patient n'est pas validé """
