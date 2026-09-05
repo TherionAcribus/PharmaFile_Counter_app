@@ -190,6 +190,10 @@ class PreferencesDialog(QDialog):
         # rappel, fermer les préférences sans enregistrer laissait le lecteur au
         # volume d'essai (le thème, lui, était bien restauré).
         self.current_volume = None
+        # Mode muet enregistré : restauré lui aussi si l'utilisateur ferme sans
+        # enregistrer (l'aperçu applique le volume ET le mode muet en cours
+        # d'édition, sinon « Tester » resterait muet après avoir décoché).
+        self.current_muted = None
         self._volume_previewed = False
 
         self.main_layout = QHBoxLayout(self)
@@ -502,6 +506,18 @@ class PreferencesDialog(QDialog):
         self.notification_corner_layout.addWidget(self.notification_corner_combo)
         self.notifications_layout.addLayout(self.notification_corner_layout)
 
+        # Mode muet : réglage DISTINCT du volume. Couper le son en descendant le
+        # curseur à 0 faisait perdre le réglage préféré ; ici le volume reste
+        # affiché (mais grisé) et sera retrouvé tel quel en rétablissant le son.
+        self.mute_checkbox = QCheckBox(
+            "Couper tous les sons (le volume réglé est conservé)",
+            self.notifications_page)
+        self.mute_checkbox.setToolTip(
+            "Aucun son n'est joué tant que la case est cochée ; les "
+            "notifications restent affichées.")
+        self.mute_checkbox.toggled.connect(self.update_sound_controls_enabled)
+        self.notifications_layout.addWidget(self.mute_checkbox)
+
         # Ajout du contrôle du volume avec affichage numérique
         self.volume_layout = QHBoxLayout()
         self.volume_label = QLabel("Volume des notifications:", self.notifications_page)
@@ -541,6 +557,17 @@ class PreferencesDialog(QDialog):
         self.sound_test_layout.addWidget(self.sound_test_combo)
         self.sound_test_layout.addWidget(self.sound_test_button)
         self.notifications_layout.addLayout(self.sound_test_layout)
+
+        # Diagnostic : jusqu'ici un échec audio (périphérique absent, codec
+        # manquant, fichier son introuvable…) n'allait QUE dans le journal —
+        # l'utilisateur ne voyait qu'un silence. Le lecteur signale désormais son
+        # dernier problème, affiché ici et rafraîchi en direct.
+        self.audio_error_label = QLabel("", self.notifications_page)
+        self.audio_error_label.setWordWrap(True)
+        self.audio_error_label.setStyleSheet("color: #b00020;")
+        self.audio_error_label.setAccessibleName("Problème audio")
+        self.audio_error_label.setVisible(False)
+        self.notifications_layout.addWidget(self.audio_error_label)
 
         # Bouton de test des notifications
         self.test_notification_button = QPushButton("Tester la notification", self.notifications_page)
@@ -695,6 +722,11 @@ class PreferencesDialog(QDialog):
         volume = settings_schema.read(settings, "notification_volume")
         self.volume_slider.setValue(volume)
         self.current_volume = volume
+        muted = settings_schema.read(settings, "notification_muted")
+        self.mute_checkbox.setChecked(muted)
+        self.current_muted = muted
+        self.update_sound_controls_enabled()
+        self.watch_audio_errors()
 
         self.always_on_top_checkbox.setChecked(settings_schema.read(settings, "always_on_top"))
         self.horizontal_mode.setChecked(settings_schema.read(settings, "vertical_mode"))
@@ -886,6 +918,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("message_tone", self.message_tone_combo.currentData())
         settings.setValue("notification_corner", self.notification_corner_combo.currentData())
         settings.setValue("notification_volume", self.volume_slider.value())
+        settings.setValue("notification_muted", self.mute_checkbox.isChecked())
 
         settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
         settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
@@ -911,6 +944,7 @@ class PreferencesDialog(QDialog):
         # référence, un aperçu antérieur n'a donc plus rien à restaurer (c'est
         # apply_preferences, côté fenêtre, qui l'applique au lecteur).
         self.current_volume = self.volume_slider.value()
+        self.current_muted = self.mute_checkbox.isChecked()
         self._volume_previewed = False
 
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
@@ -1044,35 +1078,94 @@ class PreferencesDialog(QDialog):
         self.restore_volume()
         super().reject()
 
+    def _player(self):
+        """Lecteur audio de la fenêtre principale, ou None (en test, ou avant sa
+        création au démarrage)."""
+        return getattr(self.parent(), "audio_player", None)
+
     def _set_player_volume(self, volume):
         """Applique un volume au lecteur de la fenêtre principale.
 
         Renvoie True si le lecteur existait (absent en test, ou avant sa
         création au démarrage)."""
-        player = getattr(self.parent(), "audio_player", None)
+        player = self._player()
         if player is None:
             return False
         player.set_volume(volume)
         return True
 
+    def apply_audio_preview(self):
+        """Applique au lecteur le volume ET le mode muet EN COURS D'ÉDITION.
+
+        Un bouton « Tester » doit faire entendre le réglage qu'on est en train
+        de régler, pas celui enregistré : sans le mode muet, décocher « couper
+        tous les sons » puis tester serait resté silencieux. L'aperçu est annulé
+        (restore_volume) si le dialogue est fermé sans enregistrer."""
+        if not self._set_player_volume(self.volume_spinbox.value()):
+            return False
+        self._player().set_muted(self.mute_checkbox.isChecked())
+        self._volume_previewed = True
+        return True
+
     def restore_volume(self):
-        """Annule le volume d'aperçu posé par « Tester la notification ».
+        """Annule l'aperçu (volume ET mode muet) posé par les boutons « Tester ».
 
         Ne touche au lecteur que si un aperçu a réellement eu lieu, pour ne pas
-        écraser un volume réglé ailleurs entre-temps."""
+        écraser un réglage posé ailleurs entre-temps."""
         if not self._volume_previewed or self.current_volume is None:
             return
-        if self._set_player_volume(self.current_volume):
-            logger.debug("Volume d'aperçu annulé, retour à %s%%", self.current_volume)
+        player = self._player()
+        if player is not None:
+            player.set_volume(self.current_volume)
+            if self.current_muted is not None:
+                player.set_muted(self.current_muted)
+            logger.debug("Aperçu audio annulé, retour à %s%% (muet : %s)",
+                         self.current_volume, self.current_muted)
         self._volume_previewed = False
+
+    def update_sound_controls_enabled(self):
+        """Grise les réglages de son quand tout est coupé.
+
+        Le volume reste VISIBLE (valeur conservée, pas perdue) : c'est tout
+        l'intérêt d'un mode muet séparé du curseur."""
+        enabled = not self.mute_checkbox.isChecked()
+        for widget in (self.volume_label, self.volume_slider, self.volume_spinbox,
+                       self.sound_test_label, self.sound_test_combo,
+                       self.sound_test_button):
+            widget.setEnabled(enabled)
+        self.sound_test_button.setToolTip(
+            "" if enabled else
+            "Les sons sont coupés : décochez « Couper tous les sons » pour tester.")
+
+    def watch_audio_errors(self):
+        """Affiche le dernier problème audio connu, puis suit les suivants.
+
+        Sans cela, une panne de son (périphérique absent, codec manquant,
+        fichier son introuvable) n'existait que dans le journal."""
+        player = self._player()
+        if player is None:
+            return
+        # Le suivi en direct est un bonus : un lecteur sans signal (tests) voit
+        # quand même son dernier problème affiché à l'ouverture.
+        signal = getattr(player, "error_changed", None)
+        if signal is not None:
+            signal.connect(self.show_audio_error)
+        self.show_audio_error(getattr(player, "last_error", ""))
+
+    def show_audio_error(self, message):
+        """Affiche (ou efface) le message de problème audio."""
+        message = message or ""
+        self.audio_error_label.setText(
+            f"Problème audio : {message}" if message else "")
+        self.audio_error_label.setVisible(bool(message))
 
     def test_notification(self):
         data = {"origin": "test_notification", "message": "Test de notification"}
         font_size = self.notification_font_size_spinbox.value()
-        # Aperçu : on joue au volume en cours d'édition, en mémorisant qu'il
-        # faudra revenir au volume enregistré si l'utilisateur annule.
-        if self._set_player_volume(self.volume_spinbox.value()):
-            self._volume_previewed = True
+        # Aperçu : on joue avec le volume et le mode muet en cours d'édition, en
+        # mémorisant qu'il faudra revenir aux valeurs enregistrées si
+        # l'utilisateur annule.
+        self.apply_audio_preview()
         # Passe par le gestionnaire (écran de l'app, coin configuré, sans focus) ;
         # force=True car le test doit s'afficher même notifications désactivées.
         self.parent().show_notification(data, internal=True, font_size=font_size, force=True)
@@ -1084,15 +1177,18 @@ class PreferencesDialog(QDialog):
         (``force``, qui court-circuite la politique des sons rapprochés). Sert au
         réglage du volume.
 
-        Le volume d'aperçu est posé et sera restauré à l'annulation, comme pour
-        « Tester la notification »."""
+        Le volume (et le mode muet) d'aperçu sont posés et seront restaurés à
+        l'annulation, comme pour « Tester la notification ». Un éventuel
+        problème audio affiché est effacé avant l'essai : le message qui
+        s'affichera ensuite concerne bien CE clic."""
         sound_name = self.sound_test_combo.currentData()
         if not sound_name:
             return
-        player = getattr(self.parent(), "audio_player", None)
+        player = self._player()
         if player is None:
             return
-        if self._set_player_volume(self.volume_spinbox.value()):
-            self._volume_previewed = True
+        if hasattr(player, "clear_error"):
+            player.clear_error()
+        self.apply_audio_preview()
         player.play_sound(sound_name, force=True)
 

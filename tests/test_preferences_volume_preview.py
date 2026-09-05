@@ -6,6 +6,10 @@ préférences sans enregistrer restaurait le thème mais pas le volume (volume 5
 test à 90, annulation → le lecteur restait à 90). Le volume enregistré est
 désormais rétabli à l'annulation, comme le skin.
 
+L'aperçu porte aussi sur le MODE MUET (point 4) : décocher « couper tous les
+sons » puis tester doit s'entendre, et l'annulation doit rendre le mode muet
+enregistré comme elle rend le volume.
+
 Tests « faux self » (comme test_preferences_workers) pour la logique, plus un
 vrai QDialog pour vérifier le chemin complet de reject().
 """
@@ -22,11 +26,15 @@ import preferences  # noqa: E402
 
 
 class FakePlayer:
-    def __init__(self, volume=50):
+    def __init__(self, volume=50, muted=False):
         self.volume = volume
+        self.muted = muted
 
     def set_volume(self, volume):
         self.volume = volume
+
+    def set_muted(self, muted):
+        self.muted = muted
 
 
 class FakeParent:
@@ -38,16 +46,24 @@ class FakeParent:
         self.notifications.append((data, kwargs))
 
 
-def _dialog(player, edited_volume, saved_volume=50):
+#: Méthodes du vrai dialogue greffées sur le « faux self ».
+_METHODS = ("_player", "_set_player_volume", "apply_audio_preview",
+            "restore_volume", "test_notification")
+
+
+def _dialog(player, edited_volume, saved_volume=50,
+            edited_muted=False, saved_muted=False):
     parent = FakeParent(player) if player is not None else types.SimpleNamespace()
     w = types.SimpleNamespace(
         current_volume=saved_volume,
+        current_muted=saved_muted,
         _volume_previewed=False,
         volume_spinbox=types.SimpleNamespace(value=lambda: edited_volume),
+        mute_checkbox=types.SimpleNamespace(isChecked=lambda: edited_muted),
         notification_font_size_spinbox=types.SimpleNamespace(value=lambda: 12),
     )
     w.parent = lambda: parent
-    for name in ("_set_player_volume", "restore_volume", "test_notification"):
+    for name in _METHODS:
         setattr(w, name, types.MethodType(getattr(preferences.PreferencesDialog, name), w))
     return w
 
@@ -70,6 +86,23 @@ def test_test_notification_without_player_does_not_flag_preview():
     assert w._volume_previewed is False   # rien à restaurer si aucun lecteur
 
 
+def test_apercu_applique_le_mode_muet_en_cours_d_edition():
+    """Décocher « couper tous les sons » puis tester doit s'entendre : le mode
+    muet enregistré ne doit pas survivre à l'aperçu."""
+    player = FakePlayer(volume=50, muted=True)
+    w = _dialog(player, edited_volume=60, edited_muted=False, saved_muted=True)
+    w.test_notification()
+    assert player.muted is False
+    assert player.volume == 60
+
+
+def test_apercu_coupe_le_son_si_la_case_vient_d_etre_cochee():
+    player = FakePlayer(volume=50, muted=False)
+    w = _dialog(player, edited_volume=60, edited_muted=True, saved_muted=False)
+    w.test_notification()
+    assert player.muted is True
+
+
 # --- Restauration -----------------------------------------------------------
 
 def test_restore_volume_restores_saved_volume_after_preview():
@@ -79,6 +112,17 @@ def test_restore_volume_restores_saved_volume_after_preview():
     w.restore_volume()
     assert player.volume == 50            # le scénario du rapport : 50 → test 90 → annulation
     assert w._volume_previewed is False
+
+
+def test_restore_volume_rend_aussi_le_mode_muet_enregistre():
+    player = FakePlayer(volume=50, muted=True)
+    w = _dialog(player, edited_volume=90, saved_volume=50,
+                edited_muted=False, saved_muted=True)
+    w.test_notification()
+    assert player.muted is False          # aperçu : on entend le réglage édité
+    w.restore_volume()
+    assert player.muted is True           # annulation : on rend le réglage enregistré
+    assert player.volume == 50
 
 
 def test_restore_volume_is_a_noop_without_preview():
@@ -101,7 +145,7 @@ def test_restore_volume_is_a_noop_when_volume_unknown():
 
 def test_reject_restores_skin_and_volume(_shared_qapplication):
     parent = QWidget()
-    player = FakePlayer(volume=50)
+    player = FakePlayer(volume=50, muted=True)
     parent.audio_player = player
 
     dialog = preferences.PreferencesDialog.__new__(preferences.PreferencesDialog)
@@ -109,14 +153,18 @@ def test_reject_restores_skin_and_volume(_shared_qapplication):
     dialog._workers, dialog._closing = {}, False
     dialog.current_skin = "Pas de skin"
     dialog.current_volume = 50
+    dialog.current_muted = True
     dialog._volume_previewed = False
     dialog.volume_spinbox = types.SimpleNamespace(value=lambda: 90)
+    dialog.mute_checkbox = types.SimpleNamespace(isChecked=lambda: False)
     dialog.notification_font_size_spinbox = types.SimpleNamespace(value=lambda: 12)
     parent.show_notification = lambda data, **kwargs: None
 
     dialog.test_notification()
     assert player.volume == 90
+    assert player.muted is False
 
     dialog.reject()
     assert dialog.result() == QDialog.Rejected
     assert player.volume == 50            # fermeture sans enregistrer : volume rendu
+    assert player.muted is True           # ...et mode muet rendu

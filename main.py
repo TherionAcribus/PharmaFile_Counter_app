@@ -318,6 +318,9 @@ class MainWindow(QMainWindow):
         # Coin de l'écran où empiler les notifications (configurable).
         self.notification_corner = settings_schema.read(settings, "notification_corner")
         self.sound_volume = settings_schema.read(settings, "notification_volume")
+        # Mode muet, indépendant du volume : couper le son ne doit pas faire
+        # perdre le réglage préféré (on le retrouve en rétablissant).
+        self.sound_muted = settings_schema.read(settings, "notification_muted")
 
         self.always_on_top = settings_schema.read(settings, "always_on_top")
         self.horizontal_mode = settings_schema.read(settings, "vertical_mode")
@@ -1159,6 +1162,7 @@ class MainWindow(QMainWindow):
         self.setup_global_shortcut()
         if hasattr(self, "audio_player"):
             self.audio_player.set_volume(self.sound_volume)
+            self.audio_player.set_muted(self.sound_muted)
         # Taille de police de la file : le modèle persiste entre deux
         # reconstructions d'interface, on l'applique donc explicitement (point 28).
         if hasattr(self, "patient_model"):
@@ -1272,9 +1276,13 @@ class MainWindow(QMainWindow):
             self.show_preferences_dialog()
 
     def init_audio(self):
-        """ Prépare les sons de l'application (chargés une fois, rejoués ensuite
-        par leur nom : « ding », « patient_taken », « please_validate »). """
-        self.audio_player = build_audio_player(self, self.sound_volume)
+        """ Prépare les sons de l'application, rejoués ensuite par leur nom
+        (« ding », « patient_taken », « please_validate »).
+
+        Le lecteur ne mémorise que les CHEMINS (rien n'est décodé d'avance) ;
+        build_audio_player vérifie en revanche que les fichiers existent et
+        applique le volume ET le mode muet enregistrés. """
+        self.audio_player = build_audio_player(self, self.sound_volume, self.sound_muted)
 
     def closeEvent(self, event):
         # Arrêt propre, ordonné et BORNÉ dans le temps. Chaque étape a un délai

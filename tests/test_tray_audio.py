@@ -174,9 +174,107 @@ def test_les_fichiers_sons_existent():
         assert os.path.exists(resource_path(relative)), relative
 
 
-def test_volume_converti_en_fraction(qapp):
+def test_volume_converti_en_gain_perceptuel(qapp):
+    """Le pourcentage du curseur n'est plus envoyé tel quel : Qt attend un gain
+    LINÉAIRE alors que le curseur est perçu logarithmiquement (50 % sonnait
+    presque comme 100 %). Bornes exactes, milieu nettement sous la moitié."""
+    assert audio.perceptual_volume(0) == 0.0
+    assert audio.perceptual_volume(100) == pytest.approx(1.0)
+    assert audio.perceptual_volume(50) < 0.5
+
     player = audio.build_audio_player(None, volume=70)
-    assert player.audio_output.volume() == pytest.approx(0.7, abs=0.01)
+    assert player.volume == 70                       # réglage conservé tel quel
+    assert player.audio_output.volume() == pytest.approx(audio.perceptual_volume(70))
+
+
+def test_volume_perceptuel_monotone_et_borne(qapp):
+    """Croissant, et tolérant aux valeurs aberrantes (réglage utilisateur)."""
+    gains = [audio.perceptual_volume(p) for p in range(0, 101, 5)]
+    assert gains == sorted(gains)
+    assert audio.perceptual_volume(-10) == 0.0
+    assert audio.perceptual_volume(400) == pytest.approx(1.0)
+    assert audio.perceptual_volume(None) == 0.0      # valeur illisible : silence
+
+
+# --- mode muet (indépendant du volume) --------------------------------------
+
+def test_mode_muet_conserve_le_volume(qapp):
+    """Se taire ne doit plus passer par « curseur à 0 » : le réglage préféré est
+    intact au rétablissement."""
+    player = audio.build_audio_player(None, volume=70)
+    player.set_muted(True)
+    assert player.muted is True
+    assert player.audio_output.isMuted() is True
+    assert player.volume == 70
+    assert player.audio_output.volume() == pytest.approx(audio.perceptual_volume(70))
+
+    player.set_muted(False)
+    assert player.audio_output.isMuted() is False
+    assert player.audio_output.volume() == pytest.approx(audio.perceptual_volume(70))
+
+
+def test_lecteur_construit_muet_si_demande(qapp):
+    player = audio.build_audio_player(None, volume=40, muted=True)
+    assert player.audio_output.isMuted() is True
+    assert player.volume == 40
+
+
+# --- diagnostic : les erreurs audio ne restent plus dans le journal ----------
+
+def test_erreur_audio_memorisee_et_signalee(qapp):
+    """Un échec de lecture était seulement journalisé : l'utilisateur n'avait
+    qu'un silence. Le lecteur retient le dernier problème et le signale."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    player = audio.build_audio_player(None, volume=50)
+    recus = []
+    player.error_changed.connect(recus.append)
+
+    player.handle_error(QMediaPlayer.Error.ResourceError, "Périphérique audio absent")
+    assert "Périphérique audio absent" in player.last_error
+    assert recus == [player.last_error]
+
+    player.clear_error()
+    assert player.last_error == ""
+    assert recus[-1] == ""
+
+
+def test_erreur_audio_nomme_le_son_fautif(qapp, fake_player):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    fake_player.play_sound("ding")
+    fake_player.handle_error(QMediaPlayer.Error.FormatError, "Format non pris en charge")
+    assert "ding" in fake_player.last_error
+    assert "Format non pris en charge" in fake_player.last_error
+
+
+def test_media_illisible_signale_sans_erreur_detaillee(qapp, fake_player):
+    """Qt signale parfois InvalidMedia SANS errorOccurred : on prévient quand même."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    fake_player.play_sound("ding")
+    fake_player._handle_media_status(QMediaPlayer.MediaStatus.InvalidMedia)
+    assert "ding" in fake_player.last_error
+    assert "illisible" in fake_player.last_error
+
+
+def test_erreur_detaillee_conservee_apres_invalid_media(qapp, fake_player):
+    """Le message précis de Qt ne doit pas être écrasé par le repli générique."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    fake_player.play_sound("ding")
+    fake_player.handle_error(QMediaPlayer.Error.FormatError, "Codec MP3 manquant")
+    fake_player._handle_media_status(QMediaPlayer.MediaStatus.InvalidMedia)
+    assert "Codec MP3 manquant" in fake_player.last_error
+
+
+def test_fichier_son_manquant_signale_au_demarrage(qapp, monkeypatch):
+    """Seule vérification faite « au chargement » : l'existence des fichiers.
+    Un son absent est annoncé tout de suite, pas au premier appel de patient."""
+    monkeypatch.setattr(audio.os.path, "exists", lambda path: False)
+    player = audio.build_audio_player(None, volume=50)
+    assert "introuvables" in player.last_error
+    assert "ding" in player.last_error
 
 
 def test_son_inconnu_ne_leve_pas(qapp, caplog):
@@ -192,29 +290,42 @@ def test_son_inconnu_ne_leve_pas(qapp, caplog):
 # (pas de déduplication, contrairement à « Tester la notification »). D'où
 # force=True, qui court-circuite aussi la politique des sons rapprochés.
 
+def _fake_dialog(parent, volume=50):
+    """« Faux self » du dialogue : seules les méthodes du bouton « Jouer » et de
+    l'aperçu audio sont greffées (comme test_preferences_volume_preview)."""
+    import types
+
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QSpinBox
+    import preferences as prefs
+
+    dialog = types.SimpleNamespace(
+        _volume_previewed=False,
+        current_volume=volume,
+        current_muted=False,
+        volume_spinbox=QSpinBox(),
+        mute_checkbox=QCheckBox(),
+        sound_test_combo=QComboBox(),
+        parent=lambda: parent,
+    )
+    for name in ("_player", "_set_player_volume", "apply_audio_preview", "test_sound"):
+        setattr(dialog, name,
+                types.MethodType(getattr(prefs.PreferencesDialog, name), dialog))
+    return dialog
+
+
 def test_test_sound_joue_directement_sans_deduplication(qapp):
     from unittest.mock import Mock, call
     import types
 
-    from PySide6.QtWidgets import QComboBox, QSpinBox
     import preferences as prefs
 
     audio_player = Mock()
     parent = types.SimpleNamespace(audio_player=audio_player)
 
-    dialog = types.SimpleNamespace(
-        _volume_previewed=False,
-        current_volume=50,
-        volume_spinbox=QSpinBox(),
-        sound_test_combo=QComboBox(),
-        parent=lambda: parent,
-    )
+    dialog = _fake_dialog(parent)
     dialog.volume_spinbox.setValue(70)
     for name in audio.SOUNDS:
         dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
-    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
-    dialog._set_player_volume = types.MethodType(
-        prefs.PreferencesDialog._set_player_volume, dialog)
 
     # Premier clic : joue le son par défaut (« ding », premier de SOUNDS).
     dialog.test_sound()
@@ -236,25 +347,15 @@ def test_test_sound_applique_le_volume_d_aperçu(qapp):
     from unittest.mock import Mock
     import types
 
-    from PySide6.QtWidgets import QComboBox, QSpinBox
     import preferences as prefs
 
     audio_player = Mock()
     parent = types.SimpleNamespace(audio_player=audio_player)
 
-    dialog = types.SimpleNamespace(
-        _volume_previewed=False,
-        current_volume=50,
-        volume_spinbox=QSpinBox(),
-        sound_test_combo=QComboBox(),
-        parent=lambda: parent,
-    )
+    dialog = _fake_dialog(parent)
     dialog.volume_spinbox.setValue(80)
     for name in audio.SOUNDS:
         dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
-    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
-    dialog._set_player_volume = types.MethodType(
-        prefs.PreferencesDialog._set_player_volume, dialog)
 
     dialog.test_sound()
     audio_player.set_volume.assert_called_once_with(80)
@@ -265,22 +366,12 @@ def test_test_sound_sans_lecteur_ne_leve_pas(qapp):
     """Pas de lecteur audio (tests, ou avant init_audio) : ne lève pas."""
     import types
 
-    from PySide6.QtWidgets import QComboBox, QSpinBox
     import preferences as prefs
 
     parent = types.SimpleNamespace(audio_player=None)
-    dialog = types.SimpleNamespace(
-        _volume_previewed=False,
-        current_volume=50,
-        volume_spinbox=QSpinBox(),
-        sound_test_combo=QComboBox(),
-        parent=lambda: parent,
-    )
+    dialog = _fake_dialog(parent)
     for name in audio.SOUNDS:
         dialog.sound_test_combo.addItem(prefs.SOUND_LABELS.get(name, name), name)
-    dialog.test_sound = types.MethodType(prefs.PreferencesDialog.test_sound, dialog)
-    dialog._set_player_volume = types.MethodType(
-        prefs.PreferencesDialog._set_player_volume, dialog)
 
     # Ne doit pas lever.
     dialog.test_sound()

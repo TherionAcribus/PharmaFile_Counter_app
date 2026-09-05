@@ -49,6 +49,8 @@ def test_read_returns_defaults_on_empty_settings():
     assert ss.read(s, "notification_current_patient") is True
     assert ss.read(s, "notification_after_calling") == 30
     assert ss.read(s, "notification_volume") == 50
+    # Mode muet : réglage à part du volume, désactivé par défaut.
+    assert ss.read(s, "notification_muted") is False
 
 
 def test_every_default_survives_its_own_read():

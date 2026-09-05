@@ -112,6 +112,10 @@ SETTINGS = {
     "notification_duration": Setting(default=5, kind=int, bounds=(1, 60)),
     "notification_font_size": Setting(default=12, kind=int, bounds=(8, 36)),
     "notification_volume": Setting(default=50, kind=int, bounds=(0, 100)),
+    # Mode muet : réglage À PART du volume. Se taire en descendant le
+    # curseur à 0 faisait perdre le volume préféré ; ici, couper puis
+    # rétablir le son retrouve exactement le réglage choisi.
+    "notification_muted": Setting(default=False, kind=bool),
     "notification_corner": Setting(default="bottom-left", kind=str),
 
     # --- Ton / accessibilité -------------------------------------------------

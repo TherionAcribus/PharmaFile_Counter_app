@@ -68,3 +68,34 @@ def test_no_service_change_does_not_reconnect():
     w.apply_preferences()
     assert w.calls["reconnect"] == 0
     assert w.calls["shortcut"] == 1     # cosmétique quand même appliqué
+
+
+# --- Réglages audio appliqués à chaud (point 4) ------------------------------
+
+class _RecordingPlayer:
+    def __init__(self):
+        self.volume = None
+        self.muted = None
+
+    def set_volume(self, volume):
+        self.volume = volume
+
+    def set_muted(self, muted):
+        self.muted = muted
+
+
+def test_volume_et_mode_muet_appliques_sans_reconnexion():
+    """Le mode muet est un réglage cosmétique comme le volume : il prend effet
+    immédiatement, sans reconnexion des services."""
+    w = _win()
+    player = _RecordingPlayer()
+    w.audio_player = player
+    w.sound_volume, w.sound_muted = 50, False
+    w.load_preferences = lambda: (setattr(w, "sound_volume", 65),
+                                  setattr(w, "sound_muted", True))
+
+    w.apply_preferences()
+
+    assert player.volume == 65
+    assert player.muted is True
+    assert w.calls["reconnect"] == 0
