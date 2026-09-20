@@ -1168,6 +1168,8 @@ class MainWindow(QMainWindow):
 
         # Réglages cosmétiques : toujours appliqués, aucune reconnexion requise.
         self.setup_global_shortcut()
+        if hasattr(self, "call_timer"):
+            self.call_timer.setInterval(self.timer_after_calling * 1000)
         if hasattr(self, "audio_player"):
             self.audio_player.set_volume(self.sound_volume)
             self.audio_player.set_muted(self.sound_muted)

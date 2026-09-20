@@ -225,7 +225,10 @@ class CustomNotification(QDialog):
         # Son joué à l'affichage : décidé par l'appelant (préférence de son de la
         # catégorie), indépendamment du fait que la notification soit affichée.
         self.play_sound = play_sound
-        self.audio_player = self.parent().audio_player
+        # Le lecteur peut ne pas exister : notification affichée avant
+        # init_audio (démarrage) ou sur le chemin « configuration incomplète »
+        # qui n'y passe jamais. Pas de lecteur = notification muette, pas crash.
+        self.audio_player = getattr(self.parent(), "audio_player", None)
 
         # Timer d'auto-fermeture réutilisable (permet de prolonger l'affichage
         # quand une notification identique est réémise).
