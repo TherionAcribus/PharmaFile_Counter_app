@@ -221,3 +221,46 @@ def test_toggle_orientation_rebuilds_layout_end_to_end(window):
     # Toujours pas de réseau réel après reconstruction.
     window.network_manager.request_blocking.assert_not_called()
     window.api.make_handle.assert_not_called()
+
+
+# --- label_staff : nom de l'équipier ----------------------------------------
+
+def test_label_staff_visible_en_vertical(window):
+    # Vertical : le nom de l'équipier tient sa place dans le corps de la fenêtre.
+    assert not window.label_staff.isHidden()
+
+
+def test_label_staff_masque_en_horizontal():
+    # Horizontal : le label est MASQUÉ — auparavant il restait vide mais
+    # occupait sa place dans la barre (le nom reste dans la barre de titre).
+    win = _make_main_window(horizontal_mode=True)
+    try:
+        assert win.label_staff.isHidden()
+    finally:
+        win.deleteLater()
+
+
+def test_update_staff_label_alimente_meme_masque():
+    win = _make_main_window(horizontal_mode=True)
+    try:
+        win.update_staff_label("Alice")
+        assert win.staff_name == "Alice"
+        assert win.label_staff.text() == "-= Alice =-"  # prêt si on rebascule
+        assert win.label_staff.isHidden()
+    finally:
+        win.deleteLater()
+
+
+def test_label_staff_retrouve_le_nom_apres_reconstruction(window):
+    # Le label est recréé vide à chaque create_interface (orientation,
+    # préférences) : le nom courant doit être restauré.
+    window.update_staff_label("Alice")
+    window.create_interface()
+    assert window.label_staff.text() == "-= Alice =-"
+    assert not window.label_staff.isHidden()
+
+
+def test_deconnexion_efface_le_nom_staff(window):
+    window.update_staff_label("Alice")
+    window.deconnexion_interface()
+    assert window.staff_name is None

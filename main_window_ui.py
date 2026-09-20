@@ -243,6 +243,16 @@ def _apply_compact_styling(window):
 def _create_name(window):
     window.label_staff = QLabel("")
     window.label_staff.setAlignment(Qt.AlignCenter)
+    # Le label est recréé vide à chaque reconstruction (orientation,
+    # préférences, reconnexion) : on restaure le nom courant mémorisé par
+    # update_staff_label.
+    staff_name = getattr(window, "staff_name", None)
+    if staff_name:
+        window.label_staff.setText(f"-= {staff_name} =-")
+    # En mode horizontal on masque le label plutôt que de laisser un
+    # emplacement vide occuper de la largeur de la barre — le nom reste
+    # visible dans la barre de titre (update_window_title).
+    window.label_staff.setVisible(not window.horizontal_mode)
 
 
 def _create_label_patient(window):

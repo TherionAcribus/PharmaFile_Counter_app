@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
 
     patient_id = None
     staff_id = None
+    staff_name = None  # nom de l'équipier courant : sert à repeupler label_staff après chaque reconstruction d'interface
     activities_staff = None  # les activités "Staff" pour renvoyer un patient vers quelqu'un
     connected = False  # permet de savoir si on a réussi à se connecter
     add_paper = "waiting"
@@ -675,9 +676,14 @@ class MainWindow(QMainWindow):
     def update_staff_label(self, staff_name):
         """ Met à jour le nom de l'équipier """
         try:
-            if not self.horizontal_mode:
-                name = f'-= {staff_name} =-'
-                self.label_staff.setText(name)
+            # Toujours mémorisé et alimenté : le label est recréé vide à chaque
+            # reconstruction d'interface (orientation, préférences, reconnexion)
+            # et doit retrouver le nom courant. En mode horizontal il est masqué
+            # — le nom reste dans la barre de titre — mais reste prêt si on
+            # rebascule en vertical.
+            self.staff_name = staff_name
+            self.label_staff.setText(f'-= {staff_name} =-')
+            self.label_staff.setVisible(not self.horizontal_mode)
         except RuntimeError:
             pass
 
@@ -954,6 +960,10 @@ class MainWindow(QMainWindow):
 
     def deconnexion_interface(self):
         self.logger.debug("Affichage de l'interface de connexion")
+        # Plus personne au comptoir : le nom ne doit plus être restauré si
+        # l'interface principale est reconstruite avant une nouvelle
+        # identification.
+        self.staff_name = None
         # Créer et définir le widget de connexion
         login_widget = create_login_widget(self)
         self.setCentralWidget(login_widget)
@@ -1219,6 +1229,7 @@ class MainWindow(QMainWindow):
         #    déconnecté (l'utilisateur se ré-identifiera sur le nouveau comptoir).
         self.app_token = None
         self.staff_id = None
+        self.staff_name = None
         if hasattr(self, "api"):
             self.api.clear_token()
 
