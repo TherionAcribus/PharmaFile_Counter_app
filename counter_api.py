@@ -146,15 +146,6 @@ class CounterApi:
             endpoints.counter_state(self._url(), self._counter_id()),
             dict, "état du comptoir")
 
-    def fetch_current_patient(self):
-        return self._read_blocking(
-            endpoints.is_patient_on_counter(self._url(), self._counter_id()),
-            dict, "patient courant")
-
-    def fetch_patients_list(self):
-        return self._read_blocking(
-            endpoints.patients_list(self._url()), list, "liste des patients") or []
-
     def fetch_staff(self, on_result=None):
         """Agent présent sur le comptoir (asynchrone, au démarrage)."""
         return self._get(endpoints.is_staff_on_counter(self._url(), self._counter_id()),

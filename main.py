@@ -596,9 +596,6 @@ class MainWindow(QMainWindow):
             self.placement.apply_panel_mode()
 
 
-    def init_list_patients(self):
-        return self.api.fetch_patients_list()
-
     def recall(self):
         self.api.relaunch_call()
 
@@ -725,9 +722,6 @@ class MainWindow(QMainWindow):
         session garantit qu'une seule passe réseau est active à la fois et fusionne
         les demandes reçues entretemps. """
         self.session.request_resync(self._on_resync_ready)
-
-    def init_patient(self):
-        return self.api.fetch_current_patient()
 
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
@@ -1049,8 +1043,10 @@ class MainWindow(QMainWindow):
             # Recréer l'interface principale1
             self.recreate_main_interface()
             self.update_staff_label(staff_name)
-            # Mettre à jour l'interface si nécessaire
-            self.init_patient()
+            # L'état du comptoir a pu évoluer depuis la snapshot de démarrage :
+            # rattrapage en arrière-plan — jamais de GET bloquant dans le thread
+            # graphique (point 2).
+            self._request_resync()
         elif result.status == 204:
             self.logger.debug("Initiales inconnues")
             self.staff_id = False

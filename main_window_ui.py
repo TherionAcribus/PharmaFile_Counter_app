@@ -374,22 +374,16 @@ def _create_choose_patient_button(window):
     window.choose_patient_menu.aboutToShow.connect(window._rebuild_choose_patient_menu)
     window.btn_choose_patient.setMenu(window.choose_patient_menu)
 
-    # window.my_patient/window.list_patients sont normalement déjà remplis par
-    # _on_startup_ready() (StartupWorker) avant le premier appel à cette
-    # méthode. Ce qui suit est un filet de sécurité (ex: reconstruction de
-    # l'interface après un changement d'orientation) au cas où ils seraient
-    # encore vides, pas le chemin normal de démarrage.
-    if not window.my_patient:
-        window.logger.info("__ Connexion pour charger le patient en cours...")
-        window.my_patient = window.init_patient()
-    # uniquement si chargement des patients réussi (pas de connexion)
+    # window.my_patient / window.list_patients sont remplis par _apply_state()
+    # (snapshot de démarrage / reconnexion) puis tenus à jour par les évènements
+    # Socket.IO et les resynchronisations : on reflète ici l'état connu, SANS
+    # requête réseau. create_interface() s'exécute dans le thread graphique
+    # (orientation, mode compact, connexion staff…) — un GET bloquant y figerait
+    # l'application le temps de la réponse serveur (point 2).
     if window.my_patient:
         window.update_my_patient(window.my_patient)
         window.update_my_buttons(window.my_patient)
 
-    if not window.list_patients:
-        window.logger.info("__ Connexion pour charger la liste des patients...")
-        window.list_patients = window.init_list_patients()
     # Le menu est reconstruit à son ouverture ; ici on ne fait qu'actualiser
     # le compteur visible du bouton. La vue (modèle) est mise à jour plus tard
     # dans create_interface, une fois _create_patient_list_widget appelé.

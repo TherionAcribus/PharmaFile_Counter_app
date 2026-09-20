@@ -17,10 +17,11 @@ On teste les noms actuels :
     réseau réel (les séquences réseau de démarrage — StartupWorker, jeton, liste
     des patients — ne sont pas déclenchées).
 
-Aucune connexion réseau réelle : le ``NetworkManager`` est un MagicMock, la
+Aucune connexion réseau réelle : le ``NetworkManager`` est un MagicMock et la
 séquence de démarrage n'est pas lancée (on n'appelle jamais ``__init__``, qui
-ouvrirait un StartupWorker), et ``init_patient`` / ``init_list_patients`` sont
-neutralisés en garde-fou. Fonctionne en Qt « offscreen » (cf. conftest.py).
+ouvrirait un StartupWorker). ``create_interface`` ne fait de toute façon aucune
+requête réseau (point 2) — vérifié par ``test_create_interface_does_not_touch_network``.
+Fonctionne en Qt « offscreen » (cf. conftest.py).
 """
 
 import logging
@@ -115,12 +116,6 @@ def _make_main_window(horizontal_mode=False, compact_mode=False):
     win.audio_player = mock.MagicMock()
     win.socket_io_client = mock.MagicMock()
     win.notification_manager = None
-    # Garde-fou : si un chemin voulait charger patient/liste, il ne partirait pas
-    # sur le réseau (mais avec my_patient/list_patients renseignés, ces méthodes
-    # ne sont de toute façon pas appelées).
-    win.init_patient = lambda: None
-    win.init_list_patients = lambda: []
-
     win.activities_staff = None
     win.staff_id = False
     win.my_patient = None

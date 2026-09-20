@@ -269,19 +269,6 @@ def test_fetch_state_none_si_erreur():
     assert _api_lecture('{}', status=500).fetch_state() is None
 
 
-def test_fetch_patients_list_retourne_une_liste_vide_en_erreur():
-    """Les appelants itèrent dessus : jamais None."""
-    assert _api_lecture('{}', status=500).fetch_patients_list() == []
-    assert _api_lecture('[{"id": 1}]').fetch_patients_list() == [{"id": 1}]
-
-
-def test_fetch_current_patient():
-    api = _api_lecture('{"id": 7}')
-    assert api.fetch_current_patient() == {"id": 7}
-    assert api.network_manager.blocking_calls[0][0] == (
-        f"{BASE}/api/counter/is_patient_on_counter/{COUNTER}")
-
-
 # --- jeton et arrêt ---------------------------------------------------------
 
 def test_fetch_token(api):
