@@ -11,7 +11,9 @@ import sys
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QSettings, Qt
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox, QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBoxLayout,
+    QWidget)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -76,3 +78,32 @@ def test_status_label_est_un_label_enroule(isolated_settings):
     assert dialog.status_label.wordWrap() is True
     assert dialog.status_label.maximumWidth() == 16777215  # pas de largeur figée
     assert dialog.status_label.textInteractionFlags() & Qt.TextSelectableByMouse
+
+
+def test_chaque_groupe_raccourci_est_independant(isolated_settings):
+    """Les 5 groupes « modificateurs + touche » ont chacun leurs propres cases :
+    modifier l'un n'affecte pas les autres (accès via findChild)."""
+    dialog = _dialog()
+    others = (dialog.validate_patient_shortcut_input,
+              dialog.pause_shortcut_input,
+              dialog.recall_shortcut_input,
+              dialog.deconnect_input)
+    before = [dialog.get_shortcut_text(w) for w in others]
+
+    target = dialog.next_patient_shortcut_input
+    for modifier in ("Ctrl", "Alt", "Maj", "Win"):
+        target.findChild(QCheckBox, modifier).setChecked(False)
+    target.findChild(QCheckBox, "Ctrl").setChecked(True)
+    target.findChild(QLineEdit).setText("N")
+
+    assert dialog.get_shortcut_text(target) == "Ctrl+N"
+    assert [dialog.get_shortcut_text(w) for w in others] == before
+
+
+def test_pas_d_attributs_de_raccourci_residuels(isolated_settings):
+    """create_shortcut_input ne laisse pas d'attributs sur le dialogue : ils ne
+    désignaient que le DERNIER groupe créé et invitaient à l'erreur."""
+    dialog = _dialog()
+    for attr in ("ctrl_button", "alt_button", "shift_button", "win_button",
+                 "key_input"):
+        assert not hasattr(dialog, attr)

@@ -657,27 +657,31 @@ class PreferencesDialog(QDialog):
         super().done(result)
 
     def create_shortcut_input(self):
+        """ Groupe « modificateurs + touche » d'un raccourci.
+
+        Les sous-widgets sont retrouvés par findChild(objectName) dans
+        load_shortcut / get_shortcut_text : ce sont donc des variables LOCALES.
+        En attributs d'instance, ils ne pointeraient que vers le dernier
+        raccourci créé — état trompeur qui invitait à l'erreur. """
         widget = QWidget()
         layout = QHBoxLayout()
         widget.setLayout(layout)
-        
-        self.ctrl_button = QCheckBox("Ctrl")
-        self.ctrl_button.setObjectName("Ctrl")
-        self.alt_button = QCheckBox("Alt")
-        self.alt_button.setObjectName("Alt")
-        self.shift_button = QCheckBox("Maj")
-        self.shift_button.setObjectName("Maj")
-        self.win_button = QCheckBox("Win")
-        self.win_button.setObjectName("Win")
-        self.key_input = QLineEdit()
-        self.key_input.setObjectName("Key")
-        
-        layout.addWidget(self.ctrl_button)
-        layout.addWidget(self.alt_button)
-        layout.addWidget(self.shift_button)
-        layout.addWidget(self.win_button)
-        layout.addWidget(self.key_input)
-        
+
+        ctrl_button = QCheckBox("Ctrl")
+        ctrl_button.setObjectName("Ctrl")
+        alt_button = QCheckBox("Alt")
+        alt_button.setObjectName("Alt")
+        shift_button = QCheckBox("Maj")
+        shift_button.setObjectName("Maj")
+        win_button = QCheckBox("Win")
+        win_button.setObjectName("Win")
+        key_input = QLineEdit()
+        key_input.setObjectName("Key")
+
+        for child in (ctrl_button, alt_button, shift_button, win_button,
+                      key_input):
+            layout.addWidget(child)
+
         return widget
 
     def change_page(self, item):
