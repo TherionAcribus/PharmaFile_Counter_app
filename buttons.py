@@ -11,6 +11,9 @@ class DebounceButton(QPushButton):
     """ Bouton qui permet d'éviter de cliquer deux fois dessus (en 500ms) """
     clicked_with_debounce = Signal()
 
+    #: Feuille posée sur le bouton pendant l'alerte « patient à valider ».
+    ALERT_STYLESHEET = "background-color: #c0392b; color: #ffffff;"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.debounce_time = 500  # Temps de débounce en millisecondes
@@ -71,13 +74,21 @@ class DebounceButton(QPushButton):
         ceux qui perçoivent la couleur, mais le libellé et le nom accessible sont
         enrichis d'un marqueur texte par l'appelant (cf. main._set_validate_alert).
         """
+        if not self.color_changed:
+            # Capturé à l'entrée de l'alerte — pas à la construction : tout
+            # style inline posé entre-temps (le « border: none » des
+            # IconeButton, un style de skin…) doit être restauré tel quel.
+            self.original_style = self.styleSheet()
         self.color_changed = True
-        self.setStyleSheet("background-color: #c0392b; color: #ffffff;")
+        self.setStyleSheet(self.ALERT_STYLESHEET)
 
     def resetColor(self):
         """ Réinitialise la couleur du bouton à son style d'origine """
         if self.color_changed:
-            self.setStyleSheet(self.original_style)
+            # Ne restaurer que si la feuille n'a pas été remplacée pendant
+            # l'alerte : sinon on écraserait le style le plus récent.
+            if self.styleSheet() == self.ALERT_STYLESHEET:
+                self.setStyleSheet(self.original_style)
             self.color_changed = False
 
 
