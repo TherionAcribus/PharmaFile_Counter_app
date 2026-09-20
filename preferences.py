@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -203,8 +203,13 @@ class PreferencesDialog(QDialog):
         self.current_muted = None
         self._volume_previewed = False
 
-        self.main_layout = QHBoxLayout(self)
-        
+        # Layout vertical : le contenu (navigation + page courante) au-dessus,
+        # la barre de boutons Enregistrer/Annuler en bas — auparavant le seul
+        # bouton « Enregistrer » était pleine hauteur, collé à droite.
+        self.main_layout = QVBoxLayout(self)
+        self.content_layout = QHBoxLayout()
+        self.main_layout.addLayout(self.content_layout)
+
         self.navigation_list = QListWidget()
         self.navigation_list.setFixedWidth(150)
         self.navigation_list.itemClicked.connect(self.change_page)
@@ -218,7 +223,7 @@ class PreferencesDialog(QDialog):
         self.navigation_list.addItem(self.raccourcis_item)
         self.navigation_list.addItem(self.notifications_item)        
         
-        self.main_layout.addWidget(self.navigation_list)
+        self.content_layout.addWidget(self.navigation_list)
         
         self.stacked_widget = QStackedWidget()
 
@@ -297,9 +302,9 @@ class PreferencesDialog(QDialog):
         self.general_layout.addStretch()
         
         self.stacked_widget.addWidget(self.general_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
-        
+
+        self.content_layout.addWidget(self.stacked_widget)
+
         self.connexion_page = QWidget()
         self.connexion_layout = QVBoxLayout()
         self.connexion_page.setLayout(self.connexion_layout)
@@ -402,8 +407,6 @@ class PreferencesDialog(QDialog):
         self.raccourcis_layout.addStretch()
         
         self.stacked_widget.addWidget(self.raccourcis_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
 
         self.notifications_page = QWidget()
         self.notifications_layout = QVBoxLayout()
@@ -584,13 +587,18 @@ class PreferencesDialog(QDialog):
         self.notifications_layout.addStretch()
         
         self.stacked_widget.addWidget(self.notifications_page)
-        
-        self.main_layout.addWidget(self.stacked_widget)
-        
-        self.save_button = QPushButton("Enregistrer", self)
+
+        # Barre de boutons en bas : « Annuler » rend explicite la fermeture
+        # sans enregistrer (auparavant il fallait deviner la croix). reject()
+        # restaure déjà l'aperçu skin/volume et arrête les workers (via done).
+        self.button_box = QDialogButtonBox(self)
+        self.save_button = self.button_box.addButton(
+            "Enregistrer", QDialogButtonBox.AcceptRole)
+        self.button_box.addButton("Annuler", QDialogButtonBox.RejectRole)
         self.save_button.clicked.connect(self.save_preferences)
-        self.main_layout.addWidget(self.save_button)
-        
+        self.button_box.rejected.connect(self.reject)
+        self.main_layout.addWidget(self.button_box)
+
         self.load_skins()
         self.load_preferences()
         
