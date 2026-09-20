@@ -147,3 +147,60 @@ def test_never_two_simultaneous_connections(qapp):
     ws.stop(timeout_ms=2000)
     assert sio.violation is False        # connect() jamais appelé si déjà connecté
     assert sio.connect_calls >= 1
+
+
+# --- Enveloppe normalisée : on_notification ----------------------------------
+#
+# `data` des notifications est un objet côté serveur depuis le point C11
+# (docs/PROTOCOLE.md) ; le client reste tolérant à l'ancienne chaîne JSON.
+
+def _parent_avec_comptoir():
+    parent = _make_parent()
+    parent.counter_id = 1
+    return parent
+
+
+def test_on_notification_recoit_un_objet(qapp):
+    """Nouveau contrat : data est un dict, le signal véhicule le dict."""
+    import json as _json
+    ws = WebSocketClient(_parent_avec_comptoir())
+    recus = []
+    ws.new_notification.connect(recus.append)
+    ws.on_notification({
+        "flag": None,
+        "data": {"origin": "low_paper", "message": "m", "timestamp": 1,
+                 "for_counter": None},
+    })
+    assert len(recus) == 1
+    assert isinstance(recus[0], dict)
+    assert recus[0]["origin"] == "low_paper"
+
+
+def test_on_notification_tolerera_toujours_une_chaine_json(qapp):
+    """Tolérance : un ancien serveur (ou émetteur tiers) qui envoie encore
+    json.dumps(data) est décodé au lieu de casser."""
+    import json as _json
+    ws = WebSocketClient(_parent_avec_comptoir())
+    recus = []
+    ws.new_notification.connect(recus.append)
+    ws.on_notification({
+        "flag": None,
+        "data": _json.dumps({"origin": "paper_ok", "message": "m",
+                             "timestamp": 1, "for_counter": None}),
+    })
+    assert len(recus) == 1
+    assert recus[0]["origin"] == "paper_ok"
+
+
+def test_on_notification_ciblee_sur_un_autre_comptoir_ignoree(qapp):
+    """Le filtrage par flag est inchangé : une notification adressée au
+    comptoir 2 ne doit pas remonter pour le comptoir 1."""
+    ws = WebSocketClient(_parent_avec_comptoir())
+    recus = []
+    ws.new_notification.connect(recus.append)
+    ws.on_notification({
+        "flag": 2,
+        "data": {"origin": "activity", "message": "m", "timestamp": 1,
+                 "for_counter": 2},
+    })
+    assert recus == []

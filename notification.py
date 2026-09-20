@@ -294,7 +294,9 @@ class CustomNotification(QDialog):
         self.resize(NOTIFICATION_WIDTH, 120)
 
     def format_data(self, notification_data):
-        if not self.internal:
+        # `data` est un objet côté serveur ; on reste tolérant à une chaîne
+        # JSON (ancien serveur, tests manuels).
+        if not self.internal and isinstance(notification_data, str):
             try:
                 notification_data = json.loads(notification_data)
             except json.JSONDecodeError:

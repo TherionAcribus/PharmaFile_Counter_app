@@ -50,7 +50,10 @@ class WebSocketClient(QThread):
     # (liste_patients, revision) : la révision permet au thread principal
     # d'écarter les messages périmés/dupliqués et de détecter un trou.
     new_patient = Signal(object, object)
-    new_notification = Signal(str)
+    # `data` des notifications est un objet côté serveur (enveloppe homogène,
+    # cf. docs/PROTOCOLE.md) ; le signal véhicule donc un dict, plus une
+    # chaîne JSON.
+    new_notification = Signal(object)
     my_patient = Signal(object)
     change_paper = Signal(object)
     change_paper_button = Signal(str)
@@ -89,7 +92,8 @@ class WebSocketClient(QThread):
         # Connexion aux événements WebSocket
         self.sio.on('connect', self.on_connect, namespace='/socket_app_counter')
         self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('update', self.on_update, namespace='/socket_app_counter')
+        # Pas de handler 'update' : le serveur n'émet jamais cet évènement sur
+        # ce namespace (la file arrive par 'update_patient_list').
         self.sio.on('paper', self.on_paper, namespace='/socket_app_counter')
         self.sio.on('notification', self.on_notification, namespace='/socket_app_counter')     
         self.sio.on('change_auto_calling', self.on_change_auto_calling, namespace='/socket_app_counter')
@@ -207,7 +211,8 @@ class WebSocketClient(QThread):
     def on_notification(self, data):
         logger.debug("Notification reçue (origin=%s)", _safe_origin(data))
 
-        # Parser data["data"] si c'est une chaîne JSON
+        # Le serveur émet désormais un objet ; on reste tolérant à une chaîne
+        # JSON (ancien serveur ou émetteur tiers).
         if isinstance(data["data"], str):
             try:
                 notification_data = json.loads(data["data"])
@@ -225,7 +230,7 @@ class WebSocketClient(QThread):
         targets_this = coerce_counter_id(flag) == self.parent.counter_id
         targets_in_list = isinstance(flag, list) and self.parent.counter_id in [coerce_counter_id(f) for f in flag]
         if targets_all or targets_this or targets_in_list:
-            self.new_notification.emit(data['data'])
+            self.new_notification.emit(notification_data)
         
         # si la notification concerne le papier, mettre à jour le bouton
         if notification_data["origin"] in ["no_paper", "low_paper", "paper_ok"]:
@@ -251,19 +256,5 @@ class WebSocketClient(QThread):
         logger.debug("Rafraîchissement après purge de la liste des patients")
         self.refresh_after_clear_patient_list.emit(True)
 
-    def on_update(self, data):
-        logger.debug("Événement 'update' reçu")
-        # Normalement cette partie peut être supprimée
-        try:
-            if isinstance(data, str):
-                data = json.loads(data)
-            if data['flag'] == 'update_patient_list':
-                if isinstance(data["data"], str):
-                    data["data"] = json.loads(data["data"])
-                self.new_patient.emit(data["data"], data.get("revision"))
-            elif data['flag'] == 'my_patient':
-                self.my_patient.emit(data["data"])
-        except json.JSONDecodeError as e:
-            logger.warning("Événement 'update' illisible (JSON invalide) : %s", e)
-            
+
 
