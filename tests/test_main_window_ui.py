@@ -83,6 +83,47 @@ def test_indicateur_de_connexion_construit(qapp):
         indicateur.deleteLater()
 
 
+def test_indicateur_enregistre_etat_meme_masque(qapp):
+    """Fenêtre masquée (systray, démarrage) : les évènements ne sont plus
+    perdus — l'icône doit refléter l'état réel au retour de la fenêtre."""
+    indicateur = main_window_ui.ConnectionStatusIndicator()
+    try:
+        assert not indicateur.isVisible()
+        indicateur.set_status("disconnected", 3)
+        assert indicateur.status == "disconnected"
+        assert indicateur.reconnection_attempts == 3
+        # Nom accessible à jour même masqué (état réel pour les lecteurs
+        # d'écran au retour de la fenêtre).
+        assert "déconnecté" in indicateur.accessibleName().lower()
+    finally:
+        indicateur.deleteLater()
+
+
+def test_indicateur_connected_remet_compteurs_meme_masque(qapp):
+    indicateur = main_window_ui.ConnectionStatusIndicator()
+    try:
+        indicateur.set_status("disconnected", 4)
+        indicateur.set_status("connected")
+        assert indicateur.status == "connected"
+        assert indicateur.reconnection_attempts == 0
+        assert indicateur.last_connection_time is not None
+    finally:
+        indicateur.deleteLater()
+
+
+def test_indicateur_infobulle_posee_au_reaffichage(qapp):
+    """L'infobulle n'est pas posée tant que le widget est masqué ; au
+    réaffichage (showEvent) elle reflète l'état mémorisé entre-temps."""
+    indicateur = main_window_ui.ConnectionStatusIndicator()
+    try:
+        indicateur.set_status("disconnected", 2)
+        assert not indicateur.toolTip()  # masqué : pas encore d'infobulle
+        indicateur.show()
+        assert "déconnecté" in indicateur.toolTip().lower()
+    finally:
+        indicateur.deleteLater()
+
+
 # --- structure : la fenêtre ne construit plus ses widgets ------------------
 
 MOVED_TO_UI = [

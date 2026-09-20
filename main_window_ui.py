@@ -76,14 +76,19 @@ class ConnectionStatusIndicator(QWidget):
     def set_status(self, status, reconnection_attempts=None):
         _logger.debug("Indicateur de connexion : %s", status)
         try:
+            # L'état est TOUJOURS mémorisé, fenêtre masquée comprise (démarrage
+            # avant affichage, fenêtre réduite au systray) : sinon les évènements
+            # étaient perdus et l'icône affichait « connecté » au retour alors
+            # que le socket était tombé. isVisible() ne garde que la partie
+            # purement visuelle (infobulle + repaint).
+            self.status = status
+            if status == "connected":
+                self.last_connection_time = QDateTime.currentDateTime()
+                self.reconnection_attempts = 0
+            elif reconnection_attempts is not None:
+                self.reconnection_attempts = reconnection_attempts
+            self.update_tooltip()
             if self.isVisible():
-                self.status = status
-                if status == "connected":
-                    self.last_connection_time = QDateTime.currentDateTime()
-                    self.reconnection_attempts = 0
-                elif reconnection_attempts is not None:
-                    self.reconnection_attempts = reconnection_attempts
-                self.update_tooltip()
                 self.update()
         except RuntimeError:
             pass
@@ -108,11 +113,21 @@ class ConnectionStatusIndicator(QWidget):
 
     def update_tooltip(self):
         try:
+            # Le nom accessible reflète l'état même fenêtre masquée (un lecteur
+            # d'écran doit trouver l'état réel au retour) ; seule l'infobulle,
+            # purement visuelle, attend que le widget soit affiché.
+            self._refresh_accessibility()
             if self.isVisible():
                 self.setToolTip(self._status_tooltip())
-                self._refresh_accessibility()
         except RuntimeError:
             pass
+
+    def showEvent(self, event):
+        # La fenêtre réapparaît (fin de démarrage, retour du systray) : on pose
+        # l'infobulle correspondant à l'état mémorisé — elle n'a pas pu l'être
+        # tant que le widget était masqué. Le repaint suit automatiquement.
+        self.update_tooltip()
+        super().showEvent(event)
 
     def paintEvent(self, event):
         try:
