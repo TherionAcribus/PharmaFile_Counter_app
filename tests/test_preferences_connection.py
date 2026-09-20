@@ -16,20 +16,40 @@ import preferences  # noqa: E402
 
 # --- _on_connection_checked -------------------------------------------------
 
-def _dialog():
-    w = types.SimpleNamespace(calls={"finalize": 0})
+def _dialog(loaded_for=("http://serveur", "secret")):
+    w = types.SimpleNamespace(calls={"finalize": 0, "counter_check": 0})
     w.status_label = types.SimpleNamespace(setText=lambda t: None)
     w.save_button = types.SimpleNamespace(setEnabled=lambda v: None)
+    w.url_input = types.SimpleNamespace(text=lambda: "http://serveur")
+    w.app_secret_input = types.SimpleNamespace(text=lambda: "secret")
+    w._counters_loaded_for = loaded_for
     w._finalize_save = lambda: w.calls.__setitem__("finalize", w.calls["finalize"] + 1)
+    w._validate_counter_then_save = (
+        lambda: w.calls.__setitem__("counter_check", w.calls["counter_check"] + 1))
     w._on_connection_checked = types.MethodType(
         preferences.PreferencesDialog._on_connection_checked, w)
     return w
 
 
-def test_finalizes_only_on_success():
-    w = _dialog()
+def test_finalizes_when_connection_ok_and_list_fresh():
+    w = _dialog(loaded_for=("http://serveur", "secret"))
     w._on_connection_checked(True, "")
     assert w.calls["finalize"] == 1
+    assert w.calls["counter_check"] == 0
+
+
+def test_connection_ok_but_list_never_loaded_checks_counter_first():
+    w = _dialog(loaded_for=None)
+    w._on_connection_checked(True, "")
+    assert w.calls["counter_check"] == 1  # le comptoir est vérifié d'abord
+    assert w.calls["finalize"] == 0       # rien n'est encore enregistré
+
+
+def test_connection_ok_but_stale_list_checks_counter_first():
+    w = _dialog(loaded_for=("http://autre", "secret"))
+    w._on_connection_checked(True, "")
+    assert w.calls["counter_check"] == 1
+    assert w.calls["finalize"] == 0
 
 
 def test_failure_does_not_finalize_and_warns(monkeypatch):

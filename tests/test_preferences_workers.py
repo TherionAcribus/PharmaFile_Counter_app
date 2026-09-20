@@ -225,6 +225,19 @@ def _button_dialog():
     w.test_button.setEnabled = lambda v: setattr(w.test_button, "_e", v)
     w.url_input = types.SimpleNamespace(text=lambda: "http://serveur")
     w.app_secret_input = types.SimpleNamespace(text=lambda: "secret")
+    # État « liste des comptoirs » : l'entrée d'attente initiale (libellé +
+    # counter_id enregistré) et les couples (URL, secret) suivis par le vrai
+    # dialogue.
+    w.counter_id = 3
+    w.counter_items = [("3 - Chargement en cours...", 3)]
+    w.counter_combobox = types.SimpleNamespace(
+        setItemText=lambda i, t: w.counter_items.__setitem__(
+            i, (t, w.counter_items[i][1])))
+    w._counters_loaded_for = None
+    w._set_counter_placeholder = types.MethodType(
+        preferences.PreferencesDialog._set_counter_placeholder, w)
+    w._start_counters_worker = types.MethodType(
+        preferences.PreferencesDialog._start_counters_worker, w)
     # Slots référencés par les vraies méthodes au moment du .connect(...) : ils
     # doivent exister comme attributs (leur contenu importe peu ici, chaque test
     # remplace la vraie méthode qu'il exerce).
@@ -280,7 +293,7 @@ def test_on_counters_result_reenables_button():
     w.test_button._e = False
     w.counters_loaded = types.SimpleNamespace(emit=lambda data: None)
     w._on_counters_result = types.MethodType(preferences.PreferencesDialog._on_counters_result, w)
-    w._on_counters_result(True, [{"id": 1, "name": "c"}])
+    w._on_counters_result(True, [{"id": 1, "name": "c"}], ("http://serveur", "secret"))
     assert w.test_button._e is True
 
 
@@ -294,3 +307,169 @@ def test_load_counters_reenables_button_if_not_started(monkeypatch):
     w.load_counters = types.MethodType(preferences.PreferencesDialog.load_counters, w)
     w.load_counters()
     assert w.test_button._e is True
+
+
+def test_load_counters_passes_request_pair_to_handler(monkeypatch):
+    """Le couple (url, secret) de la requête est rattaché au résultat : le
+    handler reçoit les valeurs interrogées, pas celles des champs."""
+    w = _button_dialog()
+    captured = {}
+    monkeypatch.setattr(
+        preferences, "CountersWorker",
+        lambda url, secret: types.SimpleNamespace(
+            result=types.SimpleNamespace(
+                connect=lambda f: captured.__setitem__("emit_to", f))))
+    w._start_worker = lambda kind, worker: True
+    w._on_counters_result = lambda ok, data, pair: captured.__setitem__(
+        "got", (ok, data, pair))
+    w.load_counters = types.MethodType(preferences.PreferencesDialog.load_counters, w)
+    w.load_counters()
+    captured["emit_to"](True, [{"id": 1}])  # le worker émet son résultat
+    assert captured["got"] == (True, [{"id": 1}], ("http://serveur", "secret"))
+
+
+# --- Chargement à l'ouverture de la page « Connexion » ----------------------
+
+def _connexion_dialog(url="http://serveur", secret="secret"):
+    w = _button_dialog()
+    w.url_input = types.SimpleNamespace(text=lambda: url)
+    w.app_secret_input = types.SimpleNamespace(text=lambda: secret)
+    w._loads = []
+    w.load_counters = lambda: w._loads.append(True)
+    w._maybe_load_counters = types.MethodType(
+        preferences.PreferencesDialog._maybe_load_counters, w)
+    return w
+
+
+def test_maybe_load_counters_when_configured():
+    w = _connexion_dialog()
+    w._maybe_load_counters()
+    assert w._loads == [True]
+
+
+def test_maybe_load_counters_skipped_without_url():
+    w = _connexion_dialog(url="")
+    w._maybe_load_counters()
+    assert w._loads == []
+    assert w.counter_items[0][0] == "3 - complétez l'adresse et le secret"
+
+
+def test_maybe_load_counters_skipped_without_secret():
+    w = _connexion_dialog(secret="")
+    w._maybe_load_counters()
+    assert w._loads == []
+    assert w.counter_items[0][0] == "3 - complétez l'adresse et le secret"
+
+
+def test_maybe_load_counters_skipped_when_list_current():
+    w = _connexion_dialog()
+    w._counters_loaded_for = ("http://serveur", "secret")
+    w._maybe_load_counters()
+    assert w._loads == []  # liste déjà à jour pour ce couple
+
+
+def test_maybe_load_counters_reloads_after_field_change():
+    w = _connexion_dialog()
+    w._counters_loaded_for = ("http://autre", "secret")
+    w._maybe_load_counters()
+    assert w._loads == [True]  # champs modifiés : liste affichée périmée
+
+
+def test_on_counters_result_success_remembers_pair():
+    w = _button_dialog()
+    w.counters_loaded = types.SimpleNamespace(emit=lambda data: None)
+    w._on_counters_result = types.MethodType(
+        preferences.PreferencesDialog._on_counters_result, w)
+    w._on_counters_result(True, [{"id": 1, "name": "c"}], ("http://serveur", "secret"))
+    assert w._counters_loaded_for == ("http://serveur", "secret")
+
+
+def test_on_counters_result_failure_marks_placeholder():
+    w = _button_dialog()
+    w._on_counters_result = types.MethodType(
+        preferences.PreferencesDialog._on_counters_result, w)
+    w._on_counters_result(False, "Erreur: réseau", ("http://serveur", "secret"))
+    assert w.status_label._t == "Erreur: réseau"
+    assert w.counter_items[0][0] == "3 - échec du chargement"
+
+
+def test_on_counters_result_failure_keeps_loaded_list():
+    w = _button_dialog()
+    w._counters_loaded_for = ("http://serveur", "secret")
+    w.counter_items = [("Comptoir A", 3)]
+    w._on_counters_result = types.MethodType(
+        preferences.PreferencesDialog._on_counters_result, w)
+    w._on_counters_result(False, "Erreur: réseau", ("http://autre", "secret"))
+    assert w.counter_items[0][0] == "Comptoir A"  # liste réelle non écrasée
+
+
+# --- Vérification du comptoir avant enregistrement ---------------------------
+
+def _save_check_dialog(selected=3):
+    """Faux dialogue pour _validate_counter_then_save / _on_save_counters_result."""
+    w = _button_dialog()
+    w.save_button = types.SimpleNamespace(_e=True)
+    w.save_button.setEnabled = lambda v: setattr(w.save_button, "_e", v)
+    w._finalized = []
+    w._finalize_save = lambda: w._finalized.append(True)
+    w._loaded = []
+    w.counters_loaded = types.SimpleNamespace(emit=lambda data: w._loaded.append(data))
+    w._selected = selected
+    w.counter_combobox.currentData = lambda: w._selected
+    w.counter_combobox.findData = lambda d: 0
+    w.counter_combobox.setCurrentIndex = lambda i: None
+    w._on_save_counters_result = types.MethodType(
+        preferences.PreferencesDialog._on_save_counters_result, w)
+    return w
+
+
+def test_save_counters_failure_does_not_finalize(monkeypatch):
+    warned = []
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[1:3]))
+    w = _save_check_dialog()
+    w._on_save_counters_result(False, "Erreur: réseau", ("http://serveur", "secret"))
+    assert w._finalized == []          # rien n'est enregistré
+    assert warned                      # l'utilisateur est averti
+    assert w.save_button._e is True    # bouton réactivé
+
+
+def test_save_counters_unknown_counter_does_not_finalize(monkeypatch):
+    """Le comptoir choisi venait de l'ancien serveur : pas d'enregistrement,
+    la liste à jour est affichée pour un nouveau choix."""
+    warned = []
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[1:3]))
+    w = _save_check_dialog(selected=9)
+    w._on_save_counters_result(
+        True, [{"id": 3, "name": "A"}, {"id": 4, "name": "B"}],
+        ("http://serveur", "secret"))
+    assert w._finalized == []
+    assert warned and "n'existe pas" in warned[0][1]
+    assert w._loaded == [[{"id": 3, "name": "A"}, {"id": 4, "name": "B"}]]
+    assert w._counters_loaded_for == ("http://serveur", "secret")
+
+
+def test_save_counters_known_counter_finalizes(monkeypatch):
+    warned = []
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a))
+    w = _save_check_dialog(selected=4)
+    w._on_save_counters_result(
+        True, [{"id": 3, "name": "A"}, {"id": 4, "name": "B"}],
+        ("http://serveur", "secret"))
+    assert w._finalized == [True]
+    assert warned == []
+    assert w._counters_loaded_for == ("http://serveur", "secret")
+
+
+def test_validate_counter_then_save_starts_check():
+    w = _save_check_dialog()
+    started = []
+    w._start_counters_worker = (
+        lambda kind, url, secret, handler: (started.append(kind), True)[1])
+    w._validate_counter_then_save = types.MethodType(
+        preferences.PreferencesDialog._validate_counter_then_save, w)
+    w._validate_counter_then_save()
+    assert started == ["counters_save"]
+    assert w.save_button._e is False  # doubles soumissions bloquées

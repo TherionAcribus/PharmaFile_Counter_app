@@ -184,6 +184,13 @@ class PreferencesDialog(QDialog):
         self._workers = {}
         self._closing = False
 
+        # Couple (URL, secret) dont provient la liste de comptoirs affichée
+        # (None tant qu'aucun chargement n'a abouti). Permet de ne recharger la
+        # liste à l'ouverture de la page « Connexion » que si nécessaire
+        # (_maybe_load_counters) et de détecter une liste périmée à
+        # l'enregistrement (save_preferences).
+        self._counters_loaded_for = None
+
         # Volume enregistré (celui du lecteur principal à l'ouverture) et drapeau
         # « un aperçu a modifié le volume du lecteur ». Le bouton « Tester la
         # notification » joue le son au volume EN COURS D'ÉDITION : sans ce
@@ -666,6 +673,7 @@ class PreferencesDialog(QDialog):
             self.stacked_widget.setCurrentIndex(0)
         elif item == self.connexion_item:
             self.stacked_widget.setCurrentIndex(1)
+            self._maybe_load_counters()
         elif item == self.raccourcis_item:
             self.stacked_widget.setCurrentIndex(2)
         elif item == self.notifications_item:
@@ -831,8 +839,15 @@ class PreferencesDialog(QDialog):
         stored_url = settings_schema.read(settings, "web_url")
         stored_secret = load_secret(settings)
         connection_changed = (url != stored_url) or (app_secret != stored_secret)
+        # La liste affichée n'est fiable que si elle provient du couple courant :
+        # après un aller-retour sur les champs, elle peut montrer les comptoirs
+        # d'un autre serveur alors que la connexion enregistrée est inchangée.
+        list_is_stale = (self._counters_loaded_for is not None
+                         and self._counters_loaded_for != (url, app_secret))
         if connection_changed:
             self._validate_connection_then_save(url, app_secret)
+        elif list_is_stale:
+            self._validate_counter_then_save()
         else:
             self._finalize_save()
 
@@ -851,11 +866,8 @@ class PreferencesDialog(QDialog):
 
     @Slot(bool, str)
     def _on_connection_checked(self, ok, message):
-        self.save_button.setEnabled(True)
-        if ok:
-            self.status_label.setText("Connexion vérifiée — enregistrement…")
-            self._finalize_save()
-        else:
+        if not ok:
+            self.save_button.setEnabled(True)
             # « Enregistré » n'est PAS affiché : le dialogue reste ouvert et rien
             # n'est persisté tant que la connexion n'est pas exploitable.
             self.status_label.setText("Non enregistré : " + message)
@@ -863,6 +875,74 @@ class PreferencesDialog(QDialog):
                 self, "Connexion impossible",
                 message + "\n\nLes préférences n'ont PAS été enregistrées. "
                 "Vérifiez l'adresse du serveur et le secret applicatif.")
+            return
+        pair = (self.url_input.text(), self.app_secret_input.text())
+        if self._counters_loaded_for == pair:
+            # La liste affichée provient déjà de la nouvelle connexion : le
+            # comptoir choisi existe forcément sur ce serveur.
+            self.save_button.setEnabled(True)
+            self.status_label.setText("Connexion vérifiée — enregistrement…")
+            self._finalize_save()
+        else:
+            # Connexion OK mais liste possiblement périmée (celle de l'ancien
+            # serveur, ou simple entrée d'attente) : on vérifie que le comptoir
+            # choisi existe bien sur CE serveur avant d'enregistrer.
+            self._validate_counter_then_save()
+
+    def _validate_counter_then_save(self):
+        """ Vérifie en arrière-plan que le comptoir sélectionné existe sur le
+        serveur (URL, secret) courant, PUIS enregistre seulement dans ce cas.
+
+        Sans cette étape, un counter_id issu de la liste d'un ANCIEN serveur
+        (connexion modifiée sans retest, ou aller-retour sur les champs) était
+        persisté contre le nouveau serveur : le comptoir enregistré aurait pu
+        ne pas y exister. Le bouton Enregistrer est désactivé pendant la
+        vérification pour éviter les doubles soumissions. """
+        if not self._start_counters_worker(
+                "counters_save", self.url_input.text(),
+                self.app_secret_input.text(), self._on_save_counters_result):
+            self.save_button.setEnabled(True)
+            return
+        self.save_button.setEnabled(False)
+        self.status_label.setText("Vérification du comptoir sur le serveur…")
+
+    def _on_save_counters_result(self, success, data, pair):
+        self.save_button.setEnabled(True)
+        if not success:
+            # La liste est illisible : impossible de garantir le comptoir
+            # choisi — on n'enregistre rien plutôt que de persister un id
+            # incertain.
+            self.status_label.setText("Non enregistré : " + data)
+            QMessageBox.warning(
+                self, "Comptoirs introuvables",
+                data + "\n\nImpossible de vérifier le comptoir sélectionné : "
+                "les préférences n'ont PAS été enregistrées.")
+            return
+        # La liste récupérée devient la liste affichée (combo rechargé).
+        self._counters_loaded_for = pair
+        selected = coerce_counter_id(self.counter_combobox.currentData())
+        self.counters_loaded.emit(data)
+        ids = {coerce_counter_id(counter["id"]) for counter in data
+               if isinstance(counter, dict) and "id" in counter}
+        if selected is None or selected not in ids:
+            # Le comptoir choisi (liste périmée) n'existe pas sur ce serveur :
+            # l'utilisateur repart d'une liste à jour pour en choisir un valide.
+            self.status_label.setText(
+                "Non enregistré : le comptoir choisi n'existe pas sur ce serveur")
+            QMessageBox.warning(
+                self, "Comptoir introuvable",
+                "Le comptoir sélectionné n'existe pas sur ce serveur. La liste "
+                "des comptoirs a été rechargée : choisissez un comptoir, puis "
+                "enregistrez à nouveau.\n\nLes préférences n'ont PAS été "
+                "enregistrées.")
+            return
+        # update_counters a pu resélectionner le comptoir ENREGISTRÉ : on remet
+        # le choix de l'utilisateur (il existe sur ce serveur) et on enregistre.
+        index = self.counter_combobox.findData(selected)
+        if index != -1:
+            self.counter_combobox.setCurrentIndex(index)
+        self.status_label.setText("Connexion vérifiée — enregistrement…")
+        self._finalize_save()
 
     def _sync_and_verify(self, settings):
         """ Force l'écriture QSettings (``sync``) et vérifie qu'elle a abouti
@@ -1017,21 +1097,70 @@ class PreferencesDialog(QDialog):
         else:
             self.test_button.setEnabled(True)
 
+    def _maybe_load_counters(self):
+        """ Charge la liste des comptoirs à l'ouverture de la page « Connexion ».
+
+        Jusqu'ici elle n'était chargée qu'après un clic sur « Tester
+        l'adresse » : l'entrée restait bloquée sur « Chargement en cours... »
+        et un utilisateur venu juste changer de comptoir ne voyait jamais la
+        liste.
+
+        - URL ou secret manquant : rien à charger, le libellé l'indique au
+          lieu de promettre un chargement qui ne viendra jamais.
+        - Liste déjà à jour pour ce couple (URL, secret) : pas d'appel réseau
+          supplémentaire à chaque visite de la page.
+        - Sinon (jamais chargé, échec précédent, champs modifiés depuis) :
+          chargement lancé (doublons déjà exclus par _start_worker). """
+        url = self.url_input.text()
+        secret = self.app_secret_input.text()
+        if not url.strip() or not secret:
+            self._set_counter_placeholder("complétez l'adresse et le secret")
+            return
+        if self._counters_loaded_for == (url, secret):
+            return
+        self.load_counters()
+
+    def _set_counter_placeholder(self, suffix):
+        """ Met à jour le libellé de l'entrée d'attente du combo « comptoir ».
+
+        N'agit que tant qu'aucune vraie liste n'a été chargée : le combo ne
+        contient alors que l'entrée initiale, dont la donnée (counter_id
+        enregistré) est préservée — seul le texte affiché change. """
+        if self._counters_loaded_for is not None:
+            return
+        label = f"{self.counter_id} - {suffix}" if self.counter_id else suffix
+        self.counter_combobox.setItemText(0, label)
+
+    def _start_counters_worker(self, kind, url, secret, handler):
+        """ Démarre un CountersWorker pour le couple (url, secret) donné.
+
+        Le couple de la REQUÊTE est rattaché au résultat via le lambda :
+        `handler` reçoit (success, data, pair) — le pair reste correct même si
+        les champs ont été modifiés pendant l'appel ou si un autre chargement
+        (d'un kind différent) tourne en parallèle.
+        Renvoie True si le worker a démarré. """
+        worker = CountersWorker(url, secret)
+        worker.result.connect(
+            lambda ok, data, pair=(url, secret): handler(ok, data, pair))
+        return self._start_worker(kind, worker)
+
     def load_counters(self):
-        worker = CountersWorker(self.url_input.text(), self.app_secret_input.text())
-        worker.result.connect(self._on_counters_result)
         # Si un chargement des comptoirs est déjà en cours (ou fermeture), on
         # réactive le bouton pour ne pas le laisser bloqué désactivé.
-        if not self._start_worker("counters", worker):
+        if not self._start_counters_worker(
+                "counters", self.url_input.text(), self.app_secret_input.text(),
+                self._on_counters_result):
             self.test_button.setEnabled(True)
 
-    @Slot(bool, object)
-    def _on_counters_result(self, success, data):
+    def _on_counters_result(self, success, data, pair):
         self.test_button.setEnabled(True)
         if success:
+            # La liste affichée provient désormais du couple de la requête.
+            self._counters_loaded_for = pair
             self.counters_loaded.emit(data)
         else:
             self.status_label.setText(data)
+            self._set_counter_placeholder("échec du chargement")
 
     @Slot(list)
     def update_counters(self, counters):
