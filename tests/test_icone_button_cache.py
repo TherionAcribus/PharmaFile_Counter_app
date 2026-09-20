@@ -167,3 +167,31 @@ def test_accessible_description_reflects_current_state(qapp):
     assert btn.accessibleDescription() == "Activer"
     btn.change_state("waiting")
     assert btn.accessibleDescription() == "En attente d'une connexion"
+
+
+# ---------------------------------------------------------------------------
+# Taille : source unique, icône plafonnée à sa résolution native, mode compact
+# ---------------------------------------------------------------------------
+
+def test_button_size_and_icon_share_one_source(qapp):
+    """Bouton et icône viennent du même réglage (plus de 50/50 dupliqués)."""
+    btn = _make()
+    assert btn.width() == IconeButton.BASE_PX == btn.height()
+    assert btn.iconSize().width() <= IconeButton.BASE_PX
+
+
+def test_icon_never_upscaled_beyond_native(qapp):
+    """Nos .ico n'embarquent que 32 px : l'icône n'est jamais étirée au-delà de
+    sa résolution native — elle était floue dès 100 % de zoom, pire en
+    haute-DPI (Qt applique déjà le facteur d'écran sur les px logiques)."""
+    btn = _make()
+    assert btn._native_icon_px() == 32
+    assert btn.iconSize().width() <= btn._native_icon_px()
+
+
+def test_set_pixel_size_compact(qapp):
+    btn = _make()
+    btn.set_pixel_size(IconeButton.COMPACT_PX)
+    assert btn.width() == IconeButton.COMPACT_PX == btn.height()
+    # L'icône reste plafonnée au natif, jamais étirée.
+    assert btn.iconSize().width() <= btn._native_icon_px()

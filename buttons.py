@@ -82,6 +82,12 @@ class DebounceButton(QPushButton):
 
 
 class IconeButton(DebounceButton):
+    #: Tailles nominales en px LOGIQUES : Qt applique automatiquement le facteur
+    #: DPI de l'écran au rendu (rien à multiplier à la main). COMPACT_PX suit le
+    #: resserrement du mode panneau compact (cf. _apply_compact_styling).
+    BASE_PX = 50
+    COMPACT_PX = 36
+
     def __init__(self, icon_path, icon_inactive_path, flask_url, tooltip_text, tooltip_inactive_text, state, is_always_visible=True, parent=None, accessible_name=None):
         super().__init__(parent)
 
@@ -101,7 +107,6 @@ class IconeButton(DebounceButton):
         # cache pour éviter de recréer un QSize à chaque rafraîchissement.
         self._icon_active = QIcon(icon_path)
         self._icon_inactive = QIcon(icon_inactive_path)
-        self._icon_size = QSize(50, 50)
         self.flask_url = flask_url
         self.tooltip_text = tooltip_text
         self.tooltip_inactive_text = tooltip_inactive_text
@@ -111,9 +116,8 @@ class IconeButton(DebounceButton):
         # renouvellement sur 401 (avec un seul rejeu) y est intégré.
         self.main_window = parent
         self.is_always_visible = is_always_visible
-        self.setFixedSize(50, 50)
+        self.set_pixel_size(self.BASE_PX)
         self.setIcon(self._icon_active)
-        self.setIconSize(self._icon_size)
         self.setStyleSheet("border: none;")
         self.state = state  # inactive, active, waiting
         # État à restaurer si la requête échoue, pour ne jamais rester bloqué en
@@ -122,6 +126,27 @@ class IconeButton(DebounceButton):
 
         self.clicked.connect(self.toggle_state)
         self.update_button_icon()
+
+    def _native_icon_px(self):
+        """ Plus grande résolution réellement embarquée dans les .ico
+        (0 si inconnue). """
+        sizes = (self._icon_active.availableSizes()
+                 + self._icon_inactive.availableSizes())
+        return max((s.width() for s in sizes), default=0)
+
+    def set_pixel_size(self, px):
+        """ Taille du bouton en px logiques — Qt applique ensuite le facteur
+        DPI de l'écran au rendu. Bouton et icône partagent une seule source,
+        au lieu de deux constantes (50/50) qui pouvaient diverger.
+
+        L'icône n'est jamais agrandie au-delà de la résolution native de
+        l'asset : nos .ico n'embarquent que 32 px — affichés à 50 ils étaient
+        déjà flous à 100 % de zoom, et davantage en haute-DPI. """
+        self.setFixedSize(px, px)
+        native = self._native_icon_px()
+        icon_px = min(px, native) if native else px
+        self._icon_size = QSize(icon_px, icon_px)
+        self.setIconSize(self._icon_size)
 
     def toggle_state(self):
         logger.debug("toggle_state (état=%s)", self.state)

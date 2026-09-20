@@ -39,7 +39,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout  # noqa: E402
 
 import main  # noqa: E402
-from buttons import DebounceButton  # noqa: E402
+from buttons import DebounceButton, IconeButton  # noqa: E402
+from main_window_ui import ConnectionStatusIndicator  # noqa: E402
 from window_placement import WindowPlacement  # noqa: E402
 
 
@@ -264,3 +265,23 @@ def test_deconnexion_efface_le_nom_staff(window):
     window.update_staff_label("Alice")
     window.deconnexion_interface()
     assert window.staff_name is None
+
+
+# --- boutons-icônes : taille nominale vs mode compact -------------------------
+
+def test_boutons_icones_taille_nominale(window):
+    assert window.btn_auto_calling.width() == IconeButton.BASE_PX
+    assert window.btn_paper.width() == IconeButton.BASE_PX
+    assert window.connection_indicator.width() == ConnectionStatusIndicator.BASE_PX
+
+
+def test_mode_compact_resserre_les_boutons_icones():
+    # En mode panneau compact, les boutons-icônes et l'indicateur suivent le
+    # resserrement du reste de l'interface (ils étaient figés à 50/30 px).
+    win = _make_main_window(compact_mode=True)
+    try:
+        assert win.btn_auto_calling.width() == IconeButton.COMPACT_PX
+        assert win.btn_paper.width() == IconeButton.COMPACT_PX
+        assert win.connection_indicator.width() == ConnectionStatusIndicator.COMPACT_PX
+    finally:
+        win.deleteLater()

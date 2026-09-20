@@ -46,10 +46,14 @@ class ConnectionStatusIndicator(QWidget):
         "connecting": "Reconnexion en cours",
         "disconnected": "Temps réel déconnecté",
     }
+    #: Tailles nominales en px logiques (Qt applique le facteur DPI de l'écran
+    #: au rendu) ; COMPACT_PX suit le resserrement du mode panneau compact.
+    BASE_PX = 30
+    COMPACT_PX = 24
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(30, 30)
+        self.setFixedSize(self.BASE_PX, self.BASE_PX)
         self.status = "connected"
         self.last_connection_time = None
         self.reconnection_attempts = 0
@@ -72,6 +76,11 @@ class ConnectionStatusIndicator(QWidget):
                 _logger.warning("Erreur lors du chargement de %s", filename)
 
         self._refresh_accessibility()
+
+    def set_pixel_size(self, px):
+        """Taille du widget en px logiques (Qt applique le facteur DPI de
+        l'écran au rendu). Le SVG se redessine net à toute taille."""
+        self.setFixedSize(px, px)
 
     def set_status(self, status, reconnection_attempts=None):
         _logger.debug("Indicateur de connexion : %s", status)
@@ -238,6 +247,13 @@ def _apply_compact_styling(window):
         button = getattr(window, name, None)
         if button is not None:
             button.setMinimumHeight(min_h)
+    # Boutons-icônes + indicateur de connexion : resserrés comme le reste du
+    # panneau — ils étaient figés à 50/30 px quel que soit le mode.
+    for name in ("btn_auto_calling", "btn_paper", "connection_indicator"):
+        widget = getattr(window, name, None)
+        if widget is not None and hasattr(widget, "set_pixel_size"):
+            widget.set_pixel_size(
+                widget.COMPACT_PX if compact else widget.BASE_PX)
 
 
 def _create_name(window):
