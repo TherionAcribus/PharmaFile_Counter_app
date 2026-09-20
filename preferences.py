@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QTextEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -325,9 +325,13 @@ class PreferencesDialog(QDialog):
         
         self.connexion_layout.addLayout(self.url_layout)
         
-        self.status_label = QTextEdit(self.connexion_page)
-        self.status_label.setReadOnly(True)
-        self.status_label.setFixedWidth(400)
+        self.status_label = QLabel(self.connexion_page)
+        # wordWrap plutôt qu'une largeur fixe : le texte long (message d'erreur)
+        # passe à la ligne et le dialogue reste redimensionnable.
+        self.status_label.setWordWrap(True)
+        # Texte sélectionnable : un message d'erreur reste copiable, comme
+        # avec l'ancien QTextEdit en lecture seule.
+        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.connexion_layout.addWidget(self.status_label)
         
         self.app_secret_label = QLabel("Secret applicatif (doit correspondre à APP_SECRET côté serveur):", self.connexion_page)

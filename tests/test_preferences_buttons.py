@@ -10,8 +10,8 @@ import os
 import sys
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QSettings
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QWidget
+from PySide6.QtCore import QCoreApplication, QSettings, Qt
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -65,3 +65,14 @@ def test_boutons_en_bas_du_dialogue(isolated_settings):
     assert last is dialog.button_box
     # « Enregistrer » vit dans la barre et reste le bouton d'acceptation.
     assert dialog.button_box.buttonRole(dialog.save_button) == QDialogButtonBox.AcceptRole
+
+
+def test_status_label_est_un_label_enroule(isolated_settings):
+    """Le statut de connexion est un QLabel à retour à la ligne (plus de
+    QTextEdit à largeur fixe qui bloquait le redimensionnement), et le texte
+    reste sélectionnable pour copier un message d'erreur."""
+    dialog = _dialog()
+    assert isinstance(dialog.status_label, QLabel)
+    assert dialog.status_label.wordWrap() is True
+    assert dialog.status_label.maximumWidth() == 16777215  # pas de largeur figée
+    assert dialog.status_label.textInteractionFlags() & Qt.TextSelectableByMouse
