@@ -80,6 +80,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.app_logger = AppLogger.get_instance()
+        self.logger = self.app_logger.get_logger()
+
         # pour gérer le délai avant d'indiquer une erreur de connexion
         self.disconnect_timer = QTimer(self)  # Timer créé dans le thread principal
         self.disconnect_timer.setSingleShot(True)
@@ -99,8 +102,6 @@ class MainWindow(QMainWindow):
         self.loading_screen = LoadingScreen()
         self.loading_screen.show()
 
-        self.app_logger = AppLogger.get_instance()
-        self.logger = self.app_logger.get_logger()
         self.logger.info("Initialisation de la session...")
 
         self.activities_staff = None  # pour être en global
