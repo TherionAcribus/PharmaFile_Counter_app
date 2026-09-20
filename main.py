@@ -516,6 +516,13 @@ class MainWindow(QMainWindow):
         super().moveEvent(event)
         self.placement.on_window_moved()
 
+    def reset_window_position(self):
+        """Réinitialise la géométrie mémorisée de la fenêtre. Délègue à
+        ``WindowPlacement`` : même effet que la commande « Réinitialiser la
+        position » du menu « Menu » (appelée aussi par le bouton des
+        préférences)."""
+        self.placement.reset()
+
 
     def toggle_patient_list(self):
         if self.patient_list_dock.isVisible():

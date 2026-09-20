@@ -979,6 +979,11 @@ class PreferencesDialog(QDialog):
         parent = self.parent()
         if parent is not None and hasattr(parent, "reset_window_position"):
             parent.reset_window_position()
+        else:
+            # Pas de silencieux : un clic sans effet doit laisser une trace.
+            logger.warning(
+                "Réinitialisation de la position demandée, mais le parent (%r) "
+                "n'expose pas reset_window_position.", parent)
 
     def get_shortcut_text(self, widget):
         """Recompose le raccourci saisi (inverse exact de load_shortcut)."""
