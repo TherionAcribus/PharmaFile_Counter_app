@@ -46,11 +46,18 @@ jobs:
 
       # Bibliothèques système requises par les greffons Qt de PySide6 en mode
       # « offscreen » (les tests tournent sans affichage).
+      # libpulse0 : PySide6.QtMultimedia (importé par audio.py, donc par main/
+      # preferences et une grande partie des tests) est LIÉ à libpulse.so.0 —
+      # sans elle l'import échoue à la collecte pytest (exit 2). libasound :
+      # backend audio ALSA de QtMultimedia.
       - name: Dépendances système Qt (offscreen)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libpulse0
+          # Noble (24.04) a renommé libasound2 en libasound2t64.
+          sudo apt-get install -y --no-install-recommends libasound2t64 \
+            || sudo apt-get install -y --no-install-recommends libasound2
 
       - name: Installer les dépendances (runtime + tests)
         run: |

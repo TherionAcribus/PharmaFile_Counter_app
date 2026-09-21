@@ -162,7 +162,6 @@ def _parent_avec_comptoir():
 
 def test_on_notification_recoit_un_objet(qapp):
     """Nouveau contrat : data est un dict, le signal véhicule le dict."""
-    import json as _json
     ws = WebSocketClient(_parent_avec_comptoir())
     recus = []
     ws.new_notification.connect(recus.append)
