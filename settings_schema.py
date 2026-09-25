@@ -124,7 +124,7 @@ SETTINGS = {
         default=DEFAULT_LIST_FONT_SIZE, kind=int, coerce=clamp_font_size),
 
     # --- Fenêtre / panneau ---------------------------------------------------
-    "always_on_top": Setting(default=False, kind=bool),
+    "always_on_top": Setting(default=True, kind=bool),
     # Clé QSettings historique « vertical_mode » = mode horizontal dans l'app.
     "vertical_mode": Setting(default=False, kind=bool),
     "compact_mode": Setting(default=False, kind=bool),
@@ -132,7 +132,7 @@ SETTINGS = {
     "panel_thickness": Setting(default=DEFAULT_PANEL_THICKNESS, coerce=clamp_thickness),
 
     # --- File des patients ---------------------------------------------------
-    "display_patient_list": Setting(default=False, kind=bool),
+    "display_patient_list": Setting(default=True, kind=bool),
     "patient_list_vertical_position": Setting(default="bottom", kind=str),
     "patient_list_horizontal_position": Setting(default="right", kind=str),
 
