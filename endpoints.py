@@ -147,6 +147,40 @@ def remove_staff(web_url):
     return f"{_base(web_url)}/app/counter/remove_staff"
 
 
+# --- Messagerie -----------------------------------------------------------
+
+def messaging_presence(web_url):
+    return f"{_base(web_url)}/api/messaging/presence"
+
+
+def messaging_presence_leave(web_url):
+    return f"{_base(web_url)}/api/messaging/presence/leave"
+
+
+def messaging_state(web_url, counter_id):
+    return f"{_base(web_url)}/api/messaging/state?counter_id={_seg(counter_id)}"
+
+
+def messaging_messages(web_url, counter_id, kind, peer_staff_id=None,
+                       before_id=None, after_id=None, limit=50):
+    params = [f"counter_id={_seg(counter_id)}", f"kind={_seg(kind)}", f"limit={int(limit)}"]
+    if peer_staff_id is not None:
+        params.append(f"peer_staff_id={_seg(peer_staff_id)}")
+    if before_id is not None:
+        params.append(f"before_id={_seg(before_id)}")
+    if after_id is not None:
+        params.append(f"after_id={_seg(after_id)}")
+    return f"{_base(web_url)}/api/messaging/messages?{'&'.join(params)}"
+
+
+def messaging_send(web_url):
+    return f"{_base(web_url)}/api/messaging/messages"
+
+
+def messaging_read(web_url):
+    return f"{_base(web_url)}/api/messaging/read"
+
+
 # --- Temps réel ------------------------------------------------------------
 
 def socket_url(web_url):

@@ -38,6 +38,7 @@ ORIGINS_BY_CATEGORY = {
     rules.CONNECTION: ("connection", "socket_connection_true", "socket_connection_false"),
     rules.VALIDATION: ("please_validate",),
     rules.SYSTEM: ("printer_error", "disconnect_by_user"),
+    rules.MESSAGING: ("messaging",),
 }
 
 
@@ -58,6 +59,7 @@ ORIGINS_BY_CATEGORY = {
     ("disconnect_by_user", rules.SYSTEM),
     ("patient_taken", rules.SYSTEM),
     ("patient_for_staff_from_app", rules.SYSTEM),
+    ("messaging", rules.MESSAGING),
 ])
 def test_category_for_known_origins(origin, category):
     assert rules.category_for_origin(origin) == category
@@ -128,7 +130,8 @@ def test_force_bypasses_every_preference():
 @pytest.mark.parametrize("key", rules.ALL_KEYS)
 def test_every_preference_key_is_declared_in_schema(key):
     assert key in settings_schema.SETTINGS
-    assert settings_schema.SETTINGS[key].default is True   # tout activé par défaut
+    expected = False if key == "notification_messaging_sound" else True
+    assert settings_schema.SETTINGS[key].default is expected
 
 
 def test_one_display_and_one_sound_key_per_category():

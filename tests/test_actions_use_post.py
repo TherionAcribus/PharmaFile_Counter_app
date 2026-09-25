@@ -40,10 +40,14 @@ MODIFYING_ACTIONS = [
     "delete_patient",
     "login_staff",
     "logout_staff",
+    "messaging_presence",
+    "messaging_leave",
+    "messaging_send",
+    "messaging_read",
 ]
 
 # Lectures seules : GET.
-READ_ACTIONS = ["fetch_staff"]
+READ_ACTIONS = ["fetch_staff", "messaging_state", "messaging_messages"]
 
 
 def _method_body(name):
@@ -83,7 +87,7 @@ def test_toutes_les_actions_sont_couvertes():
     publiques = {name for name, _ in inspect.getmembers(CounterApi, inspect.isfunction)
                  if not name.startswith("_")}
     infra = {"make_handle", "fetch_token", "clear_token", "stop",
-             "fetch_state", "release_counter_blocking"}
+             "fetch_state", "release_counter_blocking", "messaging_leave_blocking"}
     classees = set(MODIFYING_ACTIONS) | set(READ_ACTIONS) | infra
     assert publiques - classees == set(), (
         "action non classée POST/GET dans ce test : " + ", ".join(sorted(publiques - classees)))

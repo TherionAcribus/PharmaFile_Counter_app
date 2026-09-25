@@ -26,6 +26,7 @@ from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import snapshot_is_fresh
+from messaging import MessagingController
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import read_shortcut
 from preferences_diff import needs_service_reconnect
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
             logger=self.logger,
             is_shutting_down=lambda: self.shutting_down,
         )
+        self.messaging = MessagingController(self)
 
         # Séquences de fond (point 10.13) : démarrage et resynchronisation, hors
         # thread graphique, avec coalescing des resyncs et suivi des threads.
@@ -682,6 +684,8 @@ class MainWindow(QMainWindow):
             # — le nom reste dans la barre de titre — mais reste prêt si on
             # rebascule en vertical.
             self.staff_name = staff_name
+            if hasattr(self, "messaging"):
+                self.messaging.set_identity(self.staff_id, staff_name)
             self.label_staff.setText(f'-= {staff_name} =-')
             self.label_staff.setVisible(not self.horizontal_mode)
         except RuntimeError:
@@ -700,6 +704,9 @@ class MainWindow(QMainWindow):
         self.socket_io_client.ws_connection_status.connect(self.handle_socket_connection)
         self.socket_io_client.connection_lost.connect(self._handle_connection_lost)
         self.socket_io_client.refresh_after_clear_patient_list.connect(self.refresh_after_clear_patient_list)
+        self.socket_io_client.messaging_changed.connect(self.messaging.socket_changed)
+        self.socket_io_client.messaging_presence_changed.connect(self.messaging.socket_presence_changed)
+        self.socket_io_client.messaging_config_changed.connect(self.messaging.socket_config_changed)
         self.socket_io_client.start()
 
     def init_state(self):
@@ -718,6 +725,8 @@ class MainWindow(QMainWindow):
         self.list_patients = state.get("standing_list") or []
         self.autocalling = "active" if state.get("autocalling") else "inactive"
         self.add_paper = "active" if state.get("add_paper") else "inactive"
+        if hasattr(self, "messaging"):
+            self.messaging.set_enabled(state.get("messaging_enabled", False))
         if state.get("counter_name"):
             self.counter_name = state.get("counter_name")
         if state.get("activities_staff"):
@@ -736,6 +745,8 @@ class MainWindow(QMainWindow):
 
 
     def handle_socket_connection(self, status, reconnection_attempts=0, display_notification=True):
+        if status and hasattr(self, "messaging"):
+            self.messaging.socket_connected()
         if status is None:  # Connecting
             self.connection_indicator.set_status("connecting", reconnection_attempts)
         elif status:  # Connected
@@ -953,6 +964,8 @@ class MainWindow(QMainWindow):
         if self._disconnect_in_progress:
             return
         self._disconnect_in_progress = True
+        if hasattr(self, "messaging"):
+            self.messaging.leave_presence()
         # Mémorise le titre courant (nom du staff) pour le restaurer en cas d'échec.
         self._title_before_disconnect = self.windowTitle()
         self.setWindowTitle("PharmaFile - Déconnexion en cours…")
@@ -964,6 +977,8 @@ class MainWindow(QMainWindow):
         # l'interface principale est reconstruite avant une nouvelle
         # identification.
         self.staff_name = None
+        if hasattr(self, "messaging"):
+            self.messaging.clear_identity(notify_server=False)
         # Créer et définir le widget de connexion
         login_widget = create_login_widget(self)
         self.setCentralWidget(login_widget)
@@ -1333,7 +1348,9 @@ class MainWindow(QMainWindow):
         if getattr(self, 'socket_io_client', None):
             self.socket_io_client.stop(timeout_ms=3000)
 
-        # 4. Libération du comptoir côté serveur : déconnexion HTTP bornée.
+        # 4. Retrait de présence messagerie puis libération du comptoir.
+        if hasattr(self, "messaging"):
+            self.messaging.shutdown()
         self._release_counter_blocking()
 
         # 5. Arrêt du gestionnaire réseau (worker unique) : purge la file et

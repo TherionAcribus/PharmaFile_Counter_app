@@ -29,6 +29,7 @@ PAPER = "paper"
 CONNECTION = "connection"
 VALIDATION = "validation"
 SYSTEM = "system"
+MESSAGING = "messaging"
 
 #: Ordre d'affichage dans la fenêtre de préférences.
 CATEGORIES = (
@@ -39,6 +40,7 @@ CATEGORIES = (
     CONNECTION,
     VALIDATION,
     SYSTEM,
+    MESSAGING,
 )
 
 #: Libellé de chaque catégorie (fenêtre de préférences).
@@ -50,6 +52,7 @@ CATEGORY_LABELS = {
     CONNECTION: "Connexion au serveur / temps réel",
     VALIDATION: "Rappel de validation du patient",
     SYSTEM: "Autres alertes (imprimante, déconnexion, transfert…)",
+    MESSAGING: "Messagerie interne",
 }
 
 #: Explication courte (infobulle) de ce que couvre chaque catégorie.
@@ -62,6 +65,7 @@ CATEGORY_HINTS = {
     VALIDATION: "Rappel après le délai « patient non validé ».",
     SYSTEM: "Erreur d'imprimante, déconnexion par un autre poste, patient déjà "
             "pris, transfert de patient, origines inconnues.",
+    MESSAGING: "Nouveau message d'un professionnel ou adressé à toute l'équipe.",
 }
 
 # --- Origines -> catégorie ------------------------------------------------
@@ -79,6 +83,7 @@ _ORIGIN_CATEGORY = {
     "socket_connection_true": CONNECTION,
     "socket_connection_false": CONNECTION,
     "please_validate": VALIDATION,
+    "messaging": MESSAGING,
 }
 
 # --- Clés de préférences --------------------------------------------------
@@ -93,6 +98,7 @@ DISPLAY_KEYS = {
     CONNECTION: "notification_connection",
     VALIDATION: "notification_validation",
     SYSTEM: "notification_system",
+    MESSAGING: "notification_messaging",
 }
 
 #: Son : une clé par catégorie, distincte de l'affichage.
@@ -104,6 +110,7 @@ SOUND_KEYS = {
     CONNECTION: "notification_connection_sound",
     VALIDATION: "notification_validation_sound",
     SYSTEM: "notification_system_sound",
+    MESSAGING: "notification_messaging_sound",
 }
 
 #: Toutes les clés à charger depuis QSettings (affichage + son).

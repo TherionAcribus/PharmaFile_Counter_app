@@ -63,6 +63,9 @@ class WebSocketClient(QThread):
     ws_connection_status = Signal(bool, int, bool)
     connection_lost = Signal(int)
     refresh_after_clear_patient_list = Signal(bool)
+    messaging_changed = Signal(object)
+    messaging_presence_changed = Signal()
+    messaging_config_changed = Signal(bool)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
@@ -101,6 +104,9 @@ class WebSocketClient(QThread):
         self.sio.on('disconnect_user', self.on_disconnect_user, namespace='/socket_app_counter')
         self.sio.on('update_patient_list', self.on_update_patient_list, namespace='/socket_app_counter')
         self.sio.on('refresh_after_clear_patient_list', self.on_refresh_after_clear_patient_list, namespace='/socket_app_counter')
+        self.sio.on('messaging_changed', self.on_messaging_changed, namespace='/socket_app_counter')
+        self.sio.on('messaging_presence_changed', self.on_messaging_presence_changed, namespace='/socket_app_counter')
+        self.sio.on('messaging_config_changed', self.on_messaging_config_changed, namespace='/socket_app_counter')
 
     def _current_token(self):
         return getattr(self.parent, "app_token", None)
@@ -236,6 +242,23 @@ class WebSocketClient(QThread):
         if notification_data["origin"] in ["no_paper", "low_paper", "paper_ok"]:
             self.change_paper_button.emit(notification_data["origin"])
 
+    @staticmethod
+    def _payload(data):
+        if not isinstance(data, dict):
+            return {}
+        payload = data.get("data")
+        return payload if isinstance(payload, dict) else {}
+
+    def on_messaging_changed(self, data):
+        self.messaging_changed.emit(self._payload(data))
+
+    def on_messaging_presence_changed(self, _data=None):
+        self.messaging_presence_changed.emit()
+
+    def on_messaging_config_changed(self, data):
+        payload = self._payload(data)
+        self.messaging_config_changed.emit(bool(payload.get("enabled")))
+
     def on_update_patient_list(self, data):
         try:
             if isinstance(data, str):
@@ -255,6 +278,5 @@ class WebSocketClient(QThread):
     def on_refresh_after_clear_patient_list(self, data):
         logger.debug("Rafraîchissement après purge de la liste des patients")
         self.refresh_after_clear_patient_list.emit(True)
-
 
 

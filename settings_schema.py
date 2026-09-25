@@ -91,6 +91,7 @@ SETTINGS = {
     # étaient muettes dès que « activités spécifiques » était décochée.
     "notification_validation": Setting(default=True, kind=bool),
     "notification_system": Setting(default=True, kind=bool),
+    "notification_messaging": Setting(default=True, kind=bool),
 
     # --- Notifications (son, par catégorie) ----------------------------------
     # « Afficher » et « jouer un son » sont deux réglages distincts : on peut
@@ -103,6 +104,7 @@ SETTINGS = {
     "notification_connection_sound": Setting(default=True, kind=bool),
     "notification_validation_sound": Setting(default=True, kind=bool),
     "notification_system_sound": Setting(default=True, kind=bool),
+    "notification_messaging_sound": Setting(default=False, kind=bool),
 
     # --- Notifications (délais / tailles) ------------------------------------
     "notification_after_deconnection": Setting(default=10, kind=int, bounds=(0, 99)),

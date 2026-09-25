@@ -223,6 +223,8 @@ def create_interface(window):
     # Mode panneau compact : resserre les marges/espacements et priorise
     # visuellement les éléments essentiels dans une petite zone (point 25).
     _apply_compact_styling(window)
+    if hasattr(window, "messaging"):
+        window.messaging.attach_to_interface()
 
 
 def _apply_compact_styling(window):

@@ -23,6 +23,7 @@ en garder une copie périmée.
 """
 
 import logging
+import json
 import uuid
 
 import endpoints
@@ -210,6 +211,63 @@ class CounterApi:
         data = {'counter_id': self._counter_id()}
         return self._post(endpoints.remove_staff(self._url()), data=data,
                           on_result=on_result, key="disconnect")
+
+    # --- messagerie --------------------------------------------------------
+
+    def messaging_presence(self, client_instance_id, on_result=None):
+        data = {"counter_id": self._counter_id(),
+                "client_instance_id": client_instance_id}
+        return self._post(endpoints.messaging_presence(self._url()), data=data,
+                          on_result=on_result, key="messaging_presence")
+
+    def messaging_leave(self, client_instance_id, on_result=None):
+        data = {"counter_id": self._counter_id(),
+                "client_instance_id": client_instance_id}
+        return self._post(endpoints.messaging_presence_leave(self._url()), data=data,
+                          on_result=on_result, key="messaging_leave")
+
+    def messaging_leave_blocking(self, client_instance_id):
+        result = self.network_manager.request_blocking(
+            endpoints.messaging_presence_leave(self._url()), method="POST",
+            data={"counter_id": self._counter_id(),
+                  "client_instance_id": client_instance_id},
+            timeout=(2, 3), timeout_s=4,
+        )
+        return result.status == 200
+
+    def messaging_state(self, on_result=None):
+        return self._get(
+            endpoints.messaging_state(self._url(), self._counter_id()),
+            on_result=on_result, key="messaging_state")
+
+    def messaging_messages(self, kind, peer_staff_id=None, before_id=None,
+                           after_id=None, on_result=None):
+        url = endpoints.messaging_messages(
+            self._url(), self._counter_id(), kind, peer_staff_id,
+            before_id=before_id, after_id=after_id,
+        )
+        key = f"messaging_messages:{kind}:{peer_staff_id or 'all'}"
+        return self._get(url, on_result=on_result, key=key)
+
+    def messaging_send(self, client_message_id, kind, body,
+                       recipient_staff_id=None, on_result=None):
+        data = {
+            "counter_id": self._counter_id(),
+            "client_message_id": client_message_id,
+            "kind": kind,
+            "body": body,
+        }
+        if recipient_staff_id is not None:
+            data["recipient_staff_id"] = recipient_staff_id
+        return self._post(
+            endpoints.messaging_send(self._url()), data=data,
+            on_result=on_result, key=f"messaging_send:{client_message_id}")
+
+    def messaging_read(self, message_ids, on_result=None):
+        data = {"counter_id": self._counter_id(),
+                "message_ids": json.dumps(list(message_ids))}
+        return self._post(endpoints.messaging_read(self._url()), data=data,
+                          on_result=on_result, key="messaging_read")
 
     def release_counter_blocking(self, url=None, counter_id=None):
         """ Libère le comptoir et attend (au plus quelques secondes).

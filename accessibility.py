@@ -135,6 +135,10 @@ VALID_TONES = (TONE_SOBER, TONE_HUMOROUS)
 # origin -> {ton: titre}. Le ton « humoristique » reprend les anciens libellés ;
 # le ton « sobre » (défaut) donne un intitulé explicite et neutre.
 _TITLES = {
+    "messaging": {
+        TONE_SOBER: "Nouveau message",
+        TONE_HUMOROUS: "Nouveau message",
+    },
     "activity": {
         TONE_SOBER: "Nouvelle mission",
         TONE_HUMOROUS: "Une nouvelle mission arrive !",
