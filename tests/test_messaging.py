@@ -1,5 +1,6 @@
 """Interface et cycle de vie de la messagerie PySide."""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMenu, QWidget
 
 from messaging import MessagingController
@@ -94,6 +95,30 @@ def test_feature_is_absent_until_enabled_and_destroyed_when_disabled():
     assert controller.button is None
     assert controller.dock is None
     assert not controller.heartbeat_timer.isActive()
+
+
+def test_dock_is_below_main_interface_by_default():
+    previous = dict(FakeSettings.values)
+    FakeSettings.values.pop("messaging_dock_area", None)
+    try:
+        window, controller = _controller()
+        controller.set_enabled(True)
+        assert window.dockWidgetArea(controller.dock) == Qt.BottomDockWidgetArea
+    finally:
+        FakeSettings.values.clear()
+        FakeSettings.values.update(previous)
+
+
+def test_saved_right_position_is_still_respected():
+    previous = dict(FakeSettings.values)
+    FakeSettings.values["messaging_dock_area"] = "right"
+    try:
+        window, controller = _controller()
+        controller.set_enabled(True)
+        assert window.dockWidgetArea(controller.dock) == Qt.RightDockWidgetArea
+    finally:
+        FakeSettings.values.clear()
+        FakeSettings.values.update(previous)
 
 
 def test_repeated_identity_refresh_does_not_duplicate_ui():

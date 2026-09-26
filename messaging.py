@@ -221,7 +221,10 @@ class MessagingController:
 
         self.dock.setWidget(container)
         settings = self._settings_factory()
-        area_name = settings.value("messaging_dock_area", "right", type=str)
+        # Comme la liste des patients, la messagerie s'ouvre naturellement sous
+        # la partie principale. L'utilisateur peut toujours la déplacer à
+        # droite ; ce choix est ensuite conservé dans QSettings.
+        area_name = settings.value("messaging_dock_area", "bottom", type=str)
         area = Qt.BottomDockWidgetArea if area_name == "bottom" else Qt.RightDockWidgetArea
         self.window.addDockWidget(area, self.dock)
         self.dock.visibilityChanged.connect(self._visibility_changed)
