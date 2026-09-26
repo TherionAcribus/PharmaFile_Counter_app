@@ -167,9 +167,14 @@ class WindowPlacement:
             # Barre horizontale dockée en haut (zone au-dessus du progiciel).
             target = compact_panel_geometry(HORIZONTAL, avail, window.panel_thickness, "top")
         else:
-            # Colonne verticale dockée du côté le plus proche.
+            # Colonne verticale dockée du côté le plus proche. Elle ne
+            # prend plus toute la hauteur de l'écran : sa hauteur correspond au
+            # minimum réel requis par les commandes et les docks visibles.
             side = nearest_vertical_side(self._window_frame(), avail)
-            target = compact_panel_geometry(VERTICAL, avail, window.panel_thickness, side)
+            x, y, w, _full_height = compact_panel_geometry(
+                VERTICAL, avail, window.panel_thickness, side,
+            )
+            target = (x, y, w, self.preferred_content_height(avail[3]))
         x, y, w, h = target
         self.applying = True
         try:
@@ -180,6 +185,41 @@ class WindowPlacement:
         finally:
             self.applying = False
         self.logger.debug("Mode panneau appliqué : %s", target)
+
+    def preferred_content_height(self, available_height=None):
+        """Hauteur minimale confortable de la fenêtre et de ses docks visibles."""
+        window = self.window
+        values = [WindowPlacement.DEFAULT_WINDOW_SIZE[1]]
+        for getter_name in ("minimumHeight", "minimumSizeHint"):
+            try:
+                value = getattr(window, getter_name)()
+                values.append(value if isinstance(value, int) else value.height())
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        height = max(1, *values)
+        if available_height is not None:
+            height = min(height, max(1, int(available_height)))
+        return height
+
+    def fit_to_content_height(self):
+        """Réduit la fenêtre à sa hauteur utile sans changer sa largeur."""
+        window = self.window
+        avail = self.current_screen_avail()
+        if avail is None:
+            return
+        _sx, sy, _sw, sh = avail
+        target_height = self.preferred_content_height(sh)
+        frame = self._window_frame()
+        y = min(max(frame[1], sy), sy + sh - target_height)
+        self.applying = True
+        try:
+            if window.isMaximized() or window.isFullScreen():
+                window.showNormal()
+            window.resize(window.width(), target_height)
+            window.move(frame[0], y)
+        finally:
+            self.applying = False
+        self.logger.debug("Hauteur ajustée au contenu : %s px", target_height)
 
     # --- magnétisme aux bords -----------------------------------------------
 

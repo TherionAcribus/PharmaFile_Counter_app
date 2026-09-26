@@ -1,7 +1,7 @@
 """Interface et cycle de vie de la messagerie PySide."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMenu, QWidget
+from PySide6.QtWidgets import QDockWidget, QHBoxLayout, QMainWindow, QMenu, QWidget
 
 from messaging import MessagingController
 from net_result import NetResult
@@ -97,6 +97,18 @@ def test_feature_is_absent_until_enabled_and_destroyed_when_disabled():
     assert not controller.heartbeat_timer.isActive()
 
 
+def test_compact_composer_does_not_impose_the_app_width():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+
+    assert controller.dock.minimumWidth() == 0
+    assert controller.send_button.text() == ""
+    assert controller.send_button.width() == 36
+    assert not controller.send_button.icon().isNull()
+    assert controller.send_button.accessibleName() == "Envoyer le message"
+    assert "Entrée" in controller.send_button.toolTip()
+
+
 def test_dock_is_below_main_interface_by_default():
     previous = dict(FakeSettings.values)
     FakeSettings.values.pop("messaging_dock_area", None)
@@ -116,6 +128,29 @@ def test_saved_right_position_is_still_respected():
         window, controller = _controller()
         controller.set_enabled(True)
         assert window.dockWidgetArea(controller.dock) == Qt.RightDockWidgetArea
+    finally:
+        FakeSettings.values.clear()
+        FakeSettings.values.update(previous)
+
+
+def test_messaging_is_stacked_above_patient_list(_shared_qapplication):
+    previous = dict(FakeSettings.values)
+    FakeSettings.values.pop("messaging_dock_area", None)
+    try:
+        window, controller = _controller()
+        patient_dock = QDockWidget("Liste des patients", window)
+        patient_dock.setWidget(QWidget(patient_dock))
+        patient_dock.setMinimumHeight(100)
+        window.patient_list_dock = patient_dock
+        window.addDockWidget(Qt.BottomDockWidgetArea, patient_dock)
+        controller.set_enabled(True)
+        window.show()
+        controller.dock.show()
+        patient_dock.show()
+        controller._arrange_with_patient_list()
+        _shared_qapplication.processEvents()
+
+        assert controller.dock.geometry().top() < patient_dock.geometry().top()
     finally:
         FakeSettings.values.clear()
         FakeSettings.values.update(previous)

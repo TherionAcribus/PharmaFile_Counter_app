@@ -10,7 +10,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QDockWidget, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
-    QPushButton, QSizePolicy, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QStyle, QTextBrowser, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 
@@ -163,6 +164,7 @@ class MessagingController:
         if self.dock is not None:
             try:
                 self.dock.objectName()
+                self._arrange_with_patient_list()
                 return
             except RuntimeError:
                 self.dock = None
@@ -173,7 +175,11 @@ class MessagingController:
             QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable |
             QDockWidget.DockWidgetFloatable
         )
-        self.dock.setMinimumWidth(300)
+        # Ne pas imposer la largeur historique de 300 px à toute l'App. Le
+        # contenu ci-dessous est compressible et laisse le panneau principal
+        # décider de sa largeur minimale.
+        self.dock.setMinimumWidth(0)
+        self.dock.setMinimumHeight(180)
         self.dock.setAccessibleName("Panneau de messagerie interne")
 
         container = QWidget(self.dock)
@@ -183,6 +189,11 @@ class MessagingController:
 
         self.selector = QComboBox(container)
         self.selector.setEditable(True)
+        self.selector.setMinimumContentsLength(8)
+        self.selector.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
+        )
+        self.selector.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.selector.setAccessibleName("Conversation")
         self.selector.setToolTip("Rechercher ou choisir une conversation")
         self.selector.lineEdit().setPlaceholderText("Rechercher une personne…")
@@ -195,25 +206,35 @@ class MessagingController:
 
         self.status_label = QLabel("", container)
         self.status_label.setWordWrap(True)
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_label.setAccessibleName("État de la conversation")
         layout.addWidget(self.status_label)
 
         self.thread = QTextBrowser(container)
         self.thread.setOpenExternalLinks(False)
         self.thread.setAccessibleName("Messages de la conversation")
-        self.thread.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.thread.setMinimumWidth(0)
+        self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         layout.addWidget(self.thread, 1)
 
         composer = QHBoxLayout()
         self.input = MessageInput(container)
         self.input.setPlaceholderText("Écrire un message…")
         self.input.setAccessibleName("Texte du message")
+        self.input.setMinimumWidth(0)
         self.input.setMaximumHeight(76)
+        self.input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._update_composer)
         self.input.sendRequested.connect(self.send)
         composer.addWidget(self.input, 1)
-        self.send_button = QPushButton("Envoyer", container)
+        self.send_button = QPushButton(container)
+        self.send_button.setIcon(
+            self.window.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
+        )
+        self.send_button.setFixedSize(36, 36)
+        self.send_button.setToolTip("Envoyer le message (Entrée)")
         self.send_button.setAccessibleName("Envoyer le message")
         self.send_button.clicked.connect(self.send)
         composer.addWidget(self.send_button)
@@ -227,6 +248,7 @@ class MessagingController:
         area_name = settings.value("messaging_dock_area", "bottom", type=str)
         area = Qt.BottomDockWidgetArea if area_name == "bottom" else Qt.RightDockWidgetArea
         self.window.addDockWidget(area, self.dock)
+        self._arrange_with_patient_list()
         self.dock.visibilityChanged.connect(self._visibility_changed)
         self.dock.dockLocationChanged.connect(self._dock_location_changed)
         self.dock.setVisible(settings.value("messaging_dock_visible", False, type=bool))
@@ -260,14 +282,33 @@ class MessagingController:
     def _visibility_changed(self, visible):
         self._settings_factory().setValue("messaging_dock_visible", bool(visible))
         if visible:
+            self._arrange_with_patient_list()
             self.request_state()
             self._mark_visible_read()
+        self._schedule_window_fit()
 
     def _dock_location_changed(self, area):
         self._settings_factory().setValue(
             "messaging_dock_area",
             "bottom" if area == Qt.BottomDockWidgetArea else "right",
         )
+
+    def _arrange_with_patient_list(self):
+        """Place la messagerie au-dessus de la liste lorsque les deux sont en bas."""
+        patient_dock = getattr(self.window, "patient_list_dock", None)
+        if self.dock is None or patient_dock is None:
+            return
+        if (self.window.dockWidgetArea(self.dock) == Qt.BottomDockWidgetArea
+                and self.window.dockWidgetArea(patient_dock) == Qt.BottomDockWidgetArea):
+            self.window.splitDockWidget(self.dock, patient_dock, Qt.Vertical)
+            self.window.resizeDocks(
+                [self.dock, patient_dock], [180, 110], Qt.Vertical,
+            )
+
+    def _schedule_window_fit(self):
+        callback = getattr(self.window, "fit_window_to_content", None)
+        if callable(callback):
+            QTimer.singleShot(0, callback)
 
     def heartbeat(self):
         if not self.enabled or not self.staff_id:

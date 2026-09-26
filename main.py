@@ -229,8 +229,7 @@ class MainWindow(QMainWindow):
 
         # Mode panneau compact : docke la fenêtre après show() (la géométrie de
         # cadre n'est fiable qu'une fois affichée), après la restauration/visibilité.
-        if self.compact_mode:
-            self.placement.apply_panel_mode()
+        self.fit_window_to_content()
 
         self.alert_if_not_connected()
 
@@ -510,8 +509,8 @@ class MainWindow(QMainWindow):
         QSettings().setValue("compact_mode", self.compact_mode)
         self.logger.info("Mode panneau compact : %s", self.compact_mode)
         self.create_interface()
-        if self.compact_mode:
-            self.placement.apply_panel_mode()
+        if self.isVisible():
+            QTimer.singleShot(0, self.fit_window_to_content)
 
     def moveEvent(self, event):
         """Déplacement de la fenêtre (surcharge Qt) : le magnétisme aux bords est
@@ -532,9 +531,20 @@ class MainWindow(QMainWindow):
             self.patient_list_dock.hide()
         else:
             self.patient_list_dock.show()
+        QTimer.singleShot(0, self.fit_window_to_content)
     
     def hide_patient_list(self):
         self.patient_list_dock.hide()
+        QTimer.singleShot(0, self.fit_window_to_content)
+
+    def fit_window_to_content(self):
+        """Garde une fenêtre aussi petite que possible après un changement d'UI."""
+        if not self.isVisible() or self.shutting_down:
+            return
+        if self.compact_mode:
+            self.placement.apply_panel_mode()
+        else:
+            self.placement.fit_to_content_height()
 
     def _on_patient_list_clicked(self, index):
         """Clic sur une ligne de la vue : appelle le patient correspondant
@@ -595,8 +605,11 @@ class MainWindow(QMainWindow):
         self.create_interface()
         # Le passage vertical/horizontal redocke le panneau dans la bonne
         # dimension (colonne <-> barre) sans perdre l'état fonctionnel.
-        if self.compact_mode and self.isVisible():
-            self.placement.apply_panel_mode()
+        if self.isVisible():
+            if self.compact_mode:
+                self.placement.apply_panel_mode()
+            else:
+                self.placement.fit_to_content_height()
 
 
     def recall(self):
@@ -1093,8 +1106,8 @@ class MainWindow(QMainWindow):
         # Après une (re)construction de l'interface comptoir alors que la fenêtre
         # est déjà affichée (connexion staff, resync), on rétablit le panneau
         # compact docké si le mode est actif.
-        if self.compact_mode and self.isVisible():
-            self.placement.apply_panel_mode()
+        if self.isVisible():
+            QTimer.singleShot(0, self.fit_window_to_content)
     
     def show_preferences_dialog(self):
         # Un SEUL mécanisme d'application (point 7) : le dialogue se contente de
@@ -1211,8 +1224,8 @@ class MainWindow(QMainWindow):
             self.load_skin()
         # Applique (ou retire) la forme de panneau compact. Utile aussi sur l'écran
         # de connexion : la fenêtre prend/quitte la forme d'un panneau docké.
-        if self.compact_mode and self.isVisible():
-            self.placement.apply_panel_mode()
+        if self.isVisible():
+            QTimer.singleShot(0, self.fit_window_to_content)
 
     def _reconnect_services(self, old_config, old_staff_present):
         """ Reconnexion complète après changement de serveur/secret/comptoir, dans
@@ -1274,8 +1287,8 @@ class MainWindow(QMainWindow):
         # create_interface() supprime l'ancien widget central -> reconstruction propre.
         self.create_interface()
         self.load_skin()
-        if self.compact_mode and self.isVisible():
-            self.placement.apply_panel_mode()
+        if self.isVisible():
+            QTimer.singleShot(0, self.fit_window_to_content)
         self.setup_user()
         # Le WebSocket est relancé sur le NOUVEau serveur (nouvelle URL) dans tous
         # les cas : s'il est momentanément injoignable, la boucle de reconnexion

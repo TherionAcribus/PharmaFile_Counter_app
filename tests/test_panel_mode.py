@@ -36,9 +36,17 @@ class FakeRect:
         return self._h
 
 
+class FakeSize:
+    def __init__(self, height):
+        self._height = height
+
+    def height(self):
+        return self._height
+
+
 class FakePanelWindow:
     def __init__(self, horizontal_mode=False, frame=(600, 300, 400, 500),
-                 avail=(0, 0, 1920, 1040)):
+                 avail=(0, 0, 1920, 1040), content_height=420):
         self.horizontal_mode = horizontal_mode
         self.compact_mode = True
         self.panel_snap = True
@@ -47,6 +55,7 @@ class FakePanelWindow:
         self.applying = False
         self._avail = avail
         self._frame = FakeRect(*frame)
+        self._content_height = content_height
         self.logger = logging.getLogger("test.panel_mode")
         self.resizes = []
         self.moves = []
@@ -56,6 +65,9 @@ class FakePanelWindow:
         self.window = self
         self.applying = False
         self.apply_panel_mode = types.MethodType(WindowPlacement.apply_panel_mode, self)
+        self.preferred_content_height = types.MethodType(
+            WindowPlacement.preferred_content_height, self,
+        )
         self._apply_edge_snap = types.MethodType(WindowPlacement.apply_edge_snap, self)
         self._window_frame = types.MethodType(WindowPlacement._window_frame, self)
 
@@ -75,6 +87,12 @@ class FakePanelWindow:
     def isVisible(self):
         return True
 
+    def minimumHeight(self):
+        return 0
+
+    def minimumSizeHint(self):
+        return FakeSize(self._content_height)
+
     def showNormal(self):
         pass
 
@@ -93,14 +111,14 @@ def test_vertical_panel_docks_to_nearest_side_right():
     # Fenêtre côté droit de l'écran -> colonne dockée à droite.
     w = FakePanelWindow(horizontal_mode=False, frame=(1500, 300, 400, 500))
     w.apply_panel_mode()
-    assert w.resizes == [(300, 1040)]      # largeur = épaisseur, hauteur pleine
+    assert w.resizes == [(300, 420)]       # largeur fine, hauteur utile seulement
     assert w.moves == [(1920 - 300, 0)]    # dockée au bord droit
 
 
 def test_vertical_panel_docks_to_nearest_side_left():
     w = FakePanelWindow(horizontal_mode=False, frame=(100, 300, 400, 500))
     w.apply_panel_mode()
-    assert w.resizes == [(300, 1040)]
+    assert w.resizes == [(300, 420)]
     assert w.moves == [(0, 0)]
 
 

@@ -113,3 +113,15 @@ def test_ensure_visible_leaves_onscreen_window_untouched():
     pos_before = (win.x(), win.y())
     win.placement.ensure_visible()
     assert (win.x(), win.y()) == pos_before
+
+
+def test_fit_to_content_height_shrinks_an_oversized_window():
+    win = GeoWindow()
+    win.setMinimumHeight(360)
+    win.resize(400, 900)
+    win.show()
+
+    win.placement.fit_to_content_height()
+
+    assert win.height() == 360
+    assert win.width() == 400
