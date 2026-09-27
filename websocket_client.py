@@ -28,7 +28,12 @@ def compute_reconnect_delay(attempt, base=RECONNECT_BASE_DELAY,
     Garantit un minimum (exp/2) tout en dispersant les tentatives (jitter) et en
     bornant la croissance (plafond) -> nombre de tentatives maîtrisé quand le
     serveur est indisponible."""
-    exp = min(cap, base * (2 ** (max(1, attempt) - 1)))
+    # L'exposant est borné : 2**(attempt-1) calculé en entier dépassait la
+    # capacité float64 lors de la multiplication par base (crash après ~1000
+    # échecs, serveur longuement indisponible). Au-delà de 2**10, exp dépasse
+    # déjà largement le plafond usuel : borner ne change pas le délai obtenu.
+    shift = min(max(1, attempt) - 1, 10)
+    exp = min(cap, base * (2 ** shift))
     return exp / 2 + (exp / 2) * rand()
 
 

@@ -676,6 +676,9 @@ class MainWindow(QMainWindow):
             self.patient_list_dock.hide()
         else:
             self.patient_list_dock.show()
+            # En mode compact, la file partage une zone à onglets avec la
+            # messagerie : sans raise_(), l'onglet resterait derrière.
+            self.patient_list_dock.raise_()
         QTimer.singleShot(0, self.fit_window_to_content)
     
     def hide_patient_list(self):
@@ -1683,6 +1686,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "_rt_status", "connecting") != "connected":
             label += " — non actualisée"
         self.btn_choose_patient.setText(label)
+        # Le texte peut être élidé dans un panneau étroit : l'infobulle le
+        # redonne en entier (et précise l'état de fraîcheur de la file).
+        self.btn_choose_patient.setToolTip(label)
 
     def _rebuild_choose_patient_menu(self):
         """Reconstruit le menu du bouton « Patients » (appelé à son ouverture)."""

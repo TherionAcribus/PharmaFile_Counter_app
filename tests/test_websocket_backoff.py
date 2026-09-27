@@ -56,3 +56,14 @@ def test_delay_never_zero_minimum_guaranteed():
 
 def test_attempt_below_one_treated_as_one():
     assert _delay(0, 0.0) == _delay(1, 0.0)
+
+
+def test_huge_attempt_count_does_not_crash():
+    # Régression : après ~1000 échecs (serveur absent des heures), 2**attempt
+    # dépassait la capacité float64 -> OverflowError -> mort du thread de
+    # reconnexion. Le délai reste plafonné, jamais d'exception.
+    for attempt in (1024, 5000, 10 ** 6):
+        lo = _delay(attempt, 0.0)
+        hi = _delay(attempt, 1.0)
+        assert lo == RECONNECT_MAX_DELAY / 2
+        assert hi == RECONNECT_MAX_DELAY

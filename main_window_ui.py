@@ -345,12 +345,21 @@ def _create_main_button_container(window):
 
 
 def _create_option_button_container(window):
-    
+
     window.option_button_container = QWidget()
-    window.option_button_layout = QHBoxLayout() if window.horizontal_mode else QVBoxLayout()
+    # En mode compact, les actions secondaires tiennent sur UNE ligne même en
+    # orientation verticale : une colonne de moins, le panneau reste court.
+    row = window.horizontal_mode or getattr(window, "compact_mode", False)
+    window.option_button_layout = QHBoxLayout() if row else QVBoxLayout()
 
     _create_choose_patient_button(window)
     _create_more_button(window)
+
+    # Compressibles : le bouton « Patients (N) » peut grossir (« non
+    # actualisée », grand compteur) sans élargir le panneau au-delà de son
+    # épaisseur — le texte s'élide, l'action reste cliquable (infobulle = texte).
+    window.btn_choose_patient.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+    window.btn_more.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
     window.option_button_layout.addWidget(window.btn_choose_patient)
     window.option_button_layout.addWidget(window.btn_more)

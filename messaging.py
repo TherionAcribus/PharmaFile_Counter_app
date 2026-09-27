@@ -56,6 +56,9 @@ class MessagingController:
         # effacer un nouveau brouillon saisi pendant l'attente.
         self._send_in_flight = False
         self._sent_body = None
+        # Pendant la (dé)tabification des docks secondaires : les signaux de
+        # visibilité émis alors ne sont pas des choix utilisateur à persister.
+        self._arranging = False
 
         settings = self._settings_factory()
         value = settings.value("messaging_client_instance_id", "", type=str)
@@ -291,6 +294,10 @@ class MessagingController:
             self.request_state()
 
     def _visibility_changed(self, visible):
+        if self._arranging:
+            # Réorganisation (tabification compacte) en cours : ce changement
+            # n'est pas un choix de l'utilisateur, on ne le persiste pas.
+            return
         self._settings_factory().setValue("messaging_dock_visible", bool(visible))
         if visible:
             self._arrange_with_patient_list()
@@ -305,10 +312,34 @@ class MessagingController:
         )
 
     def _arrange_with_patient_list(self):
-        """Place la messagerie au-dessus de la liste lorsque les deux sont en bas."""
+        """Organise les docks secondaires (file des patients + messagerie).
+
+        Mode compact : une SEULE zone secondaire à onglets natifs
+        (``tabifyDockWidget``) — un seul panneau grandit sous le comptoir,
+        l'autre reste à un onglet de distance ; l'encombrement vertical reste
+        borné quelle que soit la combinaison ouverte. Mode étendu : comportement
+        historique — les deux panneaux peuvent être visibles ensemble, empilés
+        proprement quand ils sont tous les deux en bas."""
         patient_dock = getattr(self.window, "patient_list_dock", None)
         if self.dock is None or patient_dock is None:
             return
+        if getattr(self.window, "compact_mode", False):
+            self._arranging = True
+            try:
+                area = self.window.dockWidgetArea(patient_dock)
+                if (area != Qt.NoDockWidgetArea
+                        and self.window.dockWidgetArea(self.dock) != area):
+                    self.window.addDockWidget(area, self.dock)
+                if patient_dock not in self.window.tabifiedDockWidgets(self.dock):
+                    self.window.tabifyDockWidget(patient_dock, self.dock)
+            finally:
+                self._arranging = False
+            return
+        # Retour du mode compact : sortir les docks du groupe d'onglets en les
+        # redockant séparément, puis retrouver l'empilement historique.
+        if self.dock in self.window.tabifiedDockWidgets(patient_dock):
+            self.window.addDockWidget(Qt.BottomDockWidgetArea, patient_dock)
+            self.window.addDockWidget(Qt.BottomDockWidgetArea, self.dock)
         if (self.window.dockWidgetArea(self.dock) == Qt.BottomDockWidgetArea
                 and self.window.dockWidgetArea(patient_dock) == Qt.BottomDockWidgetArea):
             self.window.splitDockWidget(self.dock, patient_dock, Qt.Vertical)

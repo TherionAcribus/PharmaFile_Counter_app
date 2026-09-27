@@ -197,7 +197,8 @@ def test_list_marked_stale_while_disconnected():
         setWindowTitle=lambda t: titles.append(t))
     texts = []
     w.btn_choose_patient = types.SimpleNamespace(
-        setText=lambda t: texts.append(t))
+        setText=lambda t: texts.append(t),
+        setToolTip=lambda _t: None)
 
     w.handle_socket_connection(False, 0, False)
     assert titles[-1] == "Liste des patients — non actualisée"

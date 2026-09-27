@@ -16,7 +16,9 @@ from shortcut_defaults import (
 )
 import notification_rules
 import settings_schema
-from panel_layout import MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS
+from panel_layout import (
+    MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
+)
 from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
     ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
@@ -254,6 +256,21 @@ class PreferencesDialog(QDialog):
         self.panel_thickness_layout.addWidget(self.panel_thickness_label)
         self.panel_thickness_layout.addWidget(self.panel_thickness_spinbox)
         self.general_layout.addLayout(self.panel_thickness_layout)
+
+        # Préréglage « Panneau latéral » : pré-remplit les réglages
+        # recommandés pour un usage à côté du logiciel métier. Simple
+        # pré-remplissage des cases — rien n'est écrit sans « Enregistrer ».
+        self.side_panel_preset_button = QPushButton(
+            "Préréglage « Panneau latéral » (étroit, docké, toujours visible)",
+            self.general_page)
+        self.side_panel_preset_button.setToolTip(
+            "Coche : mode panneau compact, magnétisme, épaisseur "
+            f"{DEFAULT_PANEL_THICKNESS} px, toujours au premier plan, "
+            "liste sous le panneau. Appliqué seulement à l'enregistrement.")
+        self.side_panel_preset_button.setAccessibleName(
+            "Appliquer le préréglage panneau latéral")
+        self.side_panel_preset_button.clicked.connect(self._apply_side_panel_preset)
+        self.general_layout.addWidget(self.side_panel_preset_button)
 
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
@@ -1069,6 +1086,21 @@ class PreferencesDialog(QDialog):
         # et reconnecte les services au besoin. Le dialogue ne recharge rien et ne
         # touche plus directement la fenêtre parente (plus de signal concurrent).
         self.accept()
+
+    def _apply_side_panel_preset(self):
+        """Pré-remplit les réglages recommandés pour un usage en panneau latéral
+        compact à côté du logiciel métier. Les autres choix de l'utilisateur
+        (raccourcis, notifications, sons…) ne sont PAS touchés, et rien n'est
+        écrit tant que les préférences ne sont pas enregistrées."""
+        self.compact_mode_checkbox.setChecked(True)
+        self.panel_snap_checkbox.setChecked(True)
+        self.always_on_top_checkbox.setChecked(True)
+        # Colonne verticale étroite : « Orientation verticale » décochée.
+        self.horizontal_mode.setChecked(False)
+        self.panel_thickness_spinbox.setValue(DEFAULT_PANEL_THICKNESS)
+        # Liste sous le panneau en mode vertical (onglets partagés avec la
+        # messagerie en mode compact) plutôt qu'à droite, qui élargirait.
+        self.patient_list_position_vertical.setCurrentText(BOTTOM_TEXT)
 
     def _reset_window_position(self):
         """Délègue à la fenêtre principale la réinitialisation de sa géométrie."""
