@@ -171,6 +171,22 @@ def window():
     win.deleteLater()
 
 
+def test_patient_actions_button_tracks_patient_state(window):
+    # E2 : le menu d'actions du patient vit sur un bouton « ⋮ » dédié, à droite
+    # de la carte — inerte sans patient, actif dès qu'un patient est affiché.
+    assert window.patient_actions_button is not None
+    assert not window.patient_actions_button.isEnabled()
+    assert window.patient_actions_button.menu() is window.patient_menu
+    assert "patient" in window.patient_actions_button.accessibleName().lower()
+    window.update_my_patient({
+        "counter_id": 1, "id": 7, "status": "calling",
+        "language_code": "fr", "call_number": "A-07", "activity": "Ordonnance",
+    })
+    assert window.patient_actions_button.isEnabled()
+    # La carte affiche le patient sur deux lignes (numéro+statut / activité).
+    assert "\n" in window.label_patient.text()
+
+
 def test_create_interface_builds_action_buttons(window):
     # Les trois boutons d'action sont créés avec les noms actuels et sont bien
     # des DebounceButton, avec le bon nom accessible (point 28).

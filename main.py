@@ -49,6 +49,19 @@ logger = logging.getLogger("appcomptoir.main")
 resource_path = resources.resource_path
 
 
+#: Largeur indicative de la ligne « activité » sur la carte patient : au-delà
+#: on élide — le texte complet reste en infobulle. Dimensionnée pour une
+#: colonne de ~300 px logiques sans déborder.
+ACTIVITY_LABEL_MAX = 34
+
+
+def _elide(text, limit=ACTIVITY_LABEL_MAX):
+    """ Compacte les espaces/retours et tronque avec « … » au-delà de ``limit``
+    caractères — assez court pour un panneau latéral étroit. """
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 class _BusyButtonRef:
     """Référence « occupé » donnée à CounterApi à la place d'un widget concret.
 
@@ -422,6 +435,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'wait_for_submenu'):
             self.wait_for_submenu.setEnabled(enable)
         self.action_delete.setEnabled(enable)
+        # Le bouton « ⋮ » de la carte patient suit le menu : inerte sans patient.
+        button = getattr(self, "patient_actions_button", None)
+        if button is not None:
+            button.setEnabled(enable)
 
     def on_action_wait(self):
         # Logique pour remettre le patient en attente
@@ -1148,12 +1165,15 @@ class MainWindow(QMainWindow):
             self.patient_id = patient["id"]
             status_text = {"calling": "En appel", "ongoing": "Au comptoir"}.get(patient["status"], "????")
             language_code = patient["language_code"]
-            language = f" ({language_code}) ".upper() if language_code != "fr" else ""
-            patient_text = f"{patient['call_number']}{language} {status_text} ({patient['activity']})"
-            # Texte complet en infobulle : reste lisible même tronqué dans un
-            # panneau compact étroit (point 25).
+            language = f" ({language_code.upper()})" if language_code != "fr" else ""
+            # Carte sur DEUX lignes, lisible dans un panneau de ~300 px sans
+            # survol : ligne 1 = numéro + langue + statut court, ligne 2 =
+            # activité (souvent longue) élidée. L'infobulle garde l'intégralité.
+            headline = f"{patient['call_number']}{language} · {status_text}"
+            full_text = f"{headline} — {patient['activity']}"
+            patient_text = f"{headline}\n{_elide(patient['activity'])}"
             self._safe_widget(lambda: self._set_patient_label(
-                patient_text, menu_enabled=True, tooltip=patient_text))
+                patient_text, menu_enabled=True, tooltip=full_text))
         except (KeyError, TypeError) as e:
             self._on_invalid_patient(patient, error=e)
 

@@ -122,3 +122,47 @@ def test_non_dict_patient_is_handled_safely(caplog):
     assert w.menu_calls[-1] is False
     assert w.patient_id is None
     assert w.label_patient.text == "Données patient indisponibles"
+
+
+# --- E2 : carte patient lisible sur deux lignes, sans infobulle --------------
+
+def test_patient_displayed_on_two_lines():
+    w = FakeWindow()
+    w.update_my_patient(_valid_patient())
+    lines = w.label_patient.text.split("\n")
+    assert len(lines) == 2
+    assert "A-12" in lines[0] and "Au comptoir" in lines[0]  # numéro + statut
+    assert "Ordonnance" in lines[1]                          # activité en 2e ligne
+
+
+def test_foreign_language_is_identifiable_on_first_line():
+    p = _valid_patient()
+    p["language_code"] = "en"
+    w = FakeWindow()
+    w.update_my_patient(p)
+    assert "(EN)" in w.label_patient.text.split("\n")[0]
+
+
+def test_french_patient_has_no_language_suffix():
+    w = FakeWindow()
+    w.update_my_patient(_valid_patient())   # language_code = "fr"
+    assert "(FR)" not in w.label_patient.text.split("\n")[0]
+
+
+def test_long_activity_is_elided_but_tooltip_keeps_full_text():
+    p = _valid_patient()
+    p["activity"] = "Consultation très longue avec un libellé interminable xyz"
+    w = FakeWindow()
+    w.update_my_patient(p)
+    line2 = w.label_patient.text.split("\n")[1]
+    assert line2.endswith("…")
+    assert len(line2) <= main.ACTIVITY_LABEL_MAX
+    assert "interminable xyz" in w.label_patient.tooltip     # intégral au survol
+
+
+def test_tooltip_cleared_when_patient_leaves():
+    w = FakeWindow()
+    w.update_my_patient(_valid_patient())
+    assert w.label_patient.tooltip != ""
+    w.update_my_patient(None)
+    assert w.label_patient.tooltip == ""

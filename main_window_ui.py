@@ -22,7 +22,7 @@ from PySide6.QtGui import QAction, QColor, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView, QDockWidget, QHBoxLayout, QLabel, QListView, QMenu,
-    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
 import endpoints
@@ -199,9 +199,17 @@ def create_interface(window):
     _create_icon_widget(window)
     _create_patient_list_widget(window)
 
+    # Carte patient : libellé multi-lignes + bouton d'actions dédié à droite.
+    window.patient_row = QWidget()
+    patient_row_layout = QHBoxLayout(window.patient_row)
+    patient_row_layout.setContentsMargins(0, 0, 0, 0)
+    patient_row_layout.setSpacing(4)
+    patient_row_layout.addWidget(window.label_patient, 1)
+    patient_row_layout.addWidget(window.patient_actions_button)
+
     # Ajouter les widgets au conteneur principal
     main_elements_layout.addWidget(window.label_staff)
-    main_elements_layout.addWidget(window.label_patient)
+    main_elements_layout.addWidget(window.patient_row)
     main_elements_layout.addWidget(window.main_button_container)
     main_elements_layout.addWidget(window.option_button_container)
 
@@ -279,16 +287,20 @@ def _create_name(window):
 
 
 def _create_label_patient(window):
-    # Remplacer QLabel par QPushButton
+    # « Carte » du patient courant : un bouton plat affichant le texte sur DEUX
+    # lignes (numéro + langue + statut / activité) — lisible dans un panneau
+    # étroit sans infobulle. Le menu d'actions passe sur un bouton dédié
+    # repérable, juste à côté : le libellé reste purement informatif.
     window.label_patient = QPushButton("Pas de connexion !")
     window.label_patient.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
     window.label_patient.setMinimumWidth(0)
     window.label_patient.setStyleSheet("text-align: left;")
     window.label_patient.setCheckable(False)  # Le bouton n'est pas "toggle"
     window.label_patient.setFlat(True)  # Le bouton ressemble davantage à un label
+    window.label_patient.setAccessibleName("Patient au comptoir")
 
     # Créer un menu d'actions
-    window.patient_menu = QMenu(window.label_patient)  # Stocké comme attribut de classe
+    window.patient_menu = QMenu(window)  # Stocké comme attribut de classe
     window.action_wait = window.patient_menu.addAction("Remettre en attente")
     
     # on ne crée le sous-menu que si on a défini des "activités Staff"
@@ -310,8 +322,16 @@ def _create_label_patient(window):
     window.action_wait.triggered.connect(window.on_action_wait)
     window.action_delete.triggered.connect(window.on_action_delete)
 
-    # Associer le menu au bouton
-    window.label_patient.setMenu(window.patient_menu)
+    # Bouton dédié aux actions sur le patient affiché (à droite de la carte) :
+    # repérable (« ⋮ »), indépendant du texte, masqué/désactivé sans patient.
+    window.patient_actions_button = QToolButton()
+    window.patient_actions_button.setText("⋮")
+    window.patient_actions_button.setPopupMode(QToolButton.InstantPopup)
+    window.patient_actions_button.setMenu(window.patient_menu)
+    window.patient_actions_button.setAccessibleName("Actions sur le patient affiché")
+    window.patient_actions_button.setToolTip(
+        "Actions sur le patient affiché (remise en attente, suppression…)")
+    window.patient_actions_button.setEnabled(False)
 
     # Désactiver les actions par défaut
     window._update_menu_actions(False)
