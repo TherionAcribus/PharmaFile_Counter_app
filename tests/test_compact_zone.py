@@ -98,6 +98,31 @@ def test_tabify_does_not_overwrite_visibility_settings():
         FakeSettings.values.update(previous)
 
 
+def test_user_drag_retabifies_without_recursion():
+    # dockLocationChanged émis pendant tabifyDockWidget ré-entrait dans
+    # _arrange_with_patient_list : RecursionError en exploitation.
+    window, controller = _controller()
+    window.compact_mode = True
+    patient_dock = _patient_dock(window)
+    controller.set_enabled(True)
+    assert controller.dock in window.tabifiedDockWidgets(patient_dock)
+
+    # L'utilisateur tire l'onglet « Messages » à droite…
+    window.addDockWidget(Qt.RightDockWidgetArea, controller.dock)
+    assert controller.dock not in window.tabifiedDockWidgets(patient_dock)
+    assert FakeSettings.values.get("messaging_dock_area") == "right"
+
+    # …puis le redépose sur la zone de la file : il redevient un onglet,
+    # sans récursion sur dockLocationChanged (ré-arrangement différé au
+    # tour de boucle suivant — dockWidgetArea n'est pas encore à jour
+    # quand le signal part).
+    from PySide6.QtWidgets import QApplication
+    window.addDockWidget(Qt.BottomDockWidgetArea, controller.dock)
+    QApplication.processEvents()
+    assert controller.dock in window.tabifiedDockWidgets(patient_dock)
+    assert FakeSettings.values.get("messaging_dock_area") == "bottom"
+
+
 def test_option_buttons_share_one_row_in_compact_vertical():
     # Compact + vertical : « Patients » et « Menu » tiennent sur UNE ligne,
     # la colonne reste courte.

@@ -17,5 +17,8 @@ PySide6==6.11.1          # interface graphique (widgets, multimedia, SVG)
 keyboard==0.13.5         # raccourcis clavier globaux
 requests==2.34.2         # appels HTTP au serveur
 python-socketio==5.11.2  # client temps reel (WebSocket/polling), import `socketio`
+websocket-client==1.9.2  # transport WebSocket natif pour python-engineio (sans
+                         # lui, repli sur le long-polling qui aborte regulierement
+                         # : "packet queue is empty, aborting")
 keyring==25.2.1          # stockage securise du secret applicatif (import optionnel,
                          # repli sur QSettings si le backend est indisponible)

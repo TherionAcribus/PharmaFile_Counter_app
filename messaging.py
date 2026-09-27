@@ -306,13 +306,21 @@ class MessagingController:
         self._schedule_window_fit()
 
     def _dock_location_changed(self, area):
+        if self._arranging:
+            # Déplacement programmatique (tabification, apply_dock_area) : le
+            # signal est ré-émis par nos propres addDockWidget/tabifyDockWidget
+            # — sans ce garde-fou on ré-entrait dans _arrange_with_patient_list
+            # à l'infini (RecursionError constaté en exploitation).
+            return
         self._settings_factory().setValue(
             "messaging_dock_area",
             "bottom" if area == Qt.BottomDockWidgetArea else "right",
         )
         # Déplacement par glisser-déposer : si le dock rejoint la zone de la
         # file des patients, il redevient un onglet de la zone commune.
-        self._arrange_with_patient_list()
+        # Différé : dockLocationChanged peut être émis AVANT que
+        # dockWidgetArea() ne rapporte la nouvelle zone.
+        QTimer.singleShot(0, self._arrange_with_patient_list)
 
     def _arrange_with_patient_list(self):
         """Organise les docks secondaires (file des patients + messagerie).
@@ -338,7 +346,16 @@ class MessagingController:
                         self.window.dockWidgetArea(patient_dock) != \
                         Qt.NoDockWidgetArea:
                     if patient_dock not in self.window.tabifiedDockWidgets(self.dock):
+                        # tabifyDockWidget ignore les docks explicitement
+                        # masqués : on les affiche le temps de l'onglette,
+                        # puis on restaure l'état choisi par l'utilisateur.
+                        hidden = [d for d in (patient_dock, self.dock)
+                                  if d.isHidden()]
+                        for d in hidden:
+                            d.show()
                         self.window.tabifyDockWidget(patient_dock, self.dock)
+                        for d in hidden:
+                            d.hide()
             finally:
                 self._arranging = False
             return
