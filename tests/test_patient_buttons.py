@@ -166,6 +166,10 @@ class FakeWindow:
             self.btn_pause = FakeButton()
             self.btn_validate = FakeButton()
         self.update_my_buttons = types.MethodType(main.MainWindow.update_my_buttons, self)
+        self._apply_patient_buttons = types.MethodType(
+            main.MainWindow._apply_patient_buttons, self)
+        # staticmethod : résolution directe sur la classe.
+        self._safe_widget = main.MainWindow._safe_widget
 
     def _set_validate_alert(self, active):
         self.alerts.append(active)

@@ -44,6 +44,9 @@ class FakeWindow:
         # Lie les vraies méthodes de MainWindow à ce faux self.
         self.update_my_patient = types.MethodType(main.MainWindow.update_my_patient, self)
         self._on_invalid_patient = types.MethodType(main.MainWindow._on_invalid_patient, self)
+        self._set_patient_label = types.MethodType(main.MainWindow._set_patient_label, self)
+        # staticmethod : résolution directe sur la classe.
+        self._safe_widget = main.MainWindow._safe_widget
 
     def _update_menu_actions(self, enable):
         self.menu_calls.append(enable)

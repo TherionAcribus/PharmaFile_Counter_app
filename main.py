@@ -403,6 +403,19 @@ class MainWindow(QMainWindow):
         (démarrage, changement d'orientation, retour de l'écran de connexion). """
         main_window_ui.create_interface(self)
 
+    @staticmethod
+    def _safe_widget(fn):
+        """ Exécute une écriture de widget en ignorant RuntimeError : le widget
+        peut avoir été détruit par une reconstruction d'interface en cours
+        (orientation, préférences, reconnexion) entre la réception de l'état et
+        son application. Le nouvel affichage sera posé par la reconstruction —
+        l'état LOGIQUE, lui, doit être mis à jour par l'appelant AVANT cet
+        appel. """
+        try:
+            fn()
+        except RuntimeError:
+            pass
+
     def _update_menu_actions(self, enable):
         """Active ou désactive les actions du menu"""
         self.action_wait.setEnabled(enable)
@@ -935,7 +948,8 @@ class MainWindow(QMainWindow):
 
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
-        self.label_patient.setText("Patient déjà attribué")
+        self._safe_widget(
+            lambda: self.label_patient.setText("Patient déjà attribué"))
         self.play_notification_sound("patient_taken", "patient_taken")
 
 
@@ -1103,16 +1117,12 @@ class MainWindow(QMainWindow):
         if patient is None:
             self.my_patient = None
             self.patient_id = None
-            self.label_patient.setText("Plus de patient")
-            self.label_patient.setToolTip("")
-            self._update_menu_actions(False)
+            self._safe_widget(lambda: self._set_patient_label("Plus de patient"))
             return
         if patient is False:
             self.my_patient = None
             self.patient_id = None
-            self.label_patient.setText("Pas de patient")
-            self.label_patient.setToolTip("")
-            self._update_menu_actions(False)
+            self._safe_widget(lambda: self._set_patient_label("Pas de patient"))
             return
 
         # À partir d'ici on attend un dict patient. On valide explicitement la
@@ -1130,9 +1140,8 @@ class MainWindow(QMainWindow):
             if patient["id"] is None:
                 self.my_patient = None
                 self.patient_id = None
-                self.label_patient.setText("Pas de patient en cours")
-                self.label_patient.setToolTip("")
-                self._update_menu_actions(False)
+                self._safe_widget(
+                    lambda: self._set_patient_label("Pas de patient en cours"))
                 return
 
             self.my_patient = patient
@@ -1141,13 +1150,21 @@ class MainWindow(QMainWindow):
             language_code = patient["language_code"]
             language = f" ({language_code}) ".upper() if language_code != "fr" else ""
             patient_text = f"{patient['call_number']}{language} {status_text} ({patient['activity']})"
-            self.label_patient.setText(patient_text)
             # Texte complet en infobulle : reste lisible même tronqué dans un
             # panneau compact étroit (point 25).
-            self.label_patient.setToolTip(patient_text)
-            self._update_menu_actions(True)  # Active les actions car il y a un patient
+            self._safe_widget(lambda: self._set_patient_label(
+                patient_text, menu_enabled=True, tooltip=patient_text))
         except (KeyError, TypeError) as e:
             self._on_invalid_patient(patient, error=e)
+
+    def _set_patient_label(self, text, menu_enabled=False, tooltip=""):
+        """ Écrit le libellé du patient courant + ses actions de menu. Appelée
+        via ``_safe_widget`` par les mises à jour d'état : le widget peut avoir
+        été détruit par une reconstruction en cours, l'état logique est déjà
+        posé par l'appelant. """
+        self.label_patient.setText(text)
+        self.label_patient.setToolTip(tooltip)
+        self._update_menu_actions(menu_enabled)
 
     def _on_invalid_patient(self, patient, error=None):
         """ Données patient incomplètes/invalides : on remet l'interface dans un
@@ -1156,9 +1173,8 @@ class MainWindow(QMainWindow):
         ni exposer le détail à l'utilisateur. """
         self.my_patient = None
         self.patient_id = None
-        self._update_menu_actions(False)
-        self.label_patient.setText("Données patient indisponibles")
-        self.label_patient.setToolTip("")
+        self._safe_widget(
+            lambda: self._set_patient_label("Données patient indisponibles"))
         if error is not None:
             # Appelé depuis un except : journalise la trace de l'erreur originale.
             self.logger.exception("Donnée patient invalide : %s", error)
@@ -1195,10 +1211,7 @@ class MainWindow(QMainWindow):
             self.logger.debug("Boutons patient absents (écran de connexion) : %s", reason)
             return
         self.logger.debug("Boutons patient : %s", reason)
-        self.btn_pause.setEnabled(decision.pause_enabled)
-        self.btn_validate.setEnabled(decision.validate_enabled)
-        if decision.validate_alert is not None:
-            self._set_validate_alert(decision.validate_alert)
+        self._safe_widget(lambda: self._apply_patient_buttons(decision))
         if hasattr(self, "call_timer"):
             # call_timer peut manquer : create_interface s'appelle avant
             # create_call_timer dans __init__, et hors contexte complet.
@@ -1206,6 +1219,15 @@ class MainWindow(QMainWindow):
                 self.call_timer.start()   # patient en appel : minuteur de relance
             else:
                 self.call_timer.stop()    # plus personne à valider : minuteur arrêté
+
+    def _apply_patient_buttons(self, decision):
+        """ Écrit l'état Valider/Pause + l'alerte éventuelle. Appelée via
+        ``_safe_widget`` : les boutons peuvent avoir été détruits par une
+        reconstruction d'interface en cours. """
+        self.btn_pause.setEnabled(decision.pause_enabled)
+        self.btn_validate.setEnabled(decision.validate_enabled)
+        if decision.validate_alert is not None:
+            self._set_validate_alert(decision.validate_alert)
 
     def deconnection(self):
         """ Déconnexion demandée par l'utilisateur. On affiche « Déconnexion en
@@ -1462,6 +1484,10 @@ class MainWindow(QMainWindow):
         # reconstructions d'interface, on l'applique donc explicitement (point 28).
         if hasattr(self, "patient_model"):
             self.patient_model.set_font_size(self.patient_list_font_size)
+        # Position de la messagerie (réglage ajouté en E1) : appliquée à chaud —
+        # ramener le dock dans la zone de la file le ré-onglette en compact.
+        if hasattr(self, "messaging"):
+            self.messaging.apply_dock_area()
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
@@ -1685,10 +1711,13 @@ class MainWindow(QMainWindow):
         label = f"Patient{'s' if count > 1 else ''} ({count})"
         if getattr(self, "_rt_status", "connecting") != "connected":
             label += " — non actualisée"
-        self.btn_choose_patient.setText(label)
-        # Le texte peut être élidé dans un panneau étroit : l'infobulle le
-        # redonne en entier (et précise l'état de fraîcheur de la file).
-        self.btn_choose_patient.setToolTip(label)
+        try:
+            self.btn_choose_patient.setText(label)
+            # Le texte peut être élidé dans un panneau étroit : l'infobulle le
+            # redonne en entier (et précise l'état de fraîcheur de la file).
+            self.btn_choose_patient.setToolTip(label)
+        except RuntimeError:
+            pass  # bouton détruit par une reconstruction d'interface en cours
 
     def _rebuild_choose_patient_menu(self):
         """Reconstruit le menu du bouton « Patients » (appelé à son ouverture)."""

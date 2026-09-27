@@ -147,6 +147,9 @@ class FakeWindow:
         self.show_notification = mock.MagicMock()
         self.play_notification_sound = mock.MagicMock()
 
+        # staticmethod : résolution directe sur la classe, sans MethodType.
+        self._safe_widget = main.MainWindow._safe_widget
+
         for name in (
             "update_my_patient", "_on_invalid_patient", "handle_result",
             "handle_queue_result", "_patient_result_handler", "_patient_action_group",
@@ -158,6 +161,7 @@ class FakeWindow:
             "_busy_ref", "_set_busy_widgets", "_apply_busy_widgets",
             "_on_patient_action_refused", "_resync_if_uncertain",
             "_request_resync", "_on_resync_ready", "create_interface",
+            "_set_patient_label",
         ):
             setattr(self, name, types.MethodType(getattr(main.MainWindow, name), self))
 

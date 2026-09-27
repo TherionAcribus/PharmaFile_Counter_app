@@ -289,6 +289,19 @@ class PreferencesDialog(QDialog):
         self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.general_layout.addWidget(self.patient_list_position_horizontal)
 
+        # Position de la messagerie : même mécanisme que la liste des patients.
+        # En mode compact, la messagerie partage la zone de la file quand les
+        # deux sont du même côté (onglets) ; choisir un autre côté la détache.
+        self.messaging_position_label = QLabel(
+            "Position de la messagerie :", self.general_page)
+        self.general_layout.addWidget(self.messaging_position_label)
+        self.messaging_position = QComboBox(self.general_page)
+        self.messaging_position.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.messaging_position.setToolTip(
+            "« Bas » partage l'onglet de la liste des patients en mode compact ; "
+            "« Droite » la détache dans sa propre zone.")
+        self.general_layout.addWidget(self.messaging_position)
+
         # Taille de police de la file des patients (point 28) : configurable, avec
         # un plancher de lisibilité (l'ancienne valeur figée de 8 pt était petite).
         self.patient_list_font_size_layout = QHBoxLayout()
@@ -778,6 +791,8 @@ class PreferencesDialog(QDialog):
         self.patient_list_font_size_spinbox.setValue(settings_schema.read(settings, "patient_list_font_size"))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
         self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
+        self.messaging_position.setCurrentText(REVERSE_POSITION_MAPPING.get(
+            settings.value("messaging_dock_area", "bottom", type=str), BOTTOM_TEXT))
         self.debug_window.setChecked(settings_schema.read(settings, "debug_window"))
 
         # pour les skins
@@ -1042,6 +1057,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("patient_list_font_size", self.patient_list_font_size_spinbox.value())
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
         settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])
+        settings.setValue("messaging_dock_area", POSITION_MAPPING[self.messaging_position.currentText()])
         settings.setValue("debug_window", self.debug_window.isChecked())
 
         # skins

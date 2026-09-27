@@ -310,6 +310,9 @@ class MessagingController:
             "messaging_dock_area",
             "bottom" if area == Qt.BottomDockWidgetArea else "right",
         )
+        # Déplacement par glisser-déposer : si le dock rejoint la zone de la
+        # file des patients, il redevient un onglet de la zone commune.
+        self._arrange_with_patient_list()
 
     def _arrange_with_patient_list(self):
         """Organise les docks secondaires (file des patients + messagerie).
@@ -324,14 +327,18 @@ class MessagingController:
         if self.dock is None or patient_dock is None:
             return
         if getattr(self.window, "compact_mode", False):
+            # Zone commune à onglets UNIQUEMENT si les deux docks partagent la
+            # même zone : l'utilisateur peut en extraire un par glisser-déposer
+            # (dessus/dessous/droite) ou via la préférence de position — son
+            # choix prime, on ne le redock pas de force. Le ramener dans la même
+            # zone (drag ou préférence) le ré-onglette au prochain arrangement.
             self._arranging = True
             try:
-                area = self.window.dockWidgetArea(patient_dock)
-                if (area != Qt.NoDockWidgetArea
-                        and self.window.dockWidgetArea(self.dock) != area):
-                    self.window.addDockWidget(area, self.dock)
-                if patient_dock not in self.window.tabifiedDockWidgets(self.dock):
-                    self.window.tabifyDockWidget(patient_dock, self.dock)
+                if self.window.dockWidgetArea(self.dock) == \
+                        self.window.dockWidgetArea(patient_dock) != \
+                        Qt.NoDockWidgetArea:
+                    if patient_dock not in self.window.tabifiedDockWidgets(self.dock):
+                        self.window.tabifyDockWidget(patient_dock, self.dock)
             finally:
                 self._arranging = False
             return
@@ -351,6 +358,24 @@ class MessagingController:
         callback = getattr(self.window, "fit_window_to_content", None)
         if callable(callback):
             QTimer.singleShot(0, callback)
+
+    def apply_dock_area(self):
+        """ Applique la position enregistrée (glisser-déposer ou préférence
+        « Position de la messagerie »). En mode compact, ramener le dock dans
+        la zone de la file le ré-onglette ; le mettre ailleurs le détache. """
+        if self.dock is None:
+            return
+        area_name = self._settings_factory().value(
+            "messaging_dock_area", "bottom", type=str)
+        area = (Qt.BottomDockWidgetArea if area_name == "bottom"
+                else Qt.RightDockWidgetArea)
+        self._arranging = True
+        try:
+            if self.window.dockWidgetArea(self.dock) != area:
+                self.window.addDockWidget(area, self.dock)
+        finally:
+            self._arranging = False
+        self._arrange_with_patient_list()
 
     def heartbeat(self):
         if not self.enabled or not self.staff_id:
