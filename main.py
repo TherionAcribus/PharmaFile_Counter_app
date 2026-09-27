@@ -390,12 +390,14 @@ class MainWindow(QMainWindow):
         """
         target_id = patient_id if patient_id is not None else self.patient_id
         self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
-        self.api.put_standing(target_id, activity["id"], on_result=self.handle_result)
+        self.api.put_standing(target_id, activity["id"],
+                              on_result=self._patient_result_handler(target_id))
 
     def on_action_validate(self, patient_id):
         # Patient désigné dans la file (menu contextuel) : route « file », pas
-        # celle du comptoir.
-        self.validate_my_patient(partial(self.api.validate_queued_patient, patient_id))
+        # celle du comptoir — et NON conditionnée à l'existence d'un patient
+        # courant (la file peut en contenir alors que le comptoir est vide).
+        self.api.validate_queued_patient(patient_id, on_result=self.handle_queue_result)
 
     def on_action_delete(self, patient_id=None):
         """
@@ -419,7 +421,8 @@ class MainWindow(QMainWindow):
         # Si l'utilisateur clique sur "Oui"
         if msg_box.clickedButton() == bouton_oui:
             self.logger.debug("Suppression du patient demandée")
-            self.api.delete_patient(target_id, on_result=self.handle_result)
+            self.api.delete_patient(target_id,
+                                    on_result=self._patient_result_handler(target_id))
 
     def _set_validate_alert(self, active):
         """Marque (ou démarque) le bouton Valider comme « patient à valider ».
@@ -647,6 +650,9 @@ class MainWindow(QMainWindow):
         # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
         elif status == 204:
             self.update_my_patient(None)
+            # Les boutons doivent suivre : sans cet appel ils restaient
+            # actifs/minuteur lancé sur un patient qui n'existe plus.
+            self.update_my_buttons(None)
         # utiliser pour supprimer ou remettre un patient en attente
         elif status == 201:
             self.update_my_patient(False)
@@ -657,6 +663,33 @@ class MainWindow(QMainWindow):
             self.patient_already_taken()
         else:
             self._notify_network_error(result)
+
+    def _patient_result_handler(self, target_id):
+        """Choisit le handler de résultat selon la CIBLE de l'action :
+        ``handle_result`` pour le patient courant du comptoir,
+        ``handle_queue_result`` pour un patient désigné dans la file — sinon un
+        201 (put_standing/delete/validate) effacerait l'affichage du patient en
+        cours alors qu'il concernait un autre patient."""
+        if target_id is not None and target_id == self.patient_id:
+            return self.handle_result
+        return self.handle_queue_result
+
+    @Slot(object)
+    def handle_queue_result(self, result):
+        """Résultat d'une action sur un patient de la FILE (pas le patient
+        courant). Succès : la liste est rafraîchie par les évènements temps
+        réel, on ne touche ni au libellé ni aux boutons du patient courant."""
+        self.logger.debug("Réponse action sur la file (statut=%s)", result.status)
+        if 200 <= result.status < 300:
+            return
+        if result.status == 423:
+            self.play_notification_sound("patient_taken", "patient_taken")
+            self.show_notification(
+                {"origin": "patient_taken",
+                 "message": "Patient déjà pris en charge par un autre comptoir."},
+                internal=True)
+            return
+        self._notify_network_error(result)
 
     @Slot(object)
     def handle_user_result(self, result):
@@ -873,14 +906,21 @@ class MainWindow(QMainWindow):
         self.logger.debug("Mise à jour du patient en cours")
 
         # Cas « pas de patient » explicites (None / False) : état sûr, sans action.
+        # ``self.my_patient`` suit toujours le patient affiché : c'est la source
+        # relue par validate_my_patient et par create_interface au moment de
+        # reconstruire l'UI (orientation, mode compact, reconnexion).
         if patient is None:
+            self.my_patient = None
             self.patient_id = None
             self.label_patient.setText("Plus de patient")
+            self.label_patient.setToolTip("")
             self._update_menu_actions(False)
             return
         if patient is False:
+            self.my_patient = None
             self.patient_id = None
             self.label_patient.setText("Pas de patient")
+            self.label_patient.setToolTip("")
             self._update_menu_actions(False)
             return
 
@@ -897,11 +937,14 @@ class MainWindow(QMainWindow):
                 return
 
             if patient["id"] is None:
+                self.my_patient = None
                 self.patient_id = None
                 self.label_patient.setText("Pas de patient en cours")
+                self.label_patient.setToolTip("")
                 self._update_menu_actions(False)
                 return
 
+            self.my_patient = patient
             self.patient_id = patient["id"]
             status_text = {"calling": "En appel", "ongoing": "Au comptoir"}.get(patient["status"], "????")
             language_code = patient["language_code"]
@@ -920,9 +963,11 @@ class MainWindow(QMainWindow):
         état sûr (aucune action patient possible) et on journalise le détail
         technique — l'erreur originale reste visible dans les logs — sans crasher
         ni exposer le détail à l'utilisateur. """
+        self.my_patient = None
         self.patient_id = None
         self._update_menu_actions(False)
         self.label_patient.setText("Données patient indisponibles")
+        self.label_patient.setToolTip("")
         if error is not None:
             # Appelé depuis un except : journalise la trace de l'erreur originale.
             self.logger.exception("Donnée patient invalide : %s", error)
@@ -963,10 +1008,13 @@ class MainWindow(QMainWindow):
         self.btn_validate.setEnabled(decision.validate_enabled)
         if decision.validate_alert is not None:
             self._set_validate_alert(decision.validate_alert)
-        if decision.start_call_timer:
-            self.call_timer.start()   # patient en appel : minuteur de relance
-        else:
-            self.call_timer.stop()    # plus personne à valider : minuteur arrêté
+        if hasattr(self, "call_timer"):
+            # call_timer peut manquer : create_interface s'appelle avant
+            # create_call_timer dans __init__, et hors contexte complet.
+            if decision.start_call_timer:
+                self.call_timer.start()   # patient en appel : minuteur de relance
+            else:
+                self.call_timer.stop()    # plus personne à valider : minuteur arrêté
 
     def deconnection(self):
         """ Déconnexion demandée par l'utilisateur. On affiche « Déconnexion en
@@ -990,6 +1038,11 @@ class MainWindow(QMainWindow):
         # l'interface principale est reconstruite avant une nouvelle
         # identification.
         self.staff_name = None
+        # Le patient courant, lui aussi, est périmé : sans cette purge,
+        # create_interface restaurerait le patient de l'équipier précédent le
+        # temps de la resynchronisation qui suit la nouvelle connexion.
+        self.my_patient = None
+        self.patient_id = None
         if hasattr(self, "messaging"):
             self.messaging.clear_identity(notify_server=False)
         # Créer et définir le widget de connexion

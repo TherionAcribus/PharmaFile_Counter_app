@@ -423,9 +423,14 @@ def _create_choose_patient_button(window):
     # requête réseau. create_interface() s'exécute dans le thread graphique
     # (orientation, mode compact, connexion staff…) — un GET bloquant y figerait
     # l'application le temps de la réponse serveur (point 2).
-    if window.my_patient:
+    if window.my_patient or getattr(window, "connected", False):
+        # Patient connu : on restaure son libellé. Connecté sans patient :
+        # « Plus de patient » plutôt que le « Pas de connexion ! » de
+        # construction, trompeur une fois le serveur joignable.
         window.update_my_patient(window.my_patient)
-        window.update_my_buttons(window.my_patient)
+    # Toujours appliqué : sans patient, Valider/Pause doivent être désactivés
+    # (ils l'étaient auparavant par défaut à la construction du widget).
+    window.update_my_buttons(window.my_patient)
 
     # Le menu est reconstruit à son ouverture ; ici on ne fait qu'actualiser
     # le compteur visible du bouton. La vue (modèle) est mise à jour plus tard
