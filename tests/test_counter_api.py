@@ -84,18 +84,25 @@ class FakeTasks:
         self.added = []
         self.removed = []
         self.active_keys = set(active_keys)
+        self.active_groups = {}  # task -> groupe d'exclusion
 
     def is_active(self, key):
         return key in self.active_keys
 
-    def add(self, task, key=None):
+    def is_group_active(self, group):
+        return group is not None and group in self.active_groups.values()
+
+    def add(self, task, key=None, group=None):
         self.added.append(key)
         if key:
             self.active_keys.add(key)
+        if group:
+            self.active_groups[task] = group
 
     def remove(self, task, key=None):
         self.removed.append(key)
         self.active_keys.discard(key)
+        self.active_groups.pop(task, None)
 
 
 class FakeButton:
@@ -176,10 +183,10 @@ def test_logout_staff_envoie_le_comptoir(api):
 # --- idempotence ------------------------------------------------------------
 
 def test_idempotence_de_l_appel_suivant(api):
-    api.validate_and_call_next()
-    cle1 = _last(api).spec["idempotency_key"]
+    handle = api.validate_and_call_next()
+    cle1 = handle.spec["idempotency_key"]
     assert cle1
-    api.tasks.active_keys.clear()
+    handle.complete()                    # fin réelle : clé ET groupe libérés
     api.validate_and_call_next()
     # Une clé NEUVE par action utilisateur (sinon la deuxième demande volontaire
     # serait ignorée par le serveur comme un rejeu).
@@ -211,6 +218,53 @@ def test_actions_de_patients_differents_en_parallele(api):
     assert api.delete_patient(2) is not None           # clés distinctes
 
 
+# --- groupe d'exclusion « patient » (F2) -------------------------------------
+
+def test_actions_incompatibles_refusees_pendant_une_action_patient(api):
+    """« Suivant » pendant « Pause » : la seconde requête partirait d'un état
+    déjà dépassé. Le groupe d'exclusion bloque TOUTE action du groupe, pas
+    seulement les doublons de clé."""
+    assert api.pause_current_patient(7) is not None
+    assert api.validate_and_call_next() is None     # même groupe -> refusée
+    assert api.validate_current_patient(7) is None
+    assert api.call_specific_patient(9) is None
+    assert api.relaunch_call() is None
+    assert len(api.network_manager.handles) == 1
+
+
+def test_groupe_libere_a_la_fin_de_la_requete(api):
+    handle = api.pause_current_patient(7)
+    handle.complete()
+    assert api.validate_and_call_next() is not None
+
+
+def test_lectures_et_session_hors_groupe(api):
+    """Une action patient en vol ne bloque ni les lectures, ni la session staff,
+    ni la messagerie : seules les actions du groupe sont exclues."""
+    api.pause_current_patient(7)
+    assert api.fetch_staff() is not None
+    assert api.messaging_state() is not None
+    assert api.login_staff("AB", False) is not None
+
+
+def test_action_de_file_hors_groupe_sauf_si_patient_courant(api):
+    """L'appelant décide : une action de file sur un AUTRE patient peut partir
+    en parallèle ; viser le patient courant la fait entrer dans le groupe."""
+    api.validate_and_call_next()
+    assert api.put_standing(9) is not None                     # autre patient : ok
+    from counter_api import PATIENT_ACTION_GROUP
+    assert api.put_standing(9, group=PATIENT_ACTION_GROUP) is None  # groupé : refusé
+
+
+def test_on_refused_rappele_l_appelant(api):
+    refused = []
+    api._on_refused = refused.append
+    api.pause_current_patient(7)
+    api.validate_and_call_next()        # busy
+    api.pause_current_patient(7)        # duplicate
+    assert refused == ["busy", "duplicate"]
+
+
 def test_bouton_occupe_puis_retabli(api):
     bouton = FakeButton()
     handle = api.validate_current_patient(7, busy_button=bouton)
@@ -236,10 +290,9 @@ def test_on_result_branche_avant_le_demarrage(api):
 # --- configuration lue à la volée ------------------------------------------
 
 def test_changement_de_serveur_pris_en_compte(api):
-    api.pause_current_patient(7)
+    api.pause_current_patient(7).complete()   # fin réelle : clé ET groupe libérés
     api.url = "https://autre:443"
     api.counter_id = 9
-    api.tasks.active_keys.clear()
     api.pause_current_patient(7)
     assert _last(api).spec["url"] == "https://autre:443/pause_patient/9/7"
 

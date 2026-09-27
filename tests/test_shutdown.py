@@ -39,7 +39,9 @@ def _api(shutting_down=False, active=False, network_manager=None):
         nm.make_handle.side_effect = lambda *a, **k: (made.append(1), MagicMock())[1]
     api = CounterApi(
         nm,
-        tasks=types.SimpleNamespace(is_active=lambda key: active, add=lambda *a: None),
+        tasks=types.SimpleNamespace(is_active=lambda key: active,
+                                    is_group_active=lambda group: False,
+                                    add=lambda *a, **k: None),
         url_provider=lambda: "http://srv",
         counter_id_provider=lambda: 3,
         logger=logging.getLogger("test.shutdown.submit"),

@@ -30,6 +30,13 @@ import endpoints
 
 _DEFAULT_LOGGER = logging.getLogger("appcomptoir.counter_api")
 
+#: Groupe d'exclusion mutuelle : UNE SEULE action modifiant le patient du
+#: comptoir à la fois — « Suivant » lancé pendant que « Pause » est encore en
+#: vol partirait avec un état déjà dépassé. Les actions de file visant un AUTRE
+#: patient restent hors du groupe (leur clé suffit à les dédupliquer) : c'est
+#: l'appelant, qui connaît le patient courant, qui passe ``group`` au besoin.
+PATIENT_ACTION_GROUP = "patient_action"
+
 
 class CounterApi:
     """Requêtes du comptoir vers le serveur.
@@ -42,13 +49,17 @@ class CounterApi:
     """
 
     def __init__(self, network_manager, tasks, url_provider, counter_id_provider,
-                 logger=None, is_shutting_down=None):
+                 logger=None, is_shutting_down=None, on_refused=None):
         self.network_manager = network_manager
         self._tasks = tasks
         self._url = url_provider
         self._counter_id = counter_id_provider
         self.logger = logger or _DEFAULT_LOGGER
         self._is_shutting_down = is_shutting_down or (lambda: False)
+        # Avertit l'appelant qu'une requête n'a PAS pu partir ("shutdown",
+        # "duplicate", "busy") : l'interface peut alors prévenir l'utilisateur,
+        # y compris quand le refus vient du groupe d'exclusion.
+        self._on_refused = on_refused or (lambda reason: None)
 
     # --- primitives ---------------------------------------------------------
 
@@ -61,18 +72,30 @@ class CounterApi:
             idempotency_key=idempotency_key)
 
     def _submit(self, url, method, data=None, on_result=None, key=None,
-                busy_button=None, idempotent=False):
+                busy_button=None, idempotent=False, group=None):
         """ Crée, suit et démarre une requête. Retourne le handle, ou None si
-        l'action a été refusée (arrêt en cours, ou action identique déjà active).
+        l'action a été refusée (arrêt en cours, action identique déjà active,
+        ou groupe d'exclusion déjà occupé — cf. ``PATIENT_ACTION_GROUP``).
 
         ``method`` est OBLIGATOIRE : il n'existe pas de valeur par défaut dont une
         action modificatrice pourrait hériter par accident (cf. ``_post``/``_get``).
+
+        ``busy_button`` est un objet exposant ``set_busy(bool)`` — en pratique
+        une référence logique fournie par la fenêtre, jamais un widget brut :
+        le verrou survit à la reconstruction de l'interface et le nettoyage de
+        fin de requête ne touche pas un widget détruit entre-temps.
         """
         if self._is_shutting_down():
             self.logger.debug("Action ignorée (arrêt en cours) : %s", key)
+            self._on_refused("shutdown")
             return None
         if self._tasks.is_active(key):
             self.logger.debug("Action ignorée (déjà en cours) : %s", key)
+            self._on_refused("duplicate")
+            return None
+        if group is not None and self._tasks.is_group_active(group):
+            self.logger.info("Action refusée : groupe '%s' occupé (clé=%s)", group, key)
+            self._on_refused("busy")
             return None
 
         # Clé d'idempotence : une nouvelle par action utilisateur. Si la requête
@@ -81,22 +104,32 @@ class CounterApi:
         idempotency_key = str(uuid.uuid4()) if idempotent else None
         handle = self.make_handle(url, method=method, data=data,
                                   idempotency_key=idempotency_key)
-        self._tasks.add(handle, key)
-        if busy_button is not None:
-            busy_button.set_busy(True)
+        self._tasks.add(handle, key, group=group)
+        self._set_busy(busy_button, True)
         if on_result is not None:
             handle.result.connect(on_result)
 
         def _cleanup():
             self._tasks.remove(handle, key)
-            if busy_button is not None:
-                busy_button.set_busy(False)
+            self._set_busy(busy_button, False)
 
         # Branché avant start() : même si le worker répond très vite, le nettoyage
         # (et le rétablissement du bouton) ne peut pas être manqué.
         handle.finished.connect(_cleanup)
         handle.start()
         return handle
+
+    @staticmethod
+    def _set_busy(busy_button, busy):
+        """ Bascule l'état « occupé » sans laisser fuiter un widget détruit :
+        ``set_busy`` sur un objet C++ déjà supprimé (interface reconstruite
+        pendant le vol de la requête) lève RuntimeError — on l'isole ici. """
+        if busy_button is None:
+            return
+        try:
+            busy_button.set_busy(busy)
+        except RuntimeError:
+            pass  # widget détruit : le verrou logique est suivi par la fenêtre
 
     def _post(self, url, **kwargs):
         """Action modificatrice."""
@@ -159,42 +192,55 @@ class CounterApi:
         un rejeu ne doit pas faire avancer la file deux fois)."""
         return self._post(endpoints.validate_and_call_next(self._url(), self._counter_id()),
                           on_result=on_result, key="validate_and_call_next",
-                          busy_button=busy_button, idempotent=True)
+                          busy_button=busy_button, idempotent=True,
+                          group=PATIENT_ACTION_GROUP)
 
     def validate_current_patient(self, patient_id, on_result=None, busy_button=None):
         return self._post(endpoints.validate_patient(self._url(), self._counter_id(), patient_id),
-                          on_result=on_result, key="validate", busy_button=busy_button)
+                          on_result=on_result, key="validate", busy_button=busy_button,
+                          group=PATIENT_ACTION_GROUP)
 
     def pause_current_patient(self, patient_id, on_result=None, busy_button=None):
         return self._post(endpoints.pause_patient(self._url(), self._counter_id(), patient_id),
-                          on_result=on_result, key="pause", busy_button=busy_button)
+                          on_result=on_result, key="pause", busy_button=busy_button,
+                          group=PATIENT_ACTION_GROUP)
 
-    def relaunch_call(self, on_result=None):
+    def relaunch_call(self, on_result=None, busy_button=None):
         """Relance l'appel du patient courant (« rappel »)."""
         return self._post(endpoints.relaunch_patient_call(self._url(), self._counter_id()),
-                          on_result=on_result, key="recall")
+                          on_result=on_result, key="recall", busy_button=busy_button,
+                          group=PATIENT_ACTION_GROUP)
 
     # --- actions sur un patient de la file ---------------------------------
 
-    def call_specific_patient(self, patient_id, on_result=None):
+    def call_specific_patient(self, patient_id, on_result=None, busy_button=None):
+        # Un appel ciblé remplace le patient courant : action du groupe exclusif.
         return self._post(
             endpoints.call_specific_patient(self._url(), self._counter_id(), patient_id),
-            on_result=on_result, key=f"call_specific:{patient_id}")
+            on_result=on_result, key=f"call_specific:{patient_id}",
+            busy_button=busy_button, group=PATIENT_ACTION_GROUP)
 
-    def validate_queued_patient(self, patient_id, on_result=None, busy_button=None):
+    def validate_queued_patient(self, patient_id, on_result=None, busy_button=None,
+                                group=None):
         """Valide un patient désigné (menu contextuel de la file), qui n'est pas
-        forcément celui du comptoir."""
+        forcément celui du comptoir. ``group`` = PATIENT_ACTION_GROUP quand la
+        cible EST le patient courant (l'action modifie alors l'état du comptoir)."""
         return self._post(endpoints.api_validate_patient(self._url(), patient_id),
-                          on_result=on_result, key="validate", busy_button=busy_button)
+                          on_result=on_result, key="validate", busy_button=busy_button,
+                          group=group)
 
-    def put_standing(self, patient_id, activity_id=None, on_result=None):
+    def put_standing(self, patient_id, activity_id=None, on_result=None,
+                     busy_button=None, group=None):
         """Remet un patient en attente, éventuellement vers une autre activité."""
         return self._post(endpoints.put_standing_list(self._url(), patient_id, activity_id),
-                          on_result=on_result, key=f"put_standing:{patient_id}")
+                          on_result=on_result, key=f"put_standing:{patient_id}",
+                          busy_button=busy_button, group=group)
 
-    def delete_patient(self, patient_id, on_result=None):
+    def delete_patient(self, patient_id, on_result=None, busy_button=None,
+                       group=None):
         return self._post(endpoints.delete_patient(self._url(), patient_id),
-                          on_result=on_result, key=f"delete:{patient_id}")
+                          on_result=on_result, key=f"delete:{patient_id}",
+                          busy_button=busy_button, group=group)
 
     # --- présence de l'agent sur le comptoir --------------------------------
 

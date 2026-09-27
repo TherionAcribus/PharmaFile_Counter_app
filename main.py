@@ -13,7 +13,7 @@ from patient_list_model import PatientListModel
 import notification_rules
 from notification import NotificationManager, extract_origin_message
 from connections import NetworkManager
-from counter_api import CounterApi
+from counter_api import CounterApi, PATIENT_ACTION_GROUP
 import main_window_ui
 from login_view import create_login_widget
 from shortcut_manager import ShortcutManager
@@ -49,6 +49,24 @@ logger = logging.getLogger("appcomptoir.main")
 resource_path = resources.resource_path
 
 
+class _BusyButtonRef:
+    """Référence « occupé » donnée à CounterApi à la place d'un widget concret.
+
+    La requête tient un verrou LOGIQUE mémorisé par la fenêtre
+    (``_busy_widgets``) : les boutons réels peuvent être détruits et recréés
+    pendant le vol (changement d'orientation, mode compact, reconnexion) sans
+    que le ``set_busy(False)`` de fin ne s'adresse à un objet Qt mort — cause
+    du « RuntimeError: Internal C++ object already deleted » constaté en audit.
+    """
+
+    __slots__ = ("_window", "_attrs")
+
+    def __init__(self, window, attrs):
+        self._window = window
+        self._attrs = attrs
+
+    def set_busy(self, busy):
+        self._window._set_busy_widgets(self._attrs, busy)
 
 
 class MainWindow(QMainWindow):
@@ -78,6 +96,10 @@ class MainWindow(QMainWindow):
     # révision est <= à celle-ci (périmés/dupliqués) et on recharge l'état
     # autoritatif si on détecte un trou. -1 = aucun état chargé pour l'instant.
     queue_revision = -1
+
+    # Boutons verrouillés pendant une action patient en vol : le verrou logique
+    # (_busy_widgets) est réappliqué à chaque reconstruction de l'interface.
+    _PATIENT_BUTTONS = ("btn_next", "btn_validate", "btn_pause")
 
     def __init__(self):
         super().__init__()
@@ -160,6 +182,7 @@ class MainWindow(QMainWindow):
             counter_id_provider=lambda: self.counter_id,
             logger=self.logger,
             is_shutting_down=lambda: self.shutting_down,
+            on_refused=self._on_patient_action_refused,
         )
         self.messaging = MessagingController(self)
 
@@ -381,29 +404,50 @@ class MainWindow(QMainWindow):
 
     def on_action_wait(self):
         # Logique pour remettre le patient en attente
+        if not self._patient_action_ready("wait") or not self.patient_id:
+            return
         self.logger.debug("Patient remis en attente")
-        self.api.put_standing(self.patient_id, on_result=self.handle_result)
+        self.api.put_standing(self.patient_id, on_result=self.handle_result,
+                              busy_button=self._busy_ref(),
+                              group=PATIENT_ACTION_GROUP)
 
     def on_action_wait_for(self, activity, patient_id=None):
         """
         patient_id: si non fourni, utilise self.patient_id (patient en cours)
         """
+        if not self._patient_action_ready("wait_for"):
+            return
         target_id = patient_id if patient_id is not None else self.patient_id
+        if target_id is None:
+            return
+        group = self._patient_action_group(target_id)
         self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
         self.api.put_standing(target_id, activity["id"],
-                              on_result=self._patient_result_handler(target_id))
+                              on_result=self._patient_result_handler(target_id),
+                              busy_button=self._busy_ref() if group else None,
+                              group=group)
 
     def on_action_validate(self, patient_id):
         # Patient désigné dans la file (menu contextuel) : route « file », pas
         # celle du comptoir — et NON conditionnée à l'existence d'un patient
         # courant (la file peut en contenir alors que le comptoir est vide).
-        self.api.validate_queued_patient(patient_id, on_result=self.handle_queue_result)
+        if not self._patient_action_ready("validate_queued"):
+            return
+        group = self._patient_action_group(patient_id)
+        self.api.validate_queued_patient(
+            patient_id, on_result=self.handle_queue_result,
+            busy_button=self._busy_ref() if group else None,
+            group=group)
 
     def on_action_delete(self, patient_id=None):
         """
         patient_id: si non fourni, utilise self.patient_id (patient en cours)
         """
+        if not self._patient_action_ready("delete"):
+            return
         target_id = patient_id if patient_id is not None else self.patient_id
+        if target_id is None:
+            return
         
         msg_box = QMessageBox()
         msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowStaysOnTopHint)
@@ -421,8 +465,11 @@ class MainWindow(QMainWindow):
         # Si l'utilisateur clique sur "Oui"
         if msg_box.clickedButton() == bouton_oui:
             self.logger.debug("Suppression du patient demandée")
+            group = self._patient_action_group(target_id)
             self.api.delete_patient(target_id,
-                                    on_result=self._patient_result_handler(target_id))
+                                    on_result=self._patient_result_handler(target_id),
+                                    busy_button=self._busy_ref() if group else None,
+                                    group=group)
 
     def _set_validate_alert(self, active):
         """Marque (ou démarque) le bouton Valider comme « patient à valider ».
@@ -461,17 +508,102 @@ class MainWindow(QMainWindow):
             else:
                 self.paper_action.setText("Changement papier nécessaire")
 
+    # --- garde commune des actions patient (boutons, menus, raccourcis, systray) ---
+
+    def _patient_action_ready(self, action):
+        """ Garde métier partagée par TOUS les points d'entrée d'une action qui
+        modifie le patient ou la file. Refuse si aucun agent n'est identifié sur
+        le comptoir (session invalide) ou si une action du groupe exclusif est
+        déjà en vol — sinon la seconde requête partirait d'un état dépassé. """
+        if not (isinstance(self.staff_id, int) and self.staff_id):
+            self.logger.info("Action '%s' ignorée : aucun agent au comptoir", action)
+            return False
+        if self._tasks.is_group_active(PATIENT_ACTION_GROUP):
+            self.logger.info("Action '%s' refusée : une action patient est déjà en cours", action)
+            self.show_notification(
+                {"origin": "action_busy", "message": "Une action est déjà en cours…"},
+                internal=True)
+            return False
+        return True
+
+    def _patient_action_group(self, target_id):
+        """ Une action de file ne rejoint le groupe exclusif QUE si sa cible est
+        le patient courant (elle modifierait alors l'état du comptoir). """
+        return PATIENT_ACTION_GROUP if target_id == self.patient_id else None
+
+    def _on_patient_action_refused(self, reason):
+        """ Appelé par CounterApi quand une requête n'a pas pu partir — filet de
+        sécurité derrière _patient_action_ready (concurrence rare, ex. un menu
+        validé pendant qu'une autre action vient de démarrer). """
+        if reason == "shutdown":
+            return
+        self.logger.info("Action refusée par la couche d'accès : %s", reason)
+        self.show_notification(
+            {"origin": "action_busy", "message": "Une action est déjà en cours…"},
+            internal=True)
+
+    def _resync_if_uncertain(self, result):
+        """ Après un échec dont l'effet côté serveur est douteux (transport rompu
+        : statut 0 — ou erreur 5xx où l'opération a pu être appliquée), demande
+        une resynchronisation plutôt que de réutiliser un état local faussé. """
+        if result.status == 0 or result.status >= 500:
+            if hasattr(self, "session"):
+                self._request_resync()
+
+    # --- verrous « occupé » indépendants des widgets --------------------------
+
+    def _busy_ref(self):
+        """ Référence « occupé » couvrant tous les boutons d'action patient :
+        une action du groupe exclusif les verrouille tous (les autres entrées
+        seraient incompatibles de toute façon). """
+        return _BusyButtonRef(self, self._PATIENT_BUTTONS)
+
+    def _set_busy_widgets(self, attrs, busy):
+        """ (Dé)verrouille les widgets nommés ET mémorise le verrou (compteur
+        par widget) pour le réappliquer après une reconstruction d'interface. """
+        busy_state = getattr(self, "_busy_widgets", None)
+        if busy_state is None:
+            busy_state = self._busy_widgets = {}
+        for attr in attrs:
+            count = busy_state.get(attr, 0) + (1 if busy else -1)
+            if count > 0:
+                busy_state[attr] = count
+            else:
+                busy_state.pop(attr, None)
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                try:
+                    widget.set_busy(count > 0)
+                except RuntimeError:
+                    pass  # Widget déjà détruit : le verrou logique reste juste.
+
+    def _apply_busy_widgets(self):
+        """ Réimpose les verrous « occupé » mémorisés sur les widgets actuels —
+        appelé après chaque create_interface : les boutons tout neufs reprennent
+        le verrou de la requête encore en vol. """
+        for attr in getattr(self, "_busy_widgets", {}):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                try:
+                    widget.set_busy(True)
+                except RuntimeError:
+                    pass
+
     def call_web_function_validate_and_call_next(self):
         # L'idempotence de cette action (ne pas faire avancer la file deux fois
         # si la requête est rejouée) est garantie par la couche d'accès.
+        if not self._patient_action_ready("next"):
+            return
         self.api.validate_and_call_next(on_result=self.handle_result,
-                                        busy_button=self.btn_next)
+                                        busy_button=self._busy_ref())
         self.update_my_buttons(self.my_patient)
         self.close_please_validate_notification()
 
 
     def call_web_function_validate(self):
         self.logger.debug("Validation du patient (call_web_function_validate)")
+        if not self._patient_action_ready("validate"):
+            return
         self.close_please_validate_notification()
         self.validate_my_patient(partial(self.api.validate_current_patient, self.patient_id))
 
@@ -483,7 +615,7 @@ class MainWindow(QMainWindow):
         self.logger.debug("Validation du patient en cours")
         self.close_please_validate_notification()
         if self.my_patient:
-            send(on_result=self.handle_result, busy_button=self.btn_validate)
+            send(on_result=self.handle_result, busy_button=self._busy_ref())
         # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
         else:
             self.update_my_buttons(self.my_patient)
@@ -498,9 +630,11 @@ class MainWindow(QMainWindow):
             manager.dismiss("please_validate")
 
     def call_web_function_pause(self):
+        if not self._patient_action_ready("pause") or not self.patient_id:
+            return
         self.logger.debug("Mise en pause du patient")
         self.api.pause_current_patient(self.patient_id, on_result=self.handle_result,
-                                       busy_button=self.btn_pause)
+                                       busy_button=self._busy_ref())
 
 
 
@@ -616,7 +750,9 @@ class MainWindow(QMainWindow):
 
 
     def recall(self):
-        self.api.relaunch_call()
+        if not self._patient_action_ready("recall") or not self.patient_id:
+            return
+        self.api.relaunch_call(busy_button=self._busy_ref())
 
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
@@ -663,6 +799,7 @@ class MainWindow(QMainWindow):
             self.patient_already_taken()
         else:
             self._notify_network_error(result)
+            self._resync_if_uncertain(result)
 
     def _patient_result_handler(self, target_id):
         """Choisit le handler de résultat selon la CIBLE de l'action :
@@ -690,6 +827,7 @@ class MainWindow(QMainWindow):
                 internal=True)
             return
         self._notify_network_error(result)
+        self._resync_if_uncertain(result)
 
     @Slot(object)
     def handle_user_result(self, result):
@@ -1181,7 +1319,10 @@ class MainWindow(QMainWindow):
 
 
     def call_web_function_validate_and_call_specifique(self, patient_select_id):
-        self.api.call_specific_patient(patient_select_id, on_result=self.handle_result)
+        if not self._patient_action_ready("call_specific"):
+            return
+        self.api.call_specific_patient(patient_select_id, on_result=self.handle_result,
+                                       busy_button=self._busy_ref())
 
 
     def _on_token_refreshed(self, token):

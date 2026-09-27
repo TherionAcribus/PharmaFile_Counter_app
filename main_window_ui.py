@@ -226,6 +226,11 @@ def create_interface(window):
     if hasattr(window, "messaging"):
         window.messaging.attach_to_interface()
 
+    # Les boutons viennent d'être recréés : on réimpose les verrous « occupé »
+    # des requêtes encore en vol, suivis par _busy_widgets indépendamment des
+    # widgets (une requête survit au changement d'orientation ou de mode).
+    window._apply_busy_widgets()
+
 
 def _apply_compact_styling(window):
     """Adapte l'interface au mode panneau compact.

@@ -69,6 +69,39 @@ def test_different_targets_run_concurrently():
     assert len(reg) == 2
 
 
+def test_group_excludes_incompatible_actions():
+    """Le groupe refuse une AUTRE action du même groupe (exclusion mutuelle),
+    contrairement à la clé qui ne refuse que les doublons."""
+    reg = TaskRegistry()
+    a, b = object(), object()
+    assert reg.add(a, key="pause", group="patient") is True
+    assert reg.is_group_active("patient") is True
+    assert reg.add(b, key="validate_and_call_next", group="patient") is False
+    assert len(reg) == 1
+    reg.remove(a, key="pause")
+    assert reg.is_group_active("patient") is False
+    assert reg.add(b, key="validate_and_call_next", group="patient") is True
+
+
+def test_group_does_not_block_ungrouped_tasks():
+    reg = TaskRegistry()
+    assert reg.add(object(), key="pause", group="patient")
+    # Une tâche sans groupe n'est pas gênée par le groupe occupé…
+    assert reg.add(object(), key="login") is True
+    # …et un autre groupe reste indépendant.
+    assert reg.add(object(), key="x", group="other") is True
+
+
+def test_active_groups_reports_current_ones():
+    reg = TaskRegistry()
+    t = object()
+    assert reg.active_groups() == set()
+    reg.add(t, key="pause", group="patient")
+    assert reg.active_groups() == {"patient"}
+    reg.remove(t, key="pause")
+    assert reg.active_groups() == set()
+
+
 def test_snapshot_is_a_stable_copy():
     # snapshot() sert à itérer les tâches actives à l'arrêt sans être gêné par
     # les retraits concurrents (finished).

@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 import main  # noqa: E402
 from net_result import NetResult  # noqa: E402
+from task_registry import TaskRegistry  # noqa: E402
 
 
 class FakeLabel:
@@ -53,17 +54,20 @@ class FakeApi:
         self.calls.append((name, *args))
         self.last_result_handler = on_result
 
-    def validate_current_patient(self, patient_id, on_result=None, busy_button=None):
+    def validate_current_patient(self, patient_id, on_result=None, busy_button=None,
+                                 **kwargs):
         self._record("validate_current", on_result, patient_id)
 
-    def validate_queued_patient(self, patient_id, on_result=None, busy_button=None):
+    def validate_queued_patient(self, patient_id, on_result=None, busy_button=None,
+                                **kwargs):
         self._record("validate_queued", on_result, patient_id)
 
-    def put_standing(self, patient_id, activity_id=None, on_result=None):
-        self._record("put_standing", on_result, patient_id, activity_id)
+    def put_standing(self, patient_id, activity_id=None, on_result=None,
+                     busy_button=None, group=None):
+        self._record("put_standing", on_result, patient_id, activity_id, group)
 
-    def delete_patient(self, patient_id, on_result=None):
-        self._record("delete", on_result, patient_id)
+    def delete_patient(self, patient_id, on_result=None, busy_button=None, group=None):
+        self._record("delete", on_result, patient_id, group)
 
     def respond(self, result):
         """Simule la réponse du serveur pour la dernière requête émise."""
@@ -73,8 +77,11 @@ class FakeApi:
 class FakeWindow:
     """Faux ``self`` portant les vraies méthodes de MainWindow sous test."""
 
-    def __init__(self, counter_id=3):
+    _PATIENT_BUTTONS = main.MainWindow._PATIENT_BUTTONS
+
+    def __init__(self, counter_id=3, staff_id=5):
         self.counter_id = counter_id
+        self.staff_id = staff_id  # agent identifié : la garde métier laisse passer
         self.patient_id = None
         self.my_patient = None
         self.label_patient = FakeLabel()
@@ -82,6 +89,7 @@ class FakeWindow:
         self.logger = logging.getLogger("test.current_patient")
         self.api = FakeApi()
         self.btn_validate = None
+        self._tasks = TaskRegistry()
 
         # Effets de bord isolés en mocks (boutons, notifications, sons).
         self.update_my_buttons = mock.MagicMock()
@@ -91,10 +99,12 @@ class FakeWindow:
 
         for name in (
             "update_my_patient", "_on_invalid_patient", "handle_result",
-            "handle_queue_result", "_patient_result_handler",
+            "handle_queue_result", "_patient_result_handler", "_patient_action_group",
             "validate_my_patient", "call_web_function_validate",
             "on_action_validate", "on_action_wait_for", "on_action_delete",
-            "_notify_network_error",
+            "_notify_network_error", "_patient_action_ready", "_busy_ref",
+            "_set_busy_widgets", "_apply_busy_widgets", "_on_patient_action_refused",
+            "_resync_if_uncertain", "_request_resync",
         ):
             setattr(self, name, types.MethodType(getattr(main.MainWindow, name), self))
 
@@ -188,7 +198,7 @@ def test_201_dune_action_sur_la_file_preserve_le_patient_courant():
     w = FakeWindow()
     w.update_my_patient(_patient())
     w.on_action_wait_for({"id": 9, "name": "Accueil"}, patient_id=7)
-    assert ("put_standing", 7, 9) in w.api.calls
+    assert ("put_standing", 7, 9, None) in w.api.calls  # autre patient : pas de groupe
 
     w.api.respond(NetResult(201))
     assert w.patient_id == 42
@@ -202,7 +212,7 @@ def test_201_sur_le_patient_courant_vide_laffichage():
     w = FakeWindow()
     w.update_my_patient(_patient())
     w.on_action_wait_for({"id": 9, "name": "Accueil"})  # patient_id=None -> courant
-    assert w.api.calls[-1] == ("put_standing", 42, 9)
+    assert w.api.calls[-1] == ("put_standing", 42, 9, "patient_action")
 
     w.api.respond(NetResult(201))
     assert w.patient_id is None
