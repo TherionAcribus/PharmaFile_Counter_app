@@ -1435,8 +1435,12 @@ class MainWindow(QMainWindow):
         # touche plus la fenêtre parente — point 7). setWindowFlag peut masquer la
         # fenêtre, on ne la manipule donc que si le réglage a changé.
         if self.always_on_top != old_on_top:
+            # setWindowFlag MASQUE la fenêtre en recréant le widget natif : la
+            # visibilité doit être lue AVANT, sinon isVisible() renvoie déjà
+            # False et show() n'est jamais appelé — la fenêtre disparaissait.
+            was_visible = self.isVisible()
             self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
-            if self.isVisible():
+            if was_visible:
                 self.show()
         new = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
