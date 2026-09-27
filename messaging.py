@@ -50,6 +50,12 @@ class MessagingController:
         self.status_label = None
         self._icon_layout = None
         self._more_menu = None
+        # Un envoi en vol : Entrée et le bouton peuvent se déclencher pendant
+        # la requête (Entrée n'est pas debouncé) — sans verrou, le même message
+        # partait en double. _sent_body mémorise le corps envoyé pour ne pas
+        # effacer un nouveau brouillon saisi pendant l'attente.
+        self._send_in_flight = False
+        self._sent_body = None
 
         settings = self._settings_factory()
         value = settings.value("messaging_client_instance_id", "", type=str)
@@ -113,6 +119,11 @@ class MessagingController:
         self.messages = []
         self.unread_total = 0
         self._pending_event = None
+        # Si un envoi était encore en vol à la déconnexion, sa réponse ne doit
+        # pas verrouiller la session suivante : le verrou est logique, pas lié
+        # au cycle de vie de la requête.
+        self._send_in_flight = False
+        self._sent_body = None
 
     def attach_to_interface(self):
         if not self.enabled or not self.staff_id:
@@ -385,11 +396,21 @@ class MessagingController:
         if not conversation or not self.enabled:
             return
         kind = conversation.get("kind")
+        key = conversation.get("key")
         peer_id = conversation.get("staff_id") if kind == "direct" else None
         self.window.api.messaging_messages(
-            kind, peer_staff_id=peer_id, on_result=self._handle_messages_result)
+            kind, peer_staff_id=peer_id,
+            on_result=lambda result, _key=key:
+                self._handle_messages_result(result, _key))
 
-    def _handle_messages_result(self, result):
+    def _handle_messages_result(self, result, key=None):
+        # Réponse tardive d'une conversation quittée entretemps : on l'ignore
+        # au lieu d'afficher l'ancien fil dans la conversation désormais
+        # sélectionnée (les requêtes sont asynchrones, sans annulation).
+        if key is not None:
+            current = self._selected()
+            if not current or current.get("key") != key:
+                return
         if result.status == 200 and isinstance(result.data, dict):
             self.messages = result.data.get("messages") or []
             self._render_messages()
@@ -416,8 +437,17 @@ class MessagingController:
                 f'<b>{name}</b> <small>{timestamp}{receipt}</small><br>{body}'
                 f'</span></div>'
             )
+        # Si l'utilisateur consultait l'historique (ascenseur remonté), un
+        # rafraîchissement ne doit pas le ramener brutalement en bas ; sinon on
+        # suit normalement le dernier message.
+        bar = self.thread.verticalScrollBar()
+        previous = bar.value() if bar is not None else 0
+        stick_to_bottom = bar is None or bar.value() >= bar.maximum()
         self.thread.setHtml("".join(blocks) or "<p>Aucun message aujourd’hui.</p>")
-        self.thread.moveCursor(QTextCursor.End)
+        if stick_to_bottom or bar is None:
+            self.thread.moveCursor(QTextCursor.End)
+        else:
+            bar.setValue(min(previous, bar.maximum()))
 
     @staticmethod
     def _format_time(value):
@@ -450,11 +480,17 @@ class MessagingController:
             self.input.setEnabled(can_send)
         if self.send_button is not None:
             text = self.input.toPlainText().strip() if self.input is not None else ""
-            self.send_button.setEnabled(can_send and bool(text))
+            self.send_button.setEnabled(
+                can_send and bool(text) and not self._send_in_flight)
 
     def send(self):
         conversation = self._selected()
         if not conversation or self.input is None:
+            return
+        # Un envoi à la fois : Entrée (sendRequested) ou le bouton peuvent se
+        # déclencher une seconde fois pendant le vol — sans ce verrou le même
+        # texte repartait avec un nouveau client_message_id = doublon serveur.
+        if self._send_in_flight or not self.enabled or not self.staff_id:
             return
         body = self.input.toPlainText().strip()
         if not body:
@@ -477,18 +513,28 @@ class MessagingController:
                 return
         recipient_id = conversation.get("staff_id") if kind == "direct" else None
         client_message_id = str(uuid.uuid4())
-        self.send_button.setEnabled(False)
+        self._send_in_flight = True
+        self._sent_body = body
+        self._update_composer()  # bouton grisé tant que la requête est en vol
         self.window.api.messaging_send(
             client_message_id, kind, body, recipient_id,
             on_result=self._handle_send_result,
         )
 
     def _handle_send_result(self, result):
+        self._send_in_flight = False
         if result.status in (200, 201):
-            self.input.clear()
+            # N'effacer que si le texte est toujours celui envoyé : un nouveau
+            # brouillon saisi pendant l'attente de la réponse serait perdu.
+            if (self.input is not None
+                    and self.input.toPlainText().strip() == self._sent_body):
+                self.input.clear()
+            self._sent_body = None
+            self._update_composer()
             self.request_state()
             self.request_messages()
             return
+        self._sent_body = None
         error = result.data.get("error") if isinstance(result.data, dict) else None
         messages = {
             "recipient_offline": "Le destinataire n’est plus connecté.",

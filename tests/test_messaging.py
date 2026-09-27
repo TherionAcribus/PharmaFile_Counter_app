@@ -226,6 +226,107 @@ def test_offline_contact_remains_visible_but_cannot_receive_message():
     assert "hors ligne" in controller.status_label.text()
 
 
+def _sends(api):
+    """Appels messaging_send déjà partis vers le (faux) serveur."""
+    return [call for call in api.calls if call[0] == "send"]
+
+
+def test_second_send_during_flight_does_not_duplicate():
+    # Régression : Entrée n'est pas debouncé — un second send() pendant la
+    # requête repartait avec un nouveau client_message_id (message en double).
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    controller.send()          # second Entrée / clic pendant le vol
+    assert len(_sends(window.api)) == 1
+    assert not controller.send_button.isEnabled()
+
+
+def test_send_button_stays_disabled_while_typing_during_flight():
+    # Même si l'utilisateur retape du texte pendant le vol, le bouton ne doit
+    # pas se réactiver avant la réponse.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    controller.input.setPlainText("Brouillon suivant")
+    assert not controller.send_button.isEnabled()
+    _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
+    assert controller.send_button.isEnabled()
+
+
+def test_draft_typed_during_send_survives_the_response():
+    # Régression : input.clear() inconditionnel effaçait le nouveau brouillon
+    # saisi pendant l'attente de la réponse.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    controller.input.setPlainText("Autre message en préparation")
+    _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
+    assert controller.input.toPlainText() == "Autre message en préparation"
+
+
+def test_unchanged_text_is_cleared_after_success():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
+    assert controller.input.toPlainText() == ""
+
+
+def test_logout_during_send_releases_the_lock():
+    # Un envoi encore en vol à la déconnexion ne doit pas verrouiller la
+    # prochaine session (la réponse peut ne jamais arriver).
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    controller.clear_identity(notify_server=False)
+    assert not controller._send_in_flight
+    assert controller._sent_body is None
+
+
+def test_messages_response_for_old_conversation_is_dropped():
+    # Réponse tardive du fil précédent : elle ne doit pas se rendre dans la
+    # conversation désormais sélectionnée.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    old_cb = [c for c in window.api.calls if c[0] == "messages"][-1][3]
+    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    stale = NetResult(200, data={
+        "messages": [{"id": 9, "body": "fil précédent", "sender": {"name": "Bob"}}]})
+    old_cb(stale)
+    assert controller.messages == []
+    assert "fil précédent" not in controller.thread.toPlainText()
+
+
+def test_messages_response_for_current_conversation_is_applied():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    cb = [c for c in window.api.calls if c[0] == "messages"][-1][3]
+    cb(NetResult(200, data={
+        "messages": [{"id": 9, "body": "Salut", "sender": {"name": "Bob"}}]}))
+    assert controller.messages[0]["body"] == "Salut"
+    assert "Salut" in controller.thread.toPlainText()
+
+
 def test_direct_send_uses_selected_staff_and_clears_after_success():
     window, controller = _controller()
     controller.set_enabled(True)
