@@ -243,6 +243,18 @@ def test_aucune_action_sans_agent_connecte():
     assert w.handles == []
 
 
+def test_refus_sans_agent_explique_a_l_utilisateur():
+    """Le refus « aucun agent au comptoir » n'est plus silencieux : sans
+    retour visible, l'action semble ignorée — une notification l'explique."""
+    w = FakeWindow(staff_id=None)
+    w.call_web_function_validate_and_call_next()
+    assert w.handles == []
+    w.show_notification.assert_called_once()
+    notification = w.show_notification.call_args[0][0]
+    assert notification["origin"] == "action_refused"
+    assert "Identifiez-vous" in notification["message"]
+
+
 def test_pause_sans_patient_refusee():
     w = FakeWindow(patient_id=None)
     w.call_web_function_pause()

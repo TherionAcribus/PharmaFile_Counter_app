@@ -353,7 +353,10 @@ def _create_main_button_container(window):
         # Nom accessible = action (sans le raccourci), infobulle explicite :
         # utile pour les lecteurs d'écran et au survol (point 28).
         button.setAccessibleName(text)
-        button.setToolTip(f"{text} (raccourci : {shortcut})")
+        # Infobulle de base mémorisée : les infobulles d'ÉTAT (indisponible,
+        # action en cours…) s'y raccrochent puis la restaurent.
+        button._base_tooltip = f"{text} (raccourci : {shortcut})"
+        button.setToolTip(button._base_tooltip)
         # Libellé de base mémorisé : permet de restaurer le texte après un
         # marquage d'alerte (bouton Valider) sans reconstruire le bouton.
         button._base_label = base_label

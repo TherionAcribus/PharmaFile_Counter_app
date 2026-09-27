@@ -8,7 +8,10 @@ from PySide6.QtGui import QIcon, QAction
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
 from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
-from button_state import MALFORMED, resolve_patient_buttons
+from button_state import (
+    CALLING, MALFORMED, NO_CURRENT_PATIENT, NO_PATIENT, ONGOING,
+    resolve_patient_buttons,
+)
 from patient_list_model import PatientListModel
 import notification_rules
 from notification import NotificationManager, extract_origin_message
@@ -530,7 +533,7 @@ class MainWindow(QMainWindow):
             button.resetColor()
             button.setText(base_label)
             button.setAccessibleName("Valider")
-            button.setToolTip("Valider")
+            button.setToolTip(getattr(button, "_base_tooltip", None) or "Valider")
 
 
 
@@ -556,6 +559,13 @@ class MainWindow(QMainWindow):
         déjà en vol — sinon la seconde requête partirait d'un état dépassé. """
         if not (isinstance(self.staff_id, int) and self.staff_id):
             self.logger.info("Action '%s' ignorée : aucun agent au comptoir", action)
+            # Refus jusque-là silencieux (icônes systray accessibles avant
+            # l'identification) : l'utilisateur doit savoir pourquoi rien ne
+            # se passe — sinon l'action semble ignorée.
+            self.show_notification(
+                {"origin": "action_refused",
+                 "message": "Identifiez-vous sur un comptoir pour agir sur la file."},
+                internal=True)
             return False
         if self._tasks.is_group_active(PATIENT_ACTION_GROUP):
             self.logger.info("Action '%s' refusée : une action patient est déjà en cours", action)
@@ -1241,7 +1251,7 @@ class MainWindow(QMainWindow):
             self.logger.debug("Boutons patient absents (écran de connexion) : %s", reason)
             return
         self.logger.debug("Boutons patient : %s", reason)
-        self._safe_widget(lambda: self._apply_patient_buttons(decision))
+        self._safe_widget(lambda: self._apply_patient_buttons(decision, reason))
         if hasattr(self, "call_timer"):
             # call_timer peut manquer : create_interface s'appelle avant
             # create_call_timer dans __init__, et hors contexte complet.
@@ -1250,7 +1260,7 @@ class MainWindow(QMainWindow):
             else:
                 self.call_timer.stop()    # plus personne à valider : minuteur arrêté
 
-    def _apply_patient_buttons(self, decision):
+    def _apply_patient_buttons(self, decision, reason=None):
         """ Écrit l'état Valider/Pause + l'alerte éventuelle. Appelée via
         ``_safe_widget`` : les boutons peuvent avoir été détruits par une
         reconstruction d'interface en cours. """
@@ -1258,6 +1268,32 @@ class MainWindow(QMainWindow):
         self.btn_validate.setEnabled(decision.validate_enabled)
         if decision.validate_alert is not None:
             self._set_validate_alert(decision.validate_alert)
+        self._explain_patient_buttons(decision, reason)
+
+    #: Pourquoi un bouton patient est grisé, par motif de ``resolve_patient_buttons``
+    #: — affiché en infobulle pour qu'un contrôle inerte explique sa raison.
+    _PATIENT_BUTTON_REASON_HINT = {
+        NO_PATIENT: "aucun patient au comptoir",
+        NO_CURRENT_PATIENT: "aucun patient au comptoir",
+        CALLING: "le patient est encore en cours d'appel",
+        ONGOING: "le patient est déjà pris en charge",
+    }
+
+    def _explain_patient_buttons(self, decision, reason):
+        """ Infobulles d'état des boutons patient : un contrôle inerte doit
+        expliquer POURQUOI (aucun patient, appel en cours, déjà pris en charge) —
+        sinon un bouton grisé ressemble à un dysfonctionnement. """
+        hint = self._PATIENT_BUTTON_REASON_HINT.get(reason)
+        for button, enabled in ((self.btn_validate, decision.validate_enabled),
+                                (self.btn_pause, decision.pause_enabled)):
+            # L'alerte « patient à valider » porte sa propre infobulle :
+            # elle prime tant qu'elle est affichée.
+            if getattr(button, "color_changed", False):
+                continue
+            base = getattr(button, "_base_tooltip", None) or button.toolTip()
+            tip = base if enabled or hint is None else f"{base} — {hint}"
+            button.setToolTip(tip)
+            button.setAccessibleDescription(tip)
 
     def deconnection(self):
         """ Déconnexion demandée par l'utilisateur. On affiche « Déconnexion en

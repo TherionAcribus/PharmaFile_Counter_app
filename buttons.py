@@ -14,6 +14,12 @@ class DebounceButton(QPushButton):
     #: Feuille posée sur le bouton pendant l'alerte « patient à valider ».
     ALERT_STYLESHEET = "background-color: #c0392b; color: #ffffff;"
 
+    #: Infobulle affichée pendant le verrou « requête en cours » : le bouton
+    #: grisé explique pourquoi il ne répond pas — sans elle, une requête lente
+    #: (serveur distant, timeout de plusieurs secondes) ressemble à un bouton
+    #: cassé ou à un clic ignoré.
+    BUSY_HINT = "Action en cours…"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.debounce_time = 500  # Temps de débounce en millisecondes
@@ -31,6 +37,10 @@ class DebounceButton(QPushButton):
         # 500ms à arriver.
         self._busy = False
         self.original_style = self.styleSheet()
+        # Infobulle/description d'avant le verrou « requête en cours »,
+        # restaurées au déverrouillage si rien d'autre ne les a remplacées.
+        self._tooltip_before_busy = None
+        self._description_before_busy = None
 
     def on_clicked(self):
         if not self.timer.isActive() and self._user_enabled and not self._busy:
@@ -44,13 +54,28 @@ class DebounceButton(QPushButton):
 
     def set_busy(self, busy):
         """ Verrouille (ou déverrouille) le bouton pour la durée d'une requête
-        réseau en cours, indépendamment du debounce à durée fixe. """
+        réseau en cours, indépendamment du debounce à durée fixe. Pendant le
+        verrou, l'infobulle et la description accessible expliquent pourquoi le
+        bouton ne répond pas ; elles sont restaurées à la fin SAUF si un autre
+        état les a remplacées entre-temps (alerte, motif d'indisponibilité). """
         self._busy = busy
         if busy:
             self.timer.stop()
+            if self.toolTip() != self.BUSY_HINT:
+                self._tooltip_before_busy = self.toolTip()
+                self._description_before_busy = self.accessibleDescription()
+            self.setToolTip(self.BUSY_HINT)
+            self.setAccessibleDescription(self.BUSY_HINT)
             super().setEnabled(False)
-        elif self._user_enabled:
-            super().setEnabled(True)
+        else:
+            if self._tooltip_before_busy is not None:
+                if self.toolTip() == self.BUSY_HINT:
+                    self.setToolTip(self._tooltip_before_busy)
+                    self.setAccessibleDescription(self._description_before_busy or "")
+                self._tooltip_before_busy = None
+                self._description_before_busy = None
+            if self._user_enabled:
+                super().setEnabled(True)
 
     def setEnabled(self, enabled):
         self._user_enabled = enabled

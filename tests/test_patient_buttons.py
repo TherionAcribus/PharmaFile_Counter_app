@@ -140,9 +140,22 @@ import main  # noqa: E402
 class FakeButton:
     def __init__(self):
         self.enabled = "sentinelle"
+        self.tooltip = ""
+        self.description = ""
+        self.color_changed = False
+        self._base_tooltip = "Action de base"
 
     def setEnabled(self, value):
         self.enabled = value
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+    def toolTip(self):
+        return self.tooltip
+
+    def setAccessibleDescription(self, text):
+        self.description = text
 
 
 class FakeTimer:
@@ -157,6 +170,8 @@ class FakeTimer:
 
 
 class FakeWindow:
+    _PATIENT_BUTTON_REASON_HINT = main.MainWindow._PATIENT_BUTTON_REASON_HINT
+
     def __init__(self, counter_id=COUNTER, with_buttons=True):
         self.counter_id = counter_id
         self.call_timer = FakeTimer()
@@ -168,6 +183,8 @@ class FakeWindow:
         self.update_my_buttons = types.MethodType(main.MainWindow.update_my_buttons, self)
         self._apply_patient_buttons = types.MethodType(
             main.MainWindow._apply_patient_buttons, self)
+        self._explain_patient_buttons = types.MethodType(
+            main.MainWindow._explain_patient_buttons, self)
         # staticmethod : résolution directe sur la classe.
         self._safe_widget = main.MainWindow._safe_widget
 
@@ -231,3 +248,62 @@ def test_ecran_de_connexion_sans_boutons_ne_crashe_pas():
     w = FakeWindow(with_buttons=False)
     w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "calling"})
     assert w.call_timer.calls == []
+
+
+# --- infobulles d'état (E4) : un bouton grisé explique pourquoi --------------
+
+def test_infobulles_expliquent_l_indisponibilite_sans_patient():
+    w = FakeWindow()
+    w.update_my_buttons(None)
+    assert "aucun patient au comptoir" in w.btn_validate.tooltip
+    assert "aucun patient au comptoir" in w.btn_pause.tooltip
+
+
+def test_infobulles_patient_en_appel():
+    w = FakeWindow()
+    w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "calling"})
+    assert w.btn_validate.tooltip == "Action de base"   # actif : infobulle normale
+    assert "encore en cours d'appel" in w.btn_pause.tooltip
+
+
+def test_infobulles_patient_pris_en_charge():
+    w = FakeWindow()
+    w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "ongoing"})
+    assert w.btn_pause.tooltip == "Action de base"
+    assert "déjà pris en charge" in w.btn_validate.tooltip
+
+
+def test_infobulle_alerte_valider_n_est_pas_ecrasee():
+    # L'alerte « patient à valider » (fond rouge) porte sa propre infobulle :
+    # les infobulles d'état ne doivent pas la remplacer tant qu'elle est posée.
+    w = FakeWindow()
+    w.btn_validate.color_changed = True
+    w.btn_validate.tooltip = "Patient à valider — cliquez pour valider"
+    w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "calling"})
+    assert w.btn_validate.tooltip == "Patient à valider — cliquez pour valider"
+
+
+# --- indice « action en cours » sur le vrai bouton (E4) -----------------------
+
+def test_busy_indique_action_en_cours_puis_restaure_infobulle():
+    from buttons import DebounceButton
+    b = DebounceButton("Suivant\nN")
+    b.setToolTip("Suivant (raccourci : N)")
+    b.set_busy(True)
+    assert b.toolTip() == DebounceButton.BUSY_HINT
+    assert b.accessibleDescription() == DebounceButton.BUSY_HINT
+    b.set_busy(False)
+    assert b.toolTip() == "Suivant (raccourci : N)"
+    assert b.accessibleDescription() == ""
+
+
+def test_busy_n_ecrase_pas_une_infobulle_remplacee_pendant_le_vol():
+    # Un autre état (alerte, motif…) a posé son infobulle pendant la requête :
+    # le déverrouillage ne doit pas la remplacer par l'ancienne.
+    from buttons import DebounceButton
+    b = DebounceButton("Valider\nV")
+    b.setToolTip("Valider (raccourci : V)")
+    b.set_busy(True)
+    b.setToolTip("Patient à valider — cliquez pour valider")
+    b.set_busy(False)
+    assert b.toolTip() == "Patient à valider — cliquez pour valider"
