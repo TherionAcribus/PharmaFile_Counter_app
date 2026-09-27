@@ -101,6 +101,14 @@ class MainWindow(QMainWindow):
     # (_busy_widgets) est réappliqué à chaque reconstruction de l'interface.
     _PATIENT_BUTTONS = ("btn_next", "btn_validate", "btn_pause")
 
+    # État de la liaison temps réel, mémorisé par le CONTRÔLEUR — l'indicateur
+    # graphique est recréé à chaque reconstruction d'interface et repartait à
+    # « connected » par défaut, affichant vert alors que la liaison était
+    # coupée. « connecting » est l'état honnête avant la première confirmation
+    # du socket ; « connected »/« disconnected » suivent les évènements.
+    _rt_status = "connecting"
+    _rt_attempts = 0
+
     def __init__(self):
         super().__init__()
 
@@ -932,20 +940,28 @@ class MainWindow(QMainWindow):
         if status and hasattr(self, "messaging"):
             self.messaging.socket_connected()
         if status is None:  # Connecting
-            self.connection_indicator.set_status("connecting", reconnection_attempts)
+            self._set_rt_status("connecting", reconnection_attempts)
         elif status:  # Connected
             if self.disconnect_notification_shown and display_notification:
                 self.show_notification({
                     "origin": "socket_connection_true",
                     "message": "La connexion temps réel est (r)établie !"
                 }, internal=True)
+            # Coupure effectivement terminée : le minuteur d'alerte doit être
+            # arrêté et le drapeau relâché. Sinon un timeout déjà armé affichait
+            # « déconnecté » APRÈS la reconnexion (fausse alerte + icône rouge),
+            # et le drapeau jamais relâché empêchait la prochaine coupure d'être
+            # signalée.
+            if hasattr(self, "disconnect_timer"):
+                self.disconnect_timer.stop()
+            self.disconnect_notification_shown = False
             if self.socket_was_disconnected:
                 # On a réellement perdu la connexion à un moment : rattrape
                 # l'état courant au lieu de compter sur le prochain évènement
                 # poussé par le serveur. Coalescing : une seule resync à la fois.
                 self.socket_was_disconnected = False
                 self._request_resync()
-            self.connection_indicator.set_status("connected")
+            self._set_rt_status("connected")
         else:  # Disconnected
             self.socket_was_disconnected = True
             if display_notification:
@@ -954,7 +970,41 @@ class MainWindow(QMainWindow):
                     "origin": "socket_connection_false",
                     "message": "La connexion temps réel a été perdue. Tentative de reconnexion... La liste des patients ne s'affichera plus en temps réél, mais les boutons fonctionnent toujours."
                 }, internal=True)
-            self.connection_indicator.set_status("disconnected", reconnection_attempts)
+            self._set_rt_status("disconnected", reconnection_attempts)
+
+    def _set_rt_status(self, status, reconnection_attempts=0):
+        """ Mémorise l'état temps réel dans le contrôleur et le reporte sur le
+        widget s'il existe (il peut manquer : écran de connexion, ou être recréé
+        à chaque reconstruction d'interface). """
+        self._rt_status = status
+        self._rt_attempts = reconnection_attempts
+        indicator = getattr(self, "connection_indicator", None)
+        if indicator is not None:
+            indicator.set_status(status, reconnection_attempts)
+        self._update_list_freshness()
+
+    def _restore_connection_indicator(self):
+        """ Réimpose l'état temps réel mémorisé au tout nouvel indicateur —
+        appelé par main_window_ui juste après sa création : le défaut
+        « connected » du constructeur affichait vert même hors ligne. """
+        indicator = getattr(self, "connection_indicator", None)
+        if indicator is not None:
+            indicator.set_status(getattr(self, "_rt_status", "connecting"),
+                                 getattr(self, "_rt_attempts", 0))
+
+    def _update_list_freshness(self):
+        """ Signale DURABLEMENT que la file n'est plus actualisée tant que le
+        temps réel est coupé ou en (re)connexion — titre du panneau + marqueur
+        sur le bouton « Patients » — en plus de la notification éphémère. """
+        stale = getattr(self, "_rt_status", "connecting") != "connected"
+        dock = getattr(self, "patient_list_dock", None)
+        if dock is not None:
+            try:
+                dock.setWindowTitle("Liste des patients — non actualisée" if stale
+                                    else "Liste des patients")
+            except RuntimeError:
+                pass  # dock détruit (reconstruction en cours)
+        self._update_patient_count_label()
 
     def _on_resync_ready(self, state):
         """ Applique l'état autoritatif rattrapé (reconnexion ou trou de révision)
@@ -1460,6 +1510,14 @@ class MainWindow(QMainWindow):
         self.my_patient = None
         self.list_patients = []
         self.socket_was_disconnected = False
+        # L'alerte de déconnexion de l'ANCIENNE liaison n'a plus lieu d'être :
+        # minuteur arrêté, drapeau relâché, état temps réel reparti à
+        # « connecting » en attendant la confirmation du nouveau socket.
+        self.disconnect_notification_shown = False
+        if hasattr(self, "disconnect_timer"):
+            self.disconnect_timer.stop()
+        self._rt_status = "connecting"
+        self._rt_attempts = 0
 
         # 5. Nouveau jeton + snapshot en arrière-plan (même séquence qu'au
         #    démarrage, mais la suite reprend la connexion plutôt que l'init).
@@ -1609,11 +1667,18 @@ class MainWindow(QMainWindow):
         self.update_patient_widget()
 
     def _update_patient_count_label(self):
-        """Met à jour le libellé du bouton « Patients (N) » (toujours visible)."""
+        """Met à jour le libellé du bouton « Patients (N) » (toujours visible).
+
+        Tant que la liaison temps réel n'est pas « connected », le marqueur
+        « non actualisée » rappelle durablement que le compteur peut être
+        périmé — un chiffre affiché sans contexte passerait pour frais."""
         if not hasattr(self, 'btn_choose_patient'):
             return
         count = len(self.list_patients or [])
-        self.btn_choose_patient.setText(f"Patient{'s' if count > 1 else ''} ({count})")
+        label = f"Patient{'s' if count > 1 else ''} ({count})"
+        if getattr(self, "_rt_status", "connecting") != "connected":
+            label += " — non actualisée"
+        self.btn_choose_patient.setText(label)
 
     def _rebuild_choose_patient_menu(self):
         """Reconstruit le menu du bouton « Patients » (appelé à son ouverture)."""
@@ -1724,6 +1789,11 @@ class MainWindow(QMainWindow):
     
     def _handle_disconnection_timeout(self):
         """Appelé après le délai de 5 secondes"""
+        # Défense en profondeur : si la liaison est revenue entre l'armement du
+        # minuteur et son expiration (le stop() de la reconnexion devrait déjà
+        # l'avoir empêché), l'alerte n'a plus lieu d'être.
+        if getattr(self, "_rt_status", None) == "connected":
+            return
         if not self.disconnect_notification_shown:
         # Affiche la notification de déconnexion
             self.disconnect_notification_shown = True

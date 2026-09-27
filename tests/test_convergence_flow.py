@@ -100,6 +100,24 @@ def test_new_patient_malformed_payload_does_not_crash(payload):
 
 # --- handle_socket_connection : reconnexion -> resynchronisation (#7) --------
 
+class _FakeTimer:
+    """Minuteur factice (isActive/start/stop) pour suivre l'armement réel."""
+
+    def __init__(self):
+        self.active = False
+        self.started_with = []
+
+    def isActive(self):
+        return self.active
+
+    def start(self, msec):
+        self.active = True
+        self.started_with.append(msec)
+
+    def stop(self):
+        self.active = False
+
+
 def _wsc(socket_was_disconnected=False):
     # Le filtrage par catégorie vit désormais dans show_notification
     # (notification_rules) : handle_socket_connection ne lit plus de préférence.
@@ -107,6 +125,7 @@ def _wsc(socket_was_disconnected=False):
         logger=logging.getLogger("test.convergence.socket"),
         socket_was_disconnected=socket_was_disconnected,
         disconnect_notification_shown=False,
+        disconnect_timer=_FakeTimer(),
         calls={"resync": 0, "status": [], "notify": []},
     )
     w.connection_indicator = types.SimpleNamespace(
@@ -115,6 +134,12 @@ def _wsc(socket_was_disconnected=False):
     w._request_resync = lambda: w.calls.__setitem__("resync", w.calls["resync"] + 1)
     w.handle_socket_connection = types.MethodType(
         main.MainWindow.handle_socket_connection, w)
+    w._set_rt_status = types.MethodType(
+        main.MainWindow._set_rt_status, w)
+    w._update_list_freshness = types.MethodType(
+        main.MainWindow._update_list_freshness, w)
+    w._update_patient_count_label = types.MethodType(
+        main.MainWindow._update_patient_count_label, w)
     return w
 
 
@@ -131,7 +156,7 @@ def test_reconnect_after_disconnect_triggers_resync():
     w.handle_socket_connection(True)
     assert w.calls["resync"] == 1                 # rattrapage de l'état
     assert w.socket_was_disconnected is False     # drapeau consommé
-    assert w.calls["status"][-1] == ("connected",)
+    assert w.calls["status"][-1] == ("connected", 0)
 
 
 def test_first_connect_without_prior_loss_does_not_resync():
@@ -139,7 +164,7 @@ def test_first_connect_without_prior_loss_does_not_resync():
     w = _wsc(socket_was_disconnected=False)
     w.handle_socket_connection(True)
     assert w.calls["resync"] == 0
-    assert w.calls["status"][-1] == ("connected",)
+    assert w.calls["status"][-1] == ("connected", 0)
 
 
 def test_connecting_status_sets_indicator_only():

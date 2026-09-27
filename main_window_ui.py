@@ -363,6 +363,10 @@ def _create_icon_widget(window):
     window.icone_layout = QHBoxLayout()
 
     window.connection_indicator = ConnectionStatusIndicator()
+    # L'état temps réel vit dans le contrôleur (window._rt_status) : on le
+    # réimpose au widget tout neuf — le défaut « connected » de construction
+    # affichait vert même hors ligne après un changement d'orientation.
+    window._restore_connection_indicator()
     window.icone_layout.addWidget(window.connection_indicator)
     
     _create_auto_calling_button(window)
