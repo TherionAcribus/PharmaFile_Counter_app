@@ -163,10 +163,11 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.aboutToQuit.connect(self.cleanup_systray)
 
-        # Si un moniteur est débranché/ajouté ou la géométrie d'un écran change,
-        # on revérifie que la fenêtre reste dans une zone visible (point 24).
-        app.screenRemoved.connect(lambda _screen: self.placement.ensure_visible())
-        app.screenAdded.connect(lambda _screen: self.placement.ensure_visible())
+        # Si un moniteur est débranché/ajouté, qu'une résolution change ou que
+        # la zone utile bouge (barre des tâches), on revérifie que la fenêtre
+        # reste dans une zone visible — et qu'un panneau compact reste docké
+        # (points 24/25). Les signaux par écran sont regroupés par le placement.
+        self.placement.watch_screens(app)
 
         self.logger.info("Test de la connexion...")
         self.app_token = None
@@ -273,7 +274,7 @@ class MainWindow(QMainWindow):
 
         # Mode panneau compact : docke la fenêtre après show() (la géométrie de
         # cadre n'est fiable qu'une fois affichée), après la restauration/visibilité.
-        self.fit_window_to_content()
+        self.fit_window_to_content(dock=True)
 
         self.alert_if_not_connected()
 
@@ -685,7 +686,8 @@ class MainWindow(QMainWindow):
         self.logger.info("Mode panneau compact : %s", self.compact_mode)
         self.create_interface()
         if self.isVisible():
-            QTimer.singleShot(0, self.fit_window_to_content)
+            # Le mode vient d'être (dé)activé : dockage explicite du panneau.
+            QTimer.singleShot(0, lambda: self.fit_window_to_content(dock=True))
 
     def moveEvent(self, event):
         """Déplacement de la fenêtre (surcharge Qt) : le magnétisme aux bords est
@@ -715,11 +717,19 @@ class MainWindow(QMainWindow):
         self.patient_list_dock.hide()
         QTimer.singleShot(0, self.fit_window_to_content)
 
-    def fit_window_to_content(self):
-        """Garde une fenêtre aussi petite que possible après un changement d'UI."""
+    def fit_window_to_content(self, dock=False):
+        """Garde une fenêtre aussi petite que possible après un changement d'UI.
+
+        ``dock=True`` repositionne explicitement le panneau compact sur un bord
+        (activation du mode, changement d'orientation/épaisseur, démarrage).
+        ``dock=False`` (défaut) n'ajuste que la hauteur : un changement de
+        contenu (file, messagerie, reconstruction d'interface) ne doit pas
+        déplacer la fenêtre là où l'utilisateur l'a mise. En mode compact
+        horizontal, la barre est pleine largeur par nature : elle est toujours
+        repositionnée."""
         if not self.isVisible() or self.shutting_down:
             return
-        if self.compact_mode:
+        if self.compact_mode and (dock or self.horizontal_mode):
             self.placement.apply_panel_mode()
         else:
             self.placement.fit_to_content_height()
@@ -1521,8 +1531,12 @@ class MainWindow(QMainWindow):
             self.load_skin()
         # Applique (ou retire) la forme de panneau compact. Utile aussi sur l'écran
         # de connexion : la fenêtre prend/quitte la forme d'un panneau docké.
+        # Le redockage n'a lieu que si un réglage de FORME a changé (orientation,
+        # compact, épaisseur) — un changement de volume ou de contenu ne doit pas
+        # déplacer la fenêtre sous l'utilisateur.
         if self.isVisible():
-            QTimer.singleShot(0, self.fit_window_to_content)
+            dock = old_layout[:3] != new_layout[:3]
+            QTimer.singleShot(0, lambda: self.fit_window_to_content(dock=dock))
 
     def _reconnect_services(self, old_config, old_staff_present):
         """ Reconnexion complète après changement de serveur/secret/comptoir, dans

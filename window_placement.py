@@ -32,6 +32,10 @@ from window_geometry import resolve_target_geometry
 #: Délai avant magnétisme, après le dernier déplacement de la fenêtre (ms).
 SNAP_DELAY_MS = 200
 
+#: Regroupement des signaux de géométrie d'écran (ms) : un changement de
+#: résolution en émet une rafale, on ne réagit qu'à la dernière.
+SCREEN_CHANGE_DELAY_MS = 300
+
 
 class WindowPlacement:
     """Placement de la fenêtre principale. ``window`` est la QMainWindow."""
@@ -51,6 +55,11 @@ class WindowPlacement:
         self._snap_timer = QTimer(window)
         self._snap_timer.setSingleShot(True)
         self._snap_timer.timeout.connect(self.apply_edge_snap)
+        # Changements de géométrie d'écran (résolution, barre des tâches,
+        # moniteur ajouté/retiré) : signaux émis en rafale, réaction débrayée.
+        self._screen_timer = QTimer(window)
+        self._screen_timer.setSingleShot(True)
+        self._screen_timer.timeout.connect(self._handle_screen_change)
 
     # --- persistance --------------------------------------------------------
 
@@ -125,6 +134,48 @@ class WindowPlacement:
             self.window.resize(w, h)
             self.window.move(x, y)
 
+    # --- changements d'écran ------------------------------------------------
+
+    def watch_screens(self, app):
+        """Connecte les signaux de topologie et de géométrie des écrans.
+
+        ``screenAdded``/``screenRemoved`` couvrent le (dé)branchement d'un
+        moniteur ; ``geometryChanged``/``availableGeometryChanged`` de CHAQUE
+        écran couvrent un changement de résolution ou de barre des tâches —
+        le moniteur reste le même, la fenêtre peut pourtant finir hors zone
+        visible."""
+        for screen in app.screens():
+            self._watch_screen(screen)
+        app.screenAdded.connect(self._screen_added)
+        app.screenRemoved.connect(self.on_screen_geometry_changed)
+
+    def _watch_screen(self, screen):
+        screen.geometryChanged.connect(self.on_screen_geometry_changed)
+        screen.availableGeometryChanged.connect(self.on_screen_geometry_changed)
+
+    def _screen_added(self, screen):
+        self._watch_screen(screen)
+        self.on_screen_geometry_changed()
+
+    @Slot()
+    def on_screen_geometry_changed(self, *_args):
+        """Point d'entrée unique : regroupe la rafale en une seule vérification."""
+        self._screen_timer.start(SCREEN_CHANGE_DELAY_MS)
+
+    @Slot()
+    def _handle_screen_change(self):
+        """Après un changement d'écran : fenêtre visible + panneau redocké.
+
+        ``ensure_visible`` recentre si la fenêtre est sortie de la zone visible ;
+        en mode compact le panneau est ensuite re-aimanté au bord de son nouvel
+        écran (sa position verticale est préservée)."""
+        window = self.window
+        if window.shutting_down or not window.isVisible():
+            return
+        self.ensure_visible()
+        if getattr(window, "compact_mode", False):
+            self.apply_panel_mode()
+
     def reset(self):
         """Commande « Réinitialiser la position » : oublie la géométrie mémorisée
         et recentre la fenêtre (taille par défaut) sur l'écran principal."""
@@ -169,12 +220,18 @@ class WindowPlacement:
         else:
             # Colonne verticale dockée du côté le plus proche. Elle ne
             # prend plus toute la hauteur de l'écran : sa hauteur correspond au
-            # minimum réel requis par les commandes et les docks visibles.
+            # minimum réel requis par les commandes et les docks visibles. La
+            # position VERTICALE choisie par l'utilisateur est conservée
+            # (bornée à l'écran) au lieu d'être ramenée en haut à chaque
+            # ré-ajustement de contenu ou de mode.
             side = nearest_vertical_side(self._window_frame(), avail)
-            x, y, w, _full_height = compact_panel_geometry(
+            x, _top, w, _full_height = compact_panel_geometry(
                 VERTICAL, avail, window.panel_thickness, side,
             )
-            target = (x, y, w, self.preferred_content_height(avail[3]))
+            height = self.preferred_content_height(avail[3])
+            y = min(max(self._window_frame()[1], avail[1]),
+                    avail[1] + avail[3] - height)
+            target = (x, y, w, height)
         x, y, w, h = target
         self.applying = True
         try:

@@ -16,7 +16,18 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
+import main  # noqa: E402
 from window_placement import WindowPlacement  # noqa: E402
+
+
+class FakeTimer:
+    """QTimer factice : mémorise les start() sans boucle d'événements."""
+
+    def __init__(self):
+        self.started = []
+
+    def start(self, ms=None):
+        self.started.append(ms)
 
 
 class FakeRect:
@@ -65,11 +76,27 @@ class FakePanelWindow:
         self.window = self
         self.applying = False
         self.apply_panel_mode = types.MethodType(WindowPlacement.apply_panel_mode, self)
+        self.fit_to_content_height = types.MethodType(
+            WindowPlacement.fit_to_content_height, self,
+        )
         self.preferred_content_height = types.MethodType(
             WindowPlacement.preferred_content_height, self,
         )
         self._apply_edge_snap = types.MethodType(WindowPlacement.apply_edge_snap, self)
         self._window_frame = types.MethodType(WindowPlacement._window_frame, self)
+        # self.placement = self : MainWindow.fit_window_to_content délègue à
+        # l'objet placement, qui est simulé par cette même instance.
+        self.placement = self
+        self.fit_window_to_content = types.MethodType(
+            main.MainWindow.fit_window_to_content, self,
+        )
+        self.on_screen_geometry_changed = types.MethodType(
+            WindowPlacement.on_screen_geometry_changed, self,
+        )
+        self._handle_screen_change = types.MethodType(
+            WindowPlacement._handle_screen_change, self,
+        )
+        self._screen_timer = FakeTimer()
 
     # --- API Qt minimale simulée ---
     def current_screen_avail(self):
@@ -86,6 +113,9 @@ class FakePanelWindow:
 
     def isVisible(self):
         return True
+
+    def width(self):
+        return self._frame.width()
 
     def minimumHeight(self):
         return 0
@@ -111,15 +141,71 @@ def test_vertical_panel_docks_to_nearest_side_right():
     # Fenêtre côté droit de l'écran -> colonne dockée à droite.
     w = FakePanelWindow(horizontal_mode=False, frame=(1500, 300, 400, 500))
     w.apply_panel_mode()
-    assert w.resizes == [(300, 420)]       # largeur fine, hauteur utile seulement
-    assert w.moves == [(1920 - 300, 0)]    # dockée au bord droit
+    assert w.resizes == [(300, 420)]          # largeur fine, hauteur utile seulement
+    # Dockée au bord droit, position verticale CONSERVÉE (y=300).
+    assert w.moves == [(1920 - 300, 300)]
 
 
 def test_vertical_panel_docks_to_nearest_side_left():
     w = FakePanelWindow(horizontal_mode=False, frame=(100, 300, 400, 500))
     w.apply_panel_mode()
     assert w.resizes == [(300, 420)]
+    assert w.moves == [(0, 300)]             # x docké, y conservé
+
+
+def test_vertical_panel_vertical_position_clamped_to_screen():
+    # Fenêtre plus basse que la zone utile : la position verticale est bornée
+    # pour que le panneau reste entièrement visible après réduction d'écran.
+    w = FakePanelWindow(frame=(1500, 2000, 400, 500), avail=(0, 0, 1920, 1040))
+    w.apply_panel_mode()
+    # y borné à sy + sh - h = 0 + 1040 - 420 = 620
+    assert w.moves == [(1920 - 300, 620)]
+
+
+def test_fit_window_to_content_keeps_position_in_compact_vertical():
+    # Changement de contenu (file, messagerie, reconstruction) : hauteur
+    # ajustée, position conservée — pas de redockage sur le bord.
+    w = FakePanelWindow(frame=(900, 300, 400, 500))
+    w.fit_window_to_content()                # dock=False par défaut
+    assert w.resizes == [(400, 420)]         # largeur inchangée, hauteur utile
+    assert w.moves == [(900, 300)]           # position intacte
+
+
+def test_fit_window_to_content_docks_when_requested():
+    # Activation du mode / changement de forme : dockage explicite.
+    w = FakePanelWindow(frame=(900, 300, 400, 500))
+    w.fit_window_to_content(dock=True)
+    assert w.moves == [(1920 - 300, 300)]    # bord droit, y conservé
+
+
+def test_fit_window_to_content_horizontal_always_redocks():
+    # La barre horizontale est pleine largeur par nature : repositionnée même
+    # sur un simple changement de contenu.
+    w = FakePanelWindow(horizontal_mode=True, frame=(600, 400, 400, 500))
+    w.fit_window_to_content()
+    assert w.resizes == [(1920, 300)]
     assert w.moves == [(0, 0)]
+
+
+def test_screen_change_debounced_then_redocks_compact_panel():
+    w = FakePanelWindow(frame=(900, 300, 400, 500))
+    w.on_screen_geometry_changed()           # rafale de signaux regroupée
+    w.on_screen_geometry_changed()
+    assert w._screen_timer.started == [300, 300]
+    # À l'expiration : recentrage si hors écran + redockage du panneau.
+    w.ensure_visible = lambda: None
+    w._handle_screen_change()
+    assert w.moves == [(1920 - 300, 300)]
+
+
+def test_screen_change_does_not_dock_extended_window():
+    w = FakePanelWindow(frame=(900, 300, 400, 500))
+    w.compact_mode = False
+    calls = []
+    w.ensure_visible = lambda: calls.append("ensure")
+    w._handle_screen_change()
+    assert calls == ["ensure"]
+    assert w.moves == []                     # fenêtre étendue jamais redockée
 
 
 def test_horizontal_panel_docks_to_top():
