@@ -506,7 +506,11 @@ def _create_more_button(window):
         ("Relancer l'appel ", window.recall_shortcut, window.recall),
         (None, None, window.paper_action),
         ("Changer l'orientation", None, window.toggle_orientation),
-        ("Basculer le mode compact", None, window.toggle_compact_mode),
+        # Libellé explicite selon l'état courant (« Activer »/« Désactiver ») :
+        # le menu est reconstruit à chaque create_interface(), donc après le
+        # basculement le libellé reflète toujours l'action à venir.
+        ("Désactiver le mode compact" if getattr(window, "compact_mode", False)
+         else "Activer le mode compact", None, window.toggle_compact_mode),
         ("Deconnexion ", window.deconnect_shortcut, window.deconnection),
         ("Préférences", None, window.show_preferences_dialog),
         ("Afficher/Masquer Liste Patients", None, window.toggle_patient_list),
