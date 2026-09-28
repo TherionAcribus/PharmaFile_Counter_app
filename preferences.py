@@ -300,16 +300,18 @@ class PreferencesDialog(QDialog):
         self.general_layout.addWidget(self.patient_list_position_horizontal)
 
         # Position de la messagerie : même mécanisme que la liste des patients.
-        # En mode compact, la messagerie partage la zone de la file quand les
-        # deux sont du même côté (onglets) ; choisir un autre côté la détache.
+        # Du même côté que la file, les deux panneaux suivent la disposition
+        # choisie dans « Menu › Disposition des panneaux » (empilés ou en
+        # onglets) ; choisir un autre côté la détache.
         self.messaging_position_label = QLabel(
             "Position de la messagerie :", self.general_page)
         self.general_layout.addWidget(self.messaging_position_label)
         self.messaging_position = QComboBox(self.general_page)
         self.messaging_position.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.messaging_position.setToolTip(
-            "« Bas » partage l'onglet de la liste des patients en mode compact ; "
-            "« Droite » la détache dans sa propre zone.")
+            "Du même côté que la liste des patients, les deux panneaux sont "
+            "empilés ou regroupés en onglets (Menu › Disposition des panneaux) ; "
+            "de l'autre côté, la messagerie a sa propre zone.")
         self.general_layout.addWidget(self.messaging_position)
 
         # Taille de police de la file des patients (point 28) : configurable, avec

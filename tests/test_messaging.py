@@ -147,7 +147,7 @@ def test_messaging_is_stacked_above_patient_list(_shared_qapplication):
         window.show()
         controller.dock.show()
         patient_dock.show()
-        controller._arrange_with_patient_list()
+        controller.arrange_docks()
         _shared_qapplication.processEvents()
 
         assert controller.dock.geometry().top() < patient_dock.geometry().top()
@@ -185,7 +185,11 @@ def test_interface_rebuild_moves_button_without_recreating_dock():
     assert controller.button is not old_button
     assert controller.dock is dock
     assert window.icone_layout.count() == 1
-    assert len(window.more_menu.actions()) == 1
+    # Une action « Afficher/Masquer » + le sous-menu de disposition, sans
+    # doublon après reconstruction.
+    actions = window.more_menu.actions()
+    assert len(actions) == 2
+    assert sum(1 for a in actions if a.menu() is not None) == 1
 
 
 def test_user_change_clears_every_message_before_next_identity():

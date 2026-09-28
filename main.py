@@ -18,6 +18,7 @@ from notification import NotificationManager, extract_origin_message
 from connections import NetworkManager
 from counter_api import CounterApi, PATIENT_ACTION_GROUP
 import main_window_ui
+import dock_arrangement
 from login_view import create_login_widget
 from shortcut_manager import ShortcutManager
 from tray_manager import TrayManager
@@ -717,13 +718,9 @@ class MainWindow(QMainWindow):
 
 
     def toggle_patient_list(self):
-        if self.patient_list_dock.isVisible():
-            self.patient_list_dock.hide()
-        else:
-            self.patient_list_dock.show()
-            # En mode compact, la file partage une zone à onglets avec la
-            # messagerie : sans raise_(), l'onglet resterait derrière.
-            self.patient_list_dock.raise_()
+        # La file peut partager une zone à onglets avec la messagerie : un
+        # onglet en arrière-plan est amené devant plutôt que masqué.
+        dock_arrangement.toggle_dock(self.patient_list_dock)
         QTimer.singleShot(0, self.fit_window_to_content)
     
     def hide_patient_list(self):

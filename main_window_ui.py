@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
+import dock_arrangement
 import endpoints
 from buttons import DebounceButton, IconeButton
 from patient_list_model import PatientListModel
@@ -527,8 +528,15 @@ def _create_patient_list_widget(window):
     # Create the dock widget if it doesn't exist
     if not hasattr(window, 'patient_list_dock'):
         # Create the dock widget
+        # Options de docks (empilement libre, onglets en haut) : posées une
+        # fois, avant le premier panneau secondaire.
+        dock_arrangement.configure_main_window(window)
         window.patient_list_dock = QDockWidget("Liste des patients", window)
-        window.patient_list_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
+        # Nom d'objet stable : identifie le panneau (disposition, saveState).
+        window.patient_list_dock.setObjectName("patientListDock")
+        # Mêmes zones que la messagerie : ce sont les seules que les
+        # préférences de position savent représenter (bas/droite).
+        window.patient_list_dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
         
         # Create main container widget
         container_widget = QWidget()
@@ -596,10 +604,18 @@ def _create_patient_list_widget(window):
     # Update visibility based on preferences
     window.patient_list_dock.setVisible(window.display_patient_list)
     
-    # Adjust dock widget position based on preferences
-    if (window.horizontal_mode and window.patient_list_position_horizontal == "bottom") or \
-        (not window.horizontal_mode and window.patient_list_position_vertical == "bottom"):
-        window.addDockWidget(Qt.BottomDockWidgetArea, window.patient_list_dock)
-    elif (window.horizontal_mode and window.patient_list_position_horizontal == "right") or \
-        (not window.horizontal_mode and window.patient_list_position_vertical == "right"):
-        window.addDockWidget(Qt.RightDockWidgetArea, window.patient_list_dock)
+    # Position selon les préférences (mise à jour aussi par un glisser-déposer).
+    # On ne re-docke QUE si la zone change : ré-ajouter le panneau à chaque
+    # reconstruction de l'interface le sortait de son groupe d'onglets et
+    # défaisait l'empilement choisi avec la messagerie.
+    position = (window.patient_list_position_horizontal if window.horizontal_mode
+                else window.patient_list_position_vertical)
+    area = {"bottom": Qt.BottomDockWidgetArea,
+            "right": Qt.RightDockWidgetArea}.get(position)
+    dock = window.patient_list_dock
+    if area is not None and not dock.isFloating() and window.dockWidgetArea(dock) != area:
+        window.addDockWidget(area, dock)
+    # Un glisser-déposer de la file est mémorisé (zone, empilement/onglets).
+    messaging = getattr(window, "messaging", None)
+    if messaging is not None:
+        messaging.arranger.track(dock)

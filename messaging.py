@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from dock_arrangement import DockArranger, dock_in_front, toggle_dock
+
 
 class MessageInput(QPlainTextEdit):
     sendRequested = Signal()
@@ -56,9 +58,13 @@ class MessagingController:
         # effacer un nouveau brouillon saisi pendant l'attente.
         self._send_in_flight = False
         self._sent_body = None
-        # Pendant la (dé)tabification des docks secondaires : les signaux de
-        # visibilité émis alors ne sont pas des choix utilisateur à persister.
+        # Pendant nos propres déplacements/suppressions du dock : les signaux
+        # de visibilité émis alors ne sont pas des choix utilisateur à
+        # persister (cf. aussi arranger.busy).
         self._arranging = False
+        # Disposition file des patients + messagerie (empilés/onglets) :
+        # appliquée à la création, mémorisée après un glisser-déposer.
+        self.arranger = DockArranger(window, settings_factory)
 
         settings = self._settings_factory()
         value = settings.value("messaging_client_instance_id", "", type=str)
@@ -172,13 +178,17 @@ class MessagingController:
         action.triggered.connect(self.toggle)
         more_menu.addAction(action)
         self.menu_action = action
+        # La disposition n'a de sens qu'avec deux panneaux : le sous-menu vit
+        # et meurt avec la messagerie.
+        self.arranger.remove_menu()
+        self.arranger.install_menu(more_menu)
         self._ensure_dock()
 
     def _ensure_dock(self):
         if self.dock is not None:
             try:
                 self.dock.objectName()
-                self._arrange_with_patient_list()
+                self.arranger.apply()
                 return
             except RuntimeError:
                 self.dock = None
@@ -261,20 +271,31 @@ class MessagingController:
         # droite ; ce choix est ensuite conservé dans QSettings.
         area_name = settings.value("messaging_dock_area", "bottom", type=str)
         area = Qt.BottomDockWidgetArea if area_name == "bottom" else Qt.RightDockWidgetArea
-        self.window.addDockWidget(area, self.dock)
-        self._arrange_with_patient_list()
+        self._arranging = True
+        try:
+            self.window.addDockWidget(area, self.dock)
+        finally:
+            self._arranging = False
+        self.arranger.apply()
         self.dock.visibilityChanged.connect(self._visibility_changed)
-        self.dock.dockLocationChanged.connect(self._dock_location_changed)
         self.dock.setVisible(settings.value("messaging_dock_visible", False, type=bool))
         self._update_composer()
 
     def _destroy_ui(self):
+        self.arranger.remove_menu()
         for obj_name in ("button", "menu_action", "dock"):
             obj = getattr(self, obj_name, None)
             if obj is not None:
                 try:
                     if obj_name == "dock":
-                        self.window.removeDockWidget(obj)
+                        # removeDockWidget MASQUE le dock : sans ce garde, la
+                        # déconnexion enregistrait « messagerie fermée » et la
+                        # session suivante la rouvrait masquée.
+                        self._arranging = True
+                        try:
+                            self.window.removeDockWidget(obj)
+                        finally:
+                            self._arranging = False
                     obj.deleteLater()
                 except RuntimeError:
                     pass
@@ -288,88 +309,30 @@ class MessagingController:
         if not self.enabled or not self.staff_id:
             return
         self._ensure_dock()
-        self.dock.setVisible(not self.dock.isVisible())
-        if self.dock.isVisible():
-            self.dock.raise_()
+        # Onglet en arrière-plan : on l'amène devant au lieu de le masquer.
+        if toggle_dock(self.dock):
             self.request_state()
 
     def _visibility_changed(self, visible):
-        if self._arranging:
-            # Réorganisation (tabification compacte) en cours : ce changement
-            # n'est pas un choix de l'utilisateur, on ne le persiste pas.
+        if self.dock is None or self._arranging or self.arranger.busy:
+            # Déplacement programmatique en cours : ce changement n'est pas un
+            # choix de l'utilisateur, on ne le persiste pas.
             return
-        self._settings_factory().setValue("messaging_dock_visible", bool(visible))
+        # visibilityChanged est aussi émis quand l'onglet change dans un
+        # groupe : on persiste l'état OUVERT/FERMÉ du panneau, pas le fait
+        # que son onglet soit au premier plan (sinon consulter la file
+        # « fermait » la messagerie pour la session suivante).
+        self._settings_factory().setValue(
+            "messaging_dock_visible", not self.dock.isHidden())
         if visible:
-            self._arrange_with_patient_list()
             self.request_state()
             self._mark_visible_read()
         self._schedule_window_fit()
 
-    def _dock_location_changed(self, area):
-        if self._arranging:
-            # Déplacement programmatique (tabification, apply_dock_area) : le
-            # signal est ré-émis par nos propres addDockWidget/tabifyDockWidget
-            # — sans ce garde-fou on ré-entrait dans _arrange_with_patient_list
-            # à l'infini (RecursionError constaté en exploitation).
-            return
-        self._settings_factory().setValue(
-            "messaging_dock_area",
-            "bottom" if area == Qt.BottomDockWidgetArea else "right",
-        )
-        # Déplacement par glisser-déposer : si le dock rejoint la zone de la
-        # file des patients, il redevient un onglet de la zone commune.
-        # Différé : dockLocationChanged peut être émis AVANT que
-        # dockWidgetArea() ne rapporte la nouvelle zone.
-        QTimer.singleShot(0, self._arrange_with_patient_list)
-
-    def _arrange_with_patient_list(self):
-        """Organise les docks secondaires (file des patients + messagerie).
-
-        Mode compact : une SEULE zone secondaire à onglets natifs
-        (``tabifyDockWidget``) — un seul panneau grandit sous le comptoir,
-        l'autre reste à un onglet de distance ; l'encombrement vertical reste
-        borné quelle que soit la combinaison ouverte. Mode étendu : comportement
-        historique — les deux panneaux peuvent être visibles ensemble, empilés
-        proprement quand ils sont tous les deux en bas."""
-        patient_dock = getattr(self.window, "patient_list_dock", None)
-        if self.dock is None or patient_dock is None:
-            return
-        if getattr(self.window, "compact_mode", False):
-            # Zone commune à onglets UNIQUEMENT si les deux docks partagent la
-            # même zone : l'utilisateur peut en extraire un par glisser-déposer
-            # (dessus/dessous/droite) ou via la préférence de position — son
-            # choix prime, on ne le redock pas de force. Le ramener dans la même
-            # zone (drag ou préférence) le ré-onglette au prochain arrangement.
-            self._arranging = True
-            try:
-                if self.window.dockWidgetArea(self.dock) == \
-                        self.window.dockWidgetArea(patient_dock) != \
-                        Qt.NoDockWidgetArea:
-                    if patient_dock not in self.window.tabifiedDockWidgets(self.dock):
-                        # tabifyDockWidget ignore les docks explicitement
-                        # masqués : on les affiche le temps de l'onglette,
-                        # puis on restaure l'état choisi par l'utilisateur.
-                        hidden = [d for d in (patient_dock, self.dock)
-                                  if d.isHidden()]
-                        for d in hidden:
-                            d.show()
-                        self.window.tabifyDockWidget(patient_dock, self.dock)
-                        for d in hidden:
-                            d.hide()
-            finally:
-                self._arranging = False
-            return
-        # Retour du mode compact : sortir les docks du groupe d'onglets en les
-        # redockant séparément, puis retrouver l'empilement historique.
-        if self.dock in self.window.tabifiedDockWidgets(patient_dock):
-            self.window.addDockWidget(Qt.BottomDockWidgetArea, patient_dock)
-            self.window.addDockWidget(Qt.BottomDockWidgetArea, self.dock)
-        if (self.window.dockWidgetArea(self.dock) == Qt.BottomDockWidgetArea
-                and self.window.dockWidgetArea(patient_dock) == Qt.BottomDockWidgetArea):
-            self.window.splitDockWidget(self.dock, patient_dock, Qt.Vertical)
-            self.window.resizeDocks(
-                [self.dock, patient_dock], [180, 110], Qt.Vertical,
-            )
+    def arrange_docks(self):
+        """Applique la disposition mémorisée de la file et de la messagerie
+        (empilés dans l'ordre choisi, ou en onglets)."""
+        self.arranger.apply()
 
     def _schedule_window_fit(self):
         callback = getattr(self.window, "fit_window_to_content", None)
@@ -378,8 +341,9 @@ class MessagingController:
 
     def apply_dock_area(self):
         """ Applique la position enregistrée (glisser-déposer ou préférence
-        « Position de la messagerie »). En mode compact, ramener le dock dans
-        la zone de la file le ré-onglette ; le mettre ailleurs le détache. """
+        « Position de la messagerie »). Dans la zone de la file, la
+        disposition choisie (empilés/onglets) s'applique ; ailleurs, les deux
+        panneaux sont indépendants. """
         if self.dock is None:
             return
         area_name = self._settings_factory().value(
@@ -392,7 +356,7 @@ class MessagingController:
                 self.window.addDockWidget(area, self.dock)
         finally:
             self._arranging = False
-        self._arrange_with_patient_list()
+        self.arranger.apply()
 
     def heartbeat(self):
         if not self.enabled or not self.staff_id:
@@ -533,7 +497,10 @@ class MessagingController:
             return ""
 
     def _mark_visible_read(self):
-        if not self.dock or not self.dock.isVisible():
+        # Seulement si le fil est réellement lisible : un onglet « Messagerie »
+        # resté derrière la liste des patients est « visible » pour Qt, mais
+        # l'expéditeur recevrait un accusé « Lu » à tort.
+        if not self.dock or not dock_in_front(self.dock):
             return
         ids = [item.get("id") for item in self.messages if item.get("is_unread")]
         ids = [value for value in ids if value is not None]

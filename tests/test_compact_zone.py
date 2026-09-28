@@ -86,11 +86,17 @@ def test_tabify_does_not_overwrite_visibility_settings():
     previous = dict(FakeSettings.values)
     try:
         _window, controller = _controller()
-        before = FakeSettings.values.get("messaging_dock_visible")
+        controller.set_enabled(True)
+        FakeSettings.values["messaging_dock_visible"] = "sentinelle"
         controller._arranging = True
-        controller._visibility_changed(not before)   # signal parasite ignoré
-        assert FakeSettings.values.get("messaging_dock_visible") == before
+        controller._visibility_changed(True)   # signal parasite ignoré
+        assert FakeSettings.values["messaging_dock_visible"] == "sentinelle"
         controller._arranging = False
+        controller.arranger.busy = True
+        controller._visibility_changed(True)   # idem pendant un placement
+        assert FakeSettings.values["messaging_dock_visible"] == "sentinelle"
+        controller.arranger.busy = False
+        controller.dock.show()
         controller._visibility_changed(True)
         assert FakeSettings.values.get("messaging_dock_visible") is True
     finally:
@@ -98,29 +104,35 @@ def test_tabify_does_not_overwrite_visibility_settings():
         FakeSettings.values.update(previous)
 
 
-def test_user_drag_retabifies_without_recursion():
-    # dockLocationChanged émis pendant tabifyDockWidget ré-entrait dans
-    # _arrange_with_patient_list : RecursionError en exploitation.
-    window, controller = _controller()
-    window.compact_mode = True
-    patient_dock = _patient_dock(window)
-    controller.set_enabled(True)
-    assert controller.dock in window.tabifiedDockWidgets(patient_dock)
-
-    # L'utilisateur tire l'onglet « Messages » à droite…
-    window.addDockWidget(Qt.RightDockWidgetArea, controller.dock)
-    assert controller.dock not in window.tabifiedDockWidgets(patient_dock)
-    assert FakeSettings.values.get("messaging_dock_area") == "right"
-
-    # …puis le redépose sur la zone de la file : il redevient un onglet,
-    # sans récursion sur dockLocationChanged (ré-arrangement différé au
-    # tour de boucle suivant — dockWidgetArea n'est pas encore à jour
-    # quand le signal part).
+def test_user_drag_is_respected_without_recursion():
+    # Auparavant, chaque dépôt ré-onglettait de force (et ré-entrait dans
+    # l'arrangement : RecursionError en exploitation). Désormais le dépôt
+    # de l'utilisateur est conservé tel quel et seulement mémorisé.
     from PySide6.QtWidgets import QApplication
-    window.addDockWidget(Qt.BottomDockWidgetArea, controller.dock)
-    QApplication.processEvents()
-    assert controller.dock in window.tabifiedDockWidgets(patient_dock)
-    assert FakeSettings.values.get("messaging_dock_area") == "bottom"
+    previous = dict(FakeSettings.values)
+    try:
+        window, controller = _controller()
+        window.compact_mode = True
+        patient_dock = _patient_dock(window)
+        controller.set_enabled(True)
+        assert controller.dock in window.tabifiedDockWidgets(patient_dock)
+
+        # L'utilisateur tire l'onglet « Messages » à droite…
+        window.addDockWidget(Qt.RightDockWidgetArea, controller.dock)
+        QApplication.processEvents()
+        controller.arranger.capture()   # fin du délai après le dépôt
+        assert controller.dock not in window.tabifiedDockWidgets(patient_dock)
+        assert FakeSettings.values.get("messaging_dock_area") == "right"
+
+        # …puis le redépose dans la zone de la file, à côté : il y reste.
+        window.addDockWidget(Qt.BottomDockWidgetArea, controller.dock)
+        QApplication.processEvents()
+        controller.arranger.capture()
+        assert controller.dock not in window.tabifiedDockWidgets(patient_dock)
+        assert FakeSettings.values.get("messaging_dock_area") == "bottom"
+    finally:
+        FakeSettings.values.clear()
+        FakeSettings.values.update(previous)
 
 
 def test_option_buttons_share_one_row_in_compact_vertical():
