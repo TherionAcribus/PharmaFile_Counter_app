@@ -11,33 +11,55 @@ QGuiApplication, lui-même un QCoreApplication) pour toute la session, avant tou
 test. Les fixtures ``qapp`` des modules réutilisent alors cette instance via
 ``*.instance()`` sans en recréer une. Backend « offscreen » : pas besoin d'un
 affichage réel (fonctionne aussi en CI headless).
+
+En fin de session, on NE DÉTRUIT RIEN : des objets Qt créés par les tests sans
+parent (lecteurs audio QMediaPlayer/QAudioOutput, widgets, timers…) restent dans
+des cycles de références (signal -> méthode liée -> self) et leur destruction —
+pendant une collecte du GC ou la finalisation de l'interpréteur, avec ou sans
+QApplication — plante dans le backend multimédia FFmpeg en CI headless
+(segfault APRÈS le dernier test). On désactive donc le GC cyclique pour toute la
+session, on garde la QApplication en vie, et on quitte le processus via
+``os._exit`` dans ``pytest_unconfigure`` — après l'affichage du résumé, en
+conservant le code de sortie. Aucun destructeur Qt ne s'exécute jamais.
 """
 
+import gc
 import os
+import sys
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Cf. docstring : les cycles de références ne doivent jamais être collectés.
+gc.disable()
+
+_qapp = None        # garde la QApplication en vie jusqu'à os._exit
+# Sentinelle non nulle : si pytest_unconfigure s'exécute sans que la session
+# ait fini (erreur d'usage, plantage interne), on ne doit PAS sortir en 0.
+_exit_status = 3    # ExitCode.INTERNAL_ERROR
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _shared_qapplication():
-    from PySide6.QtCore import QEvent
     from PySide6.QtWidgets import QApplication
 
+    global _qapp
     app = QApplication.instance() or QApplication([])
+    _qapp = app
     yield app
 
-    # Teardown déterministe : plusieurs tests créent des objets Qt sans parent
-    # (lecteurs audio, widgets, timers) qui finissent dans des cycles de
-    # références (signal -> méthode liée -> self). Sans collecte explicite, le
-    # GC peut les détruire APRÈS la QApplication, dans un ordre indéfini — le
-    # backend multimédia FFmpeg plante alors à la sortie du processus
-    # (segfault en CI alors que tous les tests sont verts). On collecte donc
-    # et on purge les suppressions différées TANT QUE l'application existe.
-    import gc
 
-    gc.collect()
-    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    app.processEvents()
-    gc.collect()
+def pytest_sessionfinish(session, exitstatus):
+    global _exit_status
+    _exit_status = exitstatus
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    """Dernier hook avant la fin du processus : le résumé des tests est déjà
+    affiché, les autres plugins sont déconfigurés. On sort sans finaliser
+    l'interpréteur pour qu'aucun destructeur Qt ne s'exécute (segfault CI)."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(_exit_status))

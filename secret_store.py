@@ -39,8 +39,8 @@ try:  # keyring est optionnel : l'app doit fonctionner même sans lui.
     # on vérifiera à l'usage via les exceptions.
     _KEYRING_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - dépend de l'environnement
-    keyring = None
-    KeyringError = NoKeyringError = Exception
+    # Les noms ``keyring``/``KeyringError``/``NoKeyringError`` restent alors
+    # indéfinis : tous les usages sont protégés par ``_KEYRING_AVAILABLE``.
     _KEYRING_AVAILABLE = False
     logger.warning("keyring indisponible (%s) : repli sur QSettings pour le secret.", exc)
 
