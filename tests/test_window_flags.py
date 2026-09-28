@@ -47,7 +47,7 @@ def _pref_window(on_top=True):
     win.placement = mock.MagicMock()
     # Effets cosmétiques / disposition : sans objet ici.
     win.setup_global_shortcut = lambda: None
-    win.fit_window_to_content = lambda: None
+    win.fit_window_to_content = lambda dock=False: None
     win.create_interface = lambda: None
     win.load_skin = lambda: None
     return win

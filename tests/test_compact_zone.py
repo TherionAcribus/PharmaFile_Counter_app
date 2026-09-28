@@ -69,7 +69,7 @@ def test_patient_list_toggle_raises_its_tab():
     window.compact_mode = True
     patient_dock = _patient_dock(window)
     controller.set_enabled(True)
-    window.fit_window_to_content = lambda: None
+    window.fit_window_to_content = lambda dock=False: None
     window.show()
     patient_dock.hide()   # zone secondaire fermée au départ
 
