@@ -38,18 +38,27 @@ class TrayManager(QObject):
     # --- construction -------------------------------------------------------
 
     def setup(self):
-        """Crée les trois icônes. Idempotent : un appel supplémentaire remplace
-        les icônes existantes plutôt que de les empiler."""
+        """Crée les icônes. Idempotent : un appel supplémentaire remplace
+        les icônes existantes plutôt que de les empiler. La préférence
+        ``tray_single_icon`` regroupe tout sous UNE icône (panneau discret)."""
         self.logger.info("Création du Systray...")
         self.cleanup()
+
+        # Menu « file » persistant, reconstruit à son OUVERTURE (aboutToShow) :
+        # partagé entre l'icône « Prochain patient » (mode 3 icônes) et le
+        # sous-menu de l'icône unique.
+        self.patient_menu = QMenu()
+        self.patient_menu.aboutToShow.connect(self.rebuild_patient_menu)
+
+        if getattr(self.window, "tray_single_icon", False):
+            self._setup_single_icon()
+            return
 
         self._add_icon("assets/images/pause.ico", "Pause",
                        action=self.window.call_web_function_pause,
                        menu_label="Mettre le patient en pause")
 
         # Icône « Prochain patient » : menu persistant reconstruit à l'ouverture.
-        self.patient_menu = QMenu()
-        self.patient_menu.aboutToShow.connect(self.rebuild_patient_menu)
         self._add_icon("assets/images/next_orange.ico", "Prochain patient",
                        action=self.window.call_web_function_validate_and_call_next,
                        menu=self.patient_menu)
@@ -57,6 +66,32 @@ class TrayManager(QObject):
         self._add_icon("assets/images/check.ico", "Valider patient",
                        action=self.window.call_web_function_validate,
                        menu_label="Valider le patient")
+
+    def _setup_single_icon(self):
+        """Une icône unique : clic gauche affiche le panneau, clic droit ouvre
+        un menu regroupant les trois actions et la file (les mêmes fonctions
+        que les trois icônes, en moins envahissant)."""
+        menu = QMenu()
+        menu.addAction("Afficher le panneau").triggered.connect(self.show_panel)
+        menu.addSeparator()
+        menu.addAction("Prochain patient").triggered.connect(
+            self.window.call_web_function_validate_and_call_next)
+        menu.addAction("Valider le patient").triggered.connect(
+            self.window.call_web_function_validate)
+        menu.addAction("Mettre le patient en pause").triggered.connect(
+            self.window.call_web_function_pause)
+        menu.addSeparator()
+        self.patient_menu.setTitle("Appeler un patient…")
+        menu.addMenu(self.patient_menu)
+        self._add_icon("assets/images/next_orange.ico", "PharmaFile — comptoir",
+                       action=self.show_panel, menu=menu)
+
+    def show_panel(self):
+        """Affiche le panneau devant les autres fenêtres (clic gauche de
+        l'icône unique ou entrée « Afficher le panneau » du menu)."""
+        self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
 
     def _add_icon(self, icon_path, tooltip, action, menu=None, menu_label=None):
         icon = QSystemTrayIcon(QIcon(resource_path(icon_path)), self.window)

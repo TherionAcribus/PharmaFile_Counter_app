@@ -272,6 +272,16 @@ class PreferencesDialog(QDialog):
         self.side_panel_preset_button.clicked.connect(self._apply_side_panel_preset)
         self.general_layout.addWidget(self.side_panel_preset_button)
 
+        # Une seule icône regroupée dans la zone de notification au lieu des
+        # trois icônes d'action — moins d'encombrement pour un panneau latéral
+        # déjà discret (les actions restent accessibles par clic droit).
+        self.tray_single_icon_checkbox = QCheckBox(
+            "Une seule icône dans la zone de notification", self.general_page)
+        self.tray_single_icon_checkbox.setToolTip(
+            "Regroupe Pause / Prochain patient / Valider sous une seule icône "
+            "avec menu contextuel (clic gauche = afficher le panneau).")
+        self.general_layout.addWidget(self.tray_single_icon_checkbox)
+
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
 
@@ -787,6 +797,7 @@ class PreferencesDialog(QDialog):
         self.compact_mode_checkbox.setChecked(settings_schema.read(settings, "compact_mode"))
         self.panel_snap_checkbox.setChecked(settings_schema.read(settings, "panel_snap"))
         self.panel_thickness_spinbox.setValue(settings_schema.read(settings, "panel_thickness"))
+        self.tray_single_icon_checkbox.setChecked(settings_schema.read(settings, "tray_single_icon"))
         self.display_patient_list.setChecked(settings_schema.read(settings, "display_patient_list"))
         self.patient_list_font_size_spinbox.setValue(settings_schema.read(settings, "patient_list_font_size"))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
@@ -1053,6 +1064,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("compact_mode", self.compact_mode_checkbox.isChecked())
         settings.setValue("panel_snap", self.panel_snap_checkbox.isChecked())
         settings.setValue("panel_thickness", self.panel_thickness_spinbox.value())
+        settings.setValue("tray_single_icon", self.tray_single_icon_checkbox.isChecked())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
         settings.setValue("patient_list_font_size", self.patient_list_font_size_spinbox.value())
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])

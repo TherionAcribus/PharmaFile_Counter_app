@@ -138,6 +138,12 @@ SETTINGS = {
     "patient_list_vertical_position": Setting(default="bottom", kind=str),
     "patient_list_horizontal_position": Setting(default="right", kind=str),
 
+    # --- Zone de notification ------------------------------------------------
+    # Une seule icône regroupée (clic gauche = afficher le panneau, clic droit
+    # = les trois actions + la file) au lieu des trois icônes d'action —
+    # moins d'encombrement quand l'app vit en panneau latéral.
+    "tray_single_icon": Setting(default=False, kind=bool),
+
     # --- Divers --------------------------------------------------------------
     "debug_window": Setting(default=False, kind=bool),
     "selected_skin": Setting(default="", kind=str),

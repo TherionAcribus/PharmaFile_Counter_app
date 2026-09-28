@@ -44,8 +44,10 @@ def extract_origin_message(data, internal):
 
 #: Notification en attente d'affichage (file du gestionnaire). ``patient_id``
 #: rattache la notification à un patient précis : un rappel devenu caduc (patient
-#: déjà validé) peut ainsi être annulé, en file comme à l'écran.
-_Spec = namedtuple("_Spec", "data internal font_size signature play_sound origin patient_id")
+#: déjà validé) peut ainsi être annulé, en file comme à l'écran. ``sticky`` :
+#: la notification ne s'auto-ferme pas (une erreur d'action reste jusqu'à
+#: fermeture explicite — elle ne doit pas disparaître sans avoir été vue).
+_Spec = namedtuple("_Spec", "data internal font_size signature play_sound origin patient_id sticky")
 
 #: Sentinelle « quel que soit le patient » pour ``NotificationManager.dismiss``.
 ANY_PATIENT = object()
@@ -70,13 +72,15 @@ class NotificationManager:
     # --- API publique ---------------------------------------------------
 
     def notify(self, data, internal=False, font_size=None, play_sound=True,
-               patient_id=None):
+               patient_id=None, sticky=False):
         """Point d'entrée unique. Déduplique, puis affiche ou met en file.
         ``play_sound`` : le son est un réglage distinct de l'affichage (la
         décision est prise par l'appelant, cf. notification_rules).
         ``patient_id`` : patient concerné, s'il y en a un ; il permet d'annuler
         la notification (``dismiss``) et de ne jamais sortir de la file un rappel
         devenu caduc.
+        ``sticky`` : pas d'auto-fermeture — l'utilisateur ferme explicitement
+        (clic, Échap ou le bouton ×).
         Retourne la notification affichée, ou None (dupliquée / mise en file)."""
         origin, message = extract_origin_message(data, internal)
         signature = notification_signature(origin, message)
@@ -93,7 +97,8 @@ class NotificationManager:
             logger.debug("Notification dupliquée déjà en file (origin=%s)", origin)
             return None
 
-        spec = _Spec(data, internal, font_size, signature, play_sound, origin, patient_id)
+        spec = _Spec(data, internal, font_size, signature, play_sound, origin,
+                     patient_id, sticky)
         if should_queue(len(self.active_notifications), self.max_visible):
             self.pending.append(spec)
             logger.debug("Notification mise en file (%s en attente)", len(self.pending))
@@ -157,8 +162,11 @@ class NotificationManager:
         notif.closed.connect(lambda n=notif: self._on_closed(n))
         notif.show_without_activating()
         self.update_positions()
-        duration_s = getattr(self.main_window, "notification_duration", 5)
-        notif.start_auto_close(duration_s * 1000)
+        # Une notification « sticky » (erreur d'action) n'a pas de compte à
+        # rebours : elle reste jusqu'à fermeture par l'utilisateur.
+        if not spec.sticky:
+            duration_s = getattr(self.main_window, "notification_duration", 5)
+            notif.start_auto_close(duration_s * 1000)
         return notif
 
     def _on_closed(self, notif):

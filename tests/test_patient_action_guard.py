@@ -255,6 +255,18 @@ def test_refus_sans_agent_explique_a_l_utilisateur():
     assert "Identifiez-vous" in notification["message"]
 
 
+def test_echec_action_notifie_en_action_error():
+    """Régression E5 : ``_notify_network_error`` étiquetait tout en
+    « connection » — la case « connexion » des préférences masquait alors
+    aussi les échecs d'action. Origine dédiée « action_error » (SYSTÈME)."""
+    w = FakeWindow()
+    w.call_web_function_validate_and_call_next()
+    assert len(w.handles) == 1
+    w.handles[0].complete(NetResult.network_error("timeout"))
+    notification = w.show_notification.call_args[0][0]
+    assert notification["origin"] == "action_error"
+
+
 def test_pause_sans_patient_refusee():
     w = FakeWindow(patient_id=None)
     w.call_web_function_pause()

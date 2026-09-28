@@ -386,6 +386,9 @@ class MainWindow(QMainWindow):
         self.display_patient_list = settings_schema.read(settings, "display_patient_list")
         self.patient_list_position_vertical = settings_schema.read(settings, "patient_list_vertical_position")
         self.patient_list_position_horizontal = settings_schema.read(settings, "patient_list_horizontal_position")
+        # Une seule icône regroupée dans la zone de notification (E5) au lieu
+        # des trois icônes d'action — option, défaut = comportement historique.
+        self.tray_single_icon = settings_schema.read(settings, "tray_single_icon")
         self.debug_window = settings_schema.read(settings, "debug_window")
         # Journalisation détaillée (DEBUG) seulement si la fenêtre de log est
         # demandée ; sinon INFO (production). Les logs DEBUG ne sont donc pas
@@ -825,8 +828,12 @@ class MainWindow(QMainWindow):
         401/403/409-423/5xx/timeout) et journalise le détail technique. Le détail
         n'est jamais montré à l'utilisateur. """
         if result.message:
-            # Catégorie « connexion » : le filtrage est fait par show_notification.
-            self.show_notification({"origin": "connection", "message": result.message}, internal=True)
+            # Origine « action_error » (catégorie SYSTÈME), pas « connection » :
+            # un échec d'action n'est pas un évènement d'état de connexion —
+            # décocher les alertes de connexion ne doit pas le masquer, et la
+            # notification reste affichée tant que l'utilisateur ne l'a pas
+            # fermée (origine « sticky », cf. notification_rules).
+            self.show_notification({"origin": "action_error", "message": result.message}, internal=True)
         if result.detail:
             self.logger.warning("Erreur réseau (statut=%s) : %s", result.status, result.detail)
 
@@ -1520,6 +1527,7 @@ class MainWindow(QMainWindow):
                       self.display_patient_list, self.patient_list_position_vertical,
                       self.patient_list_position_horizontal)
         old_on_top = getattr(self, "always_on_top", False)
+        old_tray_single = getattr(self, "tray_single_icon", False)
         self.load_preferences()
 
         # « Toujours au premier plan » : appliqué ICI (plus dans le dialogue, qui ne
@@ -1554,6 +1562,11 @@ class MainWindow(QMainWindow):
         # ramener le dock dans la zone de la file le ré-onglette en compact.
         if hasattr(self, "messaging"):
             self.messaging.apply_dock_area()
+        # Icône(s) de la zone de notification : bascule 1 icône ↔ 3 icônes
+        # appliquée à chaud (setup() est idempotent : cleanup + recréation).
+        new_tray_single = getattr(self, "tray_single_icon", False)
+        if new_tray_single != old_tray_single and getattr(self, "tray", None):
+            self.tray.setup()
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
@@ -1865,9 +1878,57 @@ class MainWindow(QMainWindow):
             self.logger.debug("Notification filtrée par les préférences (origin=%s)", origin)
             return
         play_sound = notification_rules.should_play_sound(origin, prefs, force=force)
+        # Confirmations courantes internes : rendu dans le bandeau d'état du
+        # panneau quand il est visible — une fenêtre flottante serait
+        # disproportionnée pour « une action est déjà en cours » et masquerait
+        # le progiciel voisin du panneau.
+        if (internal and notification_rules.is_inline_candidate(origin)
+                and self.isVisible() and self._show_inline_notice(_message)):
+            if play_sound and getattr(self, "audio_player", None):
+                self.audio_player.play_sound("ding")
+            return
         self._ensure_notification_manager().notify(
             data, internal=internal, font_size=font_size, play_sound=play_sound,
-            patient_id=patient_id)
+            patient_id=patient_id,
+            sticky=notification_rules.is_sticky(origin))
+
+    # Durée d'affichage du bandeau d'état intégré (ms) : assez long pour être
+    # lu, assez court pour qu'une information périmée ne traîne pas.
+    _INLINE_NOTICE_MS = 4000
+
+    def _show_inline_notice(self, message):
+        """Affiche un message court dans le bandeau d'état du panneau.
+        Retourne False si le bandeau n'existe pas (écran d'identification,
+        reconstruction d'interface) : l'appelant bascule alors sur la
+        fenêtre flottante habituelle — le message n'est jamais perdu."""
+        hint = getattr(self, "status_hint", None)
+        if hint is None:
+            return False
+        timer = getattr(self, "_hint_timer", None)
+        if timer is None:
+            try:
+                timer = QTimer(self)
+            except TypeError:
+                timer = QTimer()  # faux self non-QObject (tests)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._clear_inline_notice)
+            self._hint_timer = timer
+        self._safe_widget(lambda: self._write_inline_notice(message))
+        timer.start(self._INLINE_NOTICE_MS)
+        return True
+
+    def _write_inline_notice(self, message):
+        hint = self.status_hint
+        hint.setText(message)
+        hint.setToolTip(message)
+        hint.show()
+
+    def _clear_inline_notice(self):
+        self._safe_widget(lambda: self._hide_inline_notice())
+
+    def _hide_inline_notice(self):
+        self.status_hint.hide()
+        self.status_hint.setText("")
 
     def is_notification_obsolete(self, origin, patient_id):
         """Consultée par le gestionnaire avant de sortir une notification de la

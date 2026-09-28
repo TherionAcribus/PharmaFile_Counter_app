@@ -150,6 +150,76 @@ def test_cleanup_sans_setup_est_sans_effet(tray):
     tray.cleanup()   # ne doit pas lever
 
 
+# --- icône unique (préférence tray_single_icon, E5) -------------------------
+
+class SingleIconWindow(FakeWindow):
+    """Variante comptant les demandes d'affichage du panneau."""
+
+    def __init__(self):
+        super().__init__()
+        self.tray_single_icon = True
+        self.show_calls = 0
+
+    def show(self):
+        self.show_calls += 1
+        super().show()
+
+
+@pytest.fixture
+def single_tray(qapp):
+    window = SingleIconWindow()
+    manager = TrayManager(window, logger=logging.getLogger("test.tray"))
+    yield manager
+    manager.cleanup()
+
+
+def test_icone_unique_creee(single_tray):
+    """Préférence « une seule icône » : une seule icône regroupée au lieu de trois."""
+    single_tray.setup()
+    assert len(single_tray.icons) == 1
+
+
+def test_icone_unique_regroupe_les_actions_et_la_file(single_tray):
+    """Clic droit : les trois actions + le sous-menu de la file sont là."""
+    single_tray.setup()
+    menu = single_tray.icons[0].contextMenu()
+    texts = [a.text() for a in menu.actions() if a.menu() is None]
+    assert "Afficher le panneau" in texts
+    assert "Prochain patient" in texts
+    assert "Valider le patient" in texts
+    assert "Mettre le patient en pause" in texts
+    assert single_tray.patient_menu in (
+        a.menu() for a in menu.actions() if a.menu() is not None)
+
+
+def test_icone_unique_clic_gauche_affiche_le_panneau(single_tray):
+    from PySide6.QtWidgets import QSystemTrayIcon
+    single_tray.setup()
+    single_tray.icons[0].activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
+    assert single_tray.window.show_calls == 1
+    # Le clic gauche ne déclenche AUCUNE action patient.
+    assert single_tray.window.calls == []
+
+
+def test_icone_unique_actions_du_menu_declenchent(single_tray):
+    single_tray.setup()
+    menu = single_tray.icons[0].contextMenu()
+    by_text = {a.text(): a for a in menu.actions()}
+    by_text["Valider le patient"].trigger()
+    by_text["Mettre le patient en pause"].trigger()
+    by_text["Prochain patient"].trigger()
+    assert single_tray.window.calls == ["validate", "pause", "next"]
+
+
+def test_icone_unique_bascule_a_chaud(single_tray):
+    """Changer la préférence puis setup() remplace proprement les icônes."""
+    single_tray.setup()
+    assert len(single_tray.icons) == 1
+    single_tray.window.tray_single_icon = False
+    single_tray.setup()
+    assert len(single_tray.icons) == 3
+
+
 def test_main_window_delegue_le_systray():
     """La fenêtre ne construit plus d'icône elle-même."""
     assert not hasattr(main.MainWindow, "setup_systray")

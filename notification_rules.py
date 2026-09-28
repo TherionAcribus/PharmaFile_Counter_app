@@ -64,7 +64,7 @@ CATEGORY_HINTS = {
     CONNECTION: "Serveur inaccessible, connexion temps réel perdue ou rétablie.",
     VALIDATION: "Rappel après le délai « patient non validé ».",
     SYSTEM: "Erreur d'imprimante, déconnexion par un autre poste, patient déjà "
-            "pris, transfert de patient, origines inconnues.",
+            "pris, échec d'action, transfert de patient, origines inconnues.",
     MESSAGING: "Nouveau message d'un professionnel ou adressé à toute l'équipe.",
 }
 
@@ -84,7 +84,23 @@ _ORIGIN_CATEGORY = {
     "socket_connection_false": CONNECTION,
     "please_validate": VALIDATION,
     "messaging": MESSAGING,
+    # Échecs/refus d'actions : catégorie SYSTEM — explicitement PAS connexion,
+    # sinon décocher les alertes de connexion masquerait aussi les échecs
+    # d'action (valider, appeler…) qui exigent une attention immédiate.
+    "action_error": SYSTEM,
+    "action_busy": SYSTEM,
+    "action_refused": SYSTEM,
+    "patient_taken": SYSTEM,
 }
+
+#: Origines « confirmation courante » : affichées dans le bandeau discret
+#: intégré au panneau quand il est visible, plutôt qu'en fenêtre flottante.
+INLINE_ORIGINS = frozenset({"action_busy", "action_refused"})
+
+#: Origines dont la notification doit RESTER affichée jusqu'à ce que
+#: l'utilisateur la ferme explicitement (clic/Échap) — une erreur d'action ne
+#: doit pas disparaître avant d'avoir été vue.
+STICKY_ORIGINS = frozenset({"action_error"})
 
 # --- Clés de préférences --------------------------------------------------
 
@@ -141,6 +157,18 @@ def _enabled(prefs, key):
         return True
     value = prefs.get(key, True)
     return True if value is None else bool(value)
+
+
+def is_inline_candidate(origin):
+    """Vrai si l'origine peut être rendue par le bandeau intégré du panneau
+    (confirmation courante) plutôt que par une fenêtre flottante."""
+    return origin in INLINE_ORIGINS
+
+
+def is_sticky(origin):
+    """Vrai si la notification doit rester affichée jusqu'à fermeture
+    explicite par l'utilisateur (pas d'auto-fermeture)."""
+    return origin in STICKY_ORIGINS
 
 
 def should_display(origin, prefs, force=False):

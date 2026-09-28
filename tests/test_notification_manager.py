@@ -302,3 +302,32 @@ def test_queued_reminder_of_the_current_patient_is_still_shown(main_window):
     visible.close()
     assert len(mgr.active_notifications) == 1
     assert main_window.audio_player.played == ["ding", "please_validate"]
+
+
+# --- Notifications « sticky » : pas d'auto-fermeture (E5) -------------------
+
+def test_regular_notification_arms_auto_close(main_window):
+    mgr = NotificationManager(main_window)
+    notif = mgr.notify(_data(), internal=True)
+    assert notif._close_timer.isActive()
+
+
+def test_sticky_notification_does_not_auto_close(main_window):
+    """Une erreur d'action ne doit pas disparaître sans avoir été vue : le
+    compte à rebours n'est pas armé — fermeture par clic/Échap uniquement."""
+    mgr = NotificationManager(main_window)
+    notif = mgr.notify(_data("action_error", "échec"), internal=True, sticky=True)
+    assert notif is not None
+    assert not notif._close_timer.isActive()
+    assert notif in mgr.active_notifications
+
+
+def test_queued_sticky_keeps_its_flag(main_window):
+    """Le caractère « sticky » survit à la file d'attente : une erreur sortie
+    de la file ne s'auto-ferme pas non plus."""
+    mgr = NotificationManager(main_window, max_visible=1)
+    visible = mgr.notify(_data("connection", "serveur"), internal=True)
+    mgr.notify(_data("action_error", "échec"), internal=True, sticky=True)
+    visible.close()
+    assert len(mgr.active_notifications) == 1
+    assert not mgr.active_notifications[0]._close_timer.isActive()

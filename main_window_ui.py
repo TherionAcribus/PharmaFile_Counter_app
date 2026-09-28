@@ -207,11 +207,24 @@ def create_interface(window):
     patient_row_layout.addWidget(window.label_patient, 1)
     patient_row_layout.addWidget(window.patient_actions_button)
 
+    # Bandeau d'état intégré : les confirmations courantes (action en cours,
+    # refus) s'affichent ici plutôt qu'en fenêtre flottante quand le panneau
+    # est visible — moins envahissant pour un usage latéral permanent.
+    window.status_hint = QLabel()
+    window.status_hint.setWordWrap(True)
+    window.status_hint.setAlignment(Qt.AlignCenter)
+    window.status_hint.setStyleSheet(
+        "color: palette(mid); font-style: italic; padding: 2px;")
+    window.status_hint.setAccessibleName("Message d'état du panneau")
+    window.status_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+    window.status_hint.hide()
+
     # Ajouter les widgets au conteneur principal
     main_elements_layout.addWidget(window.label_staff)
     main_elements_layout.addWidget(window.patient_row)
     main_elements_layout.addWidget(window.main_button_container)
     main_elements_layout.addWidget(window.option_button_container)
+    main_elements_layout.addWidget(window.status_hint)
 
     # Configurer la politique de taille du conteneur principal
     window.main_elements_container.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)

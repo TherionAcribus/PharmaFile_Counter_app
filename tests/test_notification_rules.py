@@ -153,10 +153,17 @@ def _window(**overrides):
         shown=[],
         played=[],
         notified_patients=[],
+        sticky_flags=[],
     )
-    def _notify_spy(data, internal=False, font_size=None, play_sound=True, patient_id=None):
+    # Fenêtre masquée par défaut : les confirmations « inline » retombent donc
+    # sur la fenêtre flottante, sauf test contraire explicite.
+    w.isVisible = lambda: False
+
+    def _notify_spy(data, internal=False, font_size=None, play_sound=True,
+                    patient_id=None, sticky=False):
         origin, _message = extract_origin_message(data, internal)
         w.shown.append((origin, play_sound))
+        w.sticky_flags.append(sticky)
         w.notified_patients.append(patient_id)
 
     manager = types.SimpleNamespace(notify=_notify_spy)
@@ -264,3 +271,128 @@ def test_reminder_carries_the_patient_it_concerns():
     w.call_timer_delay_expired()
     assert [origin for origin, _sound in w.shown] == ["please_validate"]
     assert w.notified_patients == [42]
+
+
+# --- E5 : échecs d'action et notifications moins envahissantes --------------
+
+def test_action_error_is_system_not_connection():
+    """Régression : les échecs d'action étaient étiquetés « connection » —
+    décocher les alertes de connexion les masquait aussi, alors qu'ils
+    exigent une attention immédiate (catégorie SYSTÈME)."""
+    prefs = _prefs(notification_connection=False)
+    assert rules.category_for_origin("action_error") == rules.SYSTEM
+    assert rules.should_display("action_error", prefs) is True
+    assert rules.should_display("connection", prefs) is False
+
+
+def test_sticky_and_inline_classification():
+    # Une erreur d'action RESTE affichée jusqu'à fermeture explicite, et n'est
+    # jamais ravalée en bandeau (elle doit être vue, pas discrète).
+    assert rules.is_sticky("action_error") is True
+    assert rules.is_inline_candidate("action_error") is False
+    # Confirmations courantes : candidates au bandeau intégré, auto-fermantes.
+    for origin in ("action_busy", "action_refused"):
+        assert rules.is_inline_candidate(origin) is True
+        assert rules.is_sticky(origin) is False
+    # Rien d'autre n'est « inline » ni « sticky ».
+    assert rules.is_inline_candidate("new_patient") is False
+    assert rules.is_sticky("connection") is False
+
+
+def test_show_notification_marks_action_errors_sticky():
+    w = _window()
+    _notify(w, "action_error")
+    _notify(w, "connection")
+    assert [o for o, _ in w.shown] == ["action_error", "connection"]
+    assert w.sticky_flags == [True, False]
+
+
+class _FakeHint:
+    """Bandeau d'état factice (le vrai est un QLabel du panneau)."""
+
+    def __init__(self):
+        self.text = ""
+        self.tooltip = ""
+        self.visible = False
+
+    def setText(self, t):
+        self.text = t
+
+    def setToolTip(self, t):
+        self.tooltip = t
+
+    def show(self):
+        self.visible = True
+
+    def hide(self):
+        self.visible = False
+
+
+class _FakeTimer:
+    def __init__(self):
+        self.started_with = None
+
+    def start(self, ms):
+        self.started_with = ms
+
+
+def _panel_window():
+    """Fenêtre visible avec le bandeau d'état intégré (interface construite)."""
+    w = _window()
+    w.isVisible = lambda: True
+    w.status_hint = _FakeHint()
+    w._hint_timer = _FakeTimer()
+    w._INLINE_NOTICE_MS = main.MainWindow._INLINE_NOTICE_MS
+    w._safe_widget = main.MainWindow._safe_widget
+    w._show_inline_notice = types.MethodType(
+        main.MainWindow._show_inline_notice, w)
+    w._clear_inline_notice = types.MethodType(
+        main.MainWindow._clear_inline_notice, w)
+    w._write_inline_notice = types.MethodType(
+        main.MainWindow._write_inline_notice, w)
+    w._hide_inline_notice = types.MethodType(
+        main.MainWindow._hide_inline_notice, w)
+    return w
+
+
+def test_routine_confirmation_uses_panel_band_when_visible():
+    """« Une action est déjà en cours » va dans le bandeau du panneau plutôt
+    qu'en fenêtre flottante (moins envahissant pour un usage latéral)."""
+    w = _panel_window()
+    _notify(w, "action_busy")
+    assert w.shown == []                     # pas de fenêtre flottante
+    assert w.status_hint.text == "m"         # message affiché dans le bandeau
+    assert w.status_hint.visible is True
+    assert w._hint_timer.started_with == main.MainWindow._INLINE_NOTICE_MS
+    assert w.played == ["ding"]              # la préférence de son reste honorée
+
+
+def test_routine_confirmation_floats_when_panel_hidden():
+    """Panneau masqué : repli sur la fenêtre flottante — le message n'est
+    jamais perdu parce que le bandeau est invisible."""
+    w = _window()                            # isVisible() -> False
+    w.status_hint = _FakeHint()
+    w._hint_timer = _FakeTimer()
+    w._safe_widget = main.MainWindow._safe_widget
+    w._show_inline_notice = types.MethodType(
+        main.MainWindow._show_inline_notice, w)
+    _notify(w, "action_busy")
+    assert w.shown == [("action_busy", True)]
+
+
+def test_routine_confirmation_floats_without_hint_widget():
+    """Écran d'identification / reconstruction : pas de bandeau -> repli."""
+    w = _panel_window()
+    w.status_hint = None
+    _notify(w, "action_refused")
+    assert w.shown == [("action_refused", True)]
+
+
+def test_important_notifications_never_go_inline():
+    """Un nouveau patient ou une alerte connexion reste une fenêtre flottante
+    même quand le panneau est visible : elles ne sont pas « courantes »."""
+    w = _panel_window()
+    _notify(w, "new_patient")
+    _notify(w, "connection")
+    assert [o for o, _ in w.shown] == ["new_patient", "connection"]
+    assert w.status_hint.visible is False
