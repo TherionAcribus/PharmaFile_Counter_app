@@ -117,6 +117,9 @@ class MessagingController:
 
     def shutdown(self):
         self.heartbeat_timer.stop()
+        # Fermeture de l'App : la disposition des panneaux (onglet devant,
+        # panneau détaché…) est retrouvée au prochain démarrage.
+        self.arranger.save_state()
         if self.enabled and self.staff_id:
             try:
                 self.window.api.messaging_leave_blocking(self.client_instance_id)
@@ -282,6 +285,9 @@ class MessagingController:
         self._update_composer()
 
     def _destroy_ui(self):
+        # Dernier état des panneaux enregistré avant la destruction : il sera
+        # restauré à la prochaine ouverture de session.
+        self.arranger.forget_docks()
         self.arranger.remove_menu()
         for obj_name in ("button", "menu_action", "dock"):
             obj = getattr(self, obj_name, None)

@@ -75,6 +75,7 @@ def _settle():
 
 def _window(compact=False):
     win = _make_main_window(compact_mode=compact)
+    win.settings_factory = FakeSettings
     win.display_patient_list = True
     win.create_interface()
     win.messaging = messaging.MessagingController(win, settings_factory=FakeSettings)
@@ -83,6 +84,18 @@ def _window(compact=False):
     win.show()
     _settle()
     return win, win.messaging.dock, win.patient_list_dock
+
+
+def _close(win):
+    """Fin de test : la fenêtre, masquée, n'est détruite qu'au prochain tour
+    de boucle ; d'ici là elle ne doit plus rien enregistrer dans les réglages
+    partagés (FakeSettings) lus par les tests suivants."""
+    win.hide()
+    arranger = getattr(getattr(win, "messaging", None), "arranger", None)
+    if arranger is not None:
+        arranger.busy = True
+        arranger._capture_timer.stop()
+    win.deleteLater()
 
 
 def _tabbed(win, a, b):
@@ -99,8 +112,7 @@ def test_patient_dock_has_stable_object_name(settings):
         assert pat.objectName() == "patientListDock"
         assert win.dockOptions() & win.DockOption.AllowNestedDocks
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 @pytest.mark.parametrize("compact", [False, True])
@@ -128,8 +140,7 @@ def test_user_stacking_is_kept_and_remembered(settings, compact):
         assert _no_overlap(msg, pat)
         assert pat.geometry().top() < msg.geometry().top()
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_user_tabbing_in_extended_mode_is_kept(settings):
@@ -146,8 +157,7 @@ def test_user_tabbing_in_extended_mode_is_kept(settings):
         _settle()
         assert _tabbed(win, msg, pat)
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 @pytest.mark.parametrize("layout", [
@@ -171,8 +181,7 @@ def test_menu_layout_choice_never_overlaps(settings, layout, compact):
                                  else (pat, msg))
                 assert first.geometry().top() < second.geometry().top()
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_menu_lists_layouts_and_checks_the_stored_one(settings):
@@ -186,8 +195,7 @@ def test_menu_lists_layouts_and_checks_the_stored_one(settings):
         checked = [a.text() for a in submenus[0].actions() if a.isChecked()]
         assert checked == [dict(da.LAYOUT_LABELS)[da.TABS]]
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_toggle_brings_background_tab_to_front_instead_of_hiding(settings):
@@ -209,8 +217,7 @@ def test_toggle_brings_background_tab_to_front_instead_of_hiding(settings):
         _settle()
         assert pat.isHidden()
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_switching_tabs_does_not_close_messaging_for_next_session(settings):
@@ -222,8 +229,7 @@ def test_switching_tabs_does_not_close_messaging_for_next_session(settings):
         _settle()
         assert settings["messaging_dock_visible"] is True
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_background_tab_does_not_acknowledge_messages(settings):
@@ -241,8 +247,7 @@ def test_background_tab_does_not_acknowledge_messages(settings):
         win.api.messaging_read.assert_called()
         assert win.api.messaging_read.call_args.args[0] == [7]
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_logout_does_not_persist_messaging_as_closed(settings):
@@ -253,8 +258,7 @@ def test_logout_does_not_persist_messaging_as_closed(settings):
         _settle()
         assert settings["messaging_dock_visible"] is True
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
 
 
 def test_dragging_patient_list_updates_its_position_preference(settings):
@@ -270,5 +274,144 @@ def test_dragging_patient_list_updates_its_position_preference(settings):
         _settle()
         assert win.dockWidgetArea(pat) == Qt.RightDockWidgetArea
     finally:
-        win.hide()
-        win.deleteLater()
+        _close(win)
+
+
+# --- conservation au redémarrage ------------------------------------------------
+
+def _boot(compact=False, horizontal=False):
+    """Démarrage de l'App à partir des réglages (FakeSettings) courants."""
+    win = _make_main_window(horizontal_mode=horizontal, compact_mode=compact)
+    win.settings_factory = FakeSettings
+    win.display_patient_list = FakeSettings.values.get("display_patient_list", True)
+    win.create_interface()
+    win.messaging = messaging.MessagingController(win, settings_factory=FakeSettings)
+    win.messaging.set_identity(1, "Alice")
+    win.messaging.set_enabled(True)
+    win.show()
+    _settle()
+    return win, win.messaging.dock, win.patient_list_dock
+
+
+def _quit(win):
+    """Fermeture de l'App : même enregistrement que closeEvent. La fenêtre
+    fermée est ensuite neutralisée : plus aucun enregistrement différé ne
+    doit écraser l'état lu par le « démarrage » suivant."""
+    win.messaging.shutdown()
+    win.shutting_down = True
+    win.hide()
+    win.messaging.arranger.busy = True
+    win.messaging.arranger._capture_timer.stop()
+    win.deleteLater()
+
+
+@pytest.mark.parametrize("front", ["messaging", "patients"])
+def test_restart_keeps_the_tab_in_front(settings, front):
+    win, msg, pat = _boot(compact=True)
+    (msg if front == "messaging" else pat).raise_()
+    _settle()
+    _quit(win)
+
+    win, msg, pat = _boot(compact=True)
+    try:
+        assert _tabbed(win, msg, pat)
+        assert da.dock_in_front(msg) == (front == "messaging")
+        assert da.dock_in_front(pat) == (front == "patients")
+    finally:
+        _quit(win)
+
+
+def test_restart_keeps_a_detached_messaging_panel(settings):
+    win, msg, _pat = _boot()
+    msg.setFloating(True)
+    msg.move(120, 140)
+    _settle()
+    _quit(win)
+
+    win, msg, pat = _boot()
+    try:
+        assert msg.isFloating()
+        assert not pat.isFloating()
+        assert msg.pos().toTuple() == (120, 140)
+    finally:
+        _quit(win)
+
+
+def test_restart_keeps_stacking_order(settings):
+    win, msg, pat = _boot()
+    win.messaging.arranger.set_layout(da.STACKED_PATIENTS_FIRST)
+    _settle()
+    _quit(win)
+
+    win, msg, pat = _boot()
+    try:
+        assert not _tabbed(win, msg, pat)
+        assert _no_overlap(msg, pat)
+        assert pat.geometry().top() < msg.geometry().top()
+    finally:
+        _quit(win)
+
+
+def test_restart_keeps_patient_list_closed(settings):
+    win, _msg, pat = _boot()
+    main.MainWindow.toggle_patient_list(win)
+    _settle()
+    assert pat.isHidden()
+    assert settings["display_patient_list"] is False
+    _quit(win)
+
+    win, msg, pat = _boot()
+    try:
+        assert pat.isHidden()
+        assert not msg.isHidden()
+    finally:
+        _quit(win)
+
+
+def test_login_screen_does_not_close_patient_list_for_next_start(settings):
+    win, _msg, pat = _boot()
+    main.MainWindow.hide_patient_list(win)   # écran de connexion
+    _settle()
+    assert pat.isHidden()
+    assert settings.get("display_patient_list", True) is True
+    _quit(win)
+
+
+def test_each_display_mode_keeps_its_own_layout(settings):
+    # Compact : file devant. Étendu : empilés. Le retour en compact
+    # retrouve l'onglet laissé devant.
+    win, msg, pat = _boot(compact=True)
+    try:
+        pat.raise_()
+        _settle()
+        win.compact_mode = False
+        win.create_interface()
+        _settle()
+        assert not _tabbed(win, msg, pat)
+        win.compact_mode = True
+        win.create_interface()
+        _settle()
+        assert _tabbed(win, msg, pat)
+        assert da.dock_in_front(pat)
+        keys = [k for k in settings if k.startswith(da.STATE_KEY_PREFIX)]
+        assert sorted(keys) == [da.STATE_KEY_PREFIX + "compact-vertical",
+                                da.STATE_KEY_PREFIX + "extended-vertical"]
+    finally:
+        _quit(win)
+
+
+def test_mode_key():
+    assert da.mode_key(True, False) == "compact-vertical"
+    assert da.mode_key(False, True) == "extended-horizontal"
+
+
+def test_first_start_stacks_panels_instead_of_side_by_side(settings):
+    # Avant l'affichage, les deux panneaux sont en (0, 0) : l'ancienne
+    # vérification les croyait « déjà dans l'ordre » et les laissait côte à
+    # côte au premier démarrage.
+    win, msg, pat = _boot()
+    try:
+        assert not _tabbed(win, msg, pat)
+        assert msg.geometry().bottom() < pat.geometry().top()
+    finally:
+        _quit(win)

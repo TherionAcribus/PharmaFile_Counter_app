@@ -17,14 +17,19 @@ qui place les panneaux : création de la messagerie, reconstruction de
 l'interface, changement de préférence ou choix explicite dans le menu
 « Disposition des panneaux ».
 
+D'un démarrage à l'autre, l'état complet des panneaux (``saveState`` de Qt :
+onglet au premier plan, panneau détaché et sa position, côte à côte…) est
+aussi conservé, séparément pour chaque mode d'affichage (compact/étendu ×
+vertical/horizontal) puisque la fenêtre n'y a pas la même forme.
+
 Le calcul (quelle disposition, quel ordre) est pur et testé sans Qt ;
 ``DockArranger`` en est l'intégration QMainWindow.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtCore import QByteArray, QObject, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QMainWindow, QMenu, QTabWidget
 
 #: Clé QSettings de la disposition choisie.
@@ -50,6 +55,12 @@ CAPTURE_DELAY_MS = 350
 
 #: Hauteurs de départ quand les panneaux sont empilés (px).
 STACK_HEIGHTS = {"messaging": 180, "patients": 110}
+
+#: Préfixe QSettings de l'état Qt des panneaux, suivi du mode d'affichage.
+STATE_KEY_PREFIX = "secondary_docks_state/"
+#: Version passée à saveState/restoreState : l'incrémenter invalide les états
+#: enregistrés si la structure des panneaux change.
+STATE_VERSION = 1
 
 
 # --- cœur pur -----------------------------------------------------------------
@@ -82,6 +93,12 @@ def observed_layout(tabbed: bool, messaging_pos, patients_pos) -> str:
     if (m_y, m_x) <= (p_y, p_x):
         return STACKED_MESSAGING_FIRST
     return STACKED_PATIENTS_FIRST
+
+
+def mode_key(compact: bool, horizontal: bool) -> str:
+    """Mode d'affichage → suffixe de clé de l'état mémorisé."""
+    return ("compact" if compact else "extended") + "-" + (
+        "horizontal" if horizontal else "vertical")
 
 
 def area_name(area) -> str | None:
@@ -152,6 +169,9 @@ class DockArranger(QObject):
         self._capture_timer.setSingleShot(True)
         self._capture_timer.setInterval(CAPTURE_DELAY_MS)
         self._capture_timer.timeout.connect(self.capture)
+        # Mode d'affichage dont l'état Qt est actuellement en place (None :
+        # rien restauré pour les panneaux courants).
+        self._mode_key = None
 
     # --- accès ------------------------------------------------------------
 
@@ -171,6 +191,54 @@ class DockArranger(QObject):
         return effective_layout(
             self.stored_layout(), getattr(self.window, "compact_mode", False))
 
+    def _current_mode_key(self) -> str:
+        return mode_key(getattr(self.window, "compact_mode", False),
+                        getattr(self.window, "horizontal_mode", False))
+
+    # --- état conservé d'un démarrage à l'autre ------------------------------
+
+    def save_state(self) -> None:
+        """Enregistre l'état Qt des deux panneaux pour le mode en place.
+        Sans les deux panneaux (écran de connexion, messagerie désactivée),
+        rien n'est écrit : on garderait un état amputé de la messagerie."""
+        patients, messaging = self._docks()
+        if self.busy or patients is None or messaging is None:
+            return
+        key = self._mode_key or self._current_mode_key()
+        self._settings_factory().setValue(
+            STATE_KEY_PREFIX + key, self.window.saveState(STATE_VERSION))
+
+    def forget_docks(self) -> None:
+        """La messagerie va être détruite (déconnexion, désactivation) :
+        enregistre son état, puis prépare une restauration pour le prochain
+        panneau créé."""
+        self.save_state()
+        self._mode_key = None
+
+    def _restore_state(self, patients, messaging) -> bool:
+        data = self._settings_factory().value(
+            STATE_KEY_PREFIX + self._current_mode_key())
+        if not data:
+            return False
+        try:
+            restored = self.window.restoreState(QByteArray(data), STATE_VERSION)
+        except (TypeError, ValueError):
+            restored = False
+        if not restored:
+            return False
+        # L'état Qt contient aussi l'affichage des panneaux ; c'est pourtant
+        # aux réglages dédiés d'en décider (la file a pu être masquée par
+        # l'écran de connexion au moment de l'enregistrement).
+        patients.setVisible(bool(getattr(self.window, "display_patient_list", True)))
+        messaging.setVisible(bool(self._settings_factory().value(
+            "messaging_dock_visible", False, type=bool)))
+        # Un panneau détaché resté sur un écran débranché depuis : on le
+        # re-docke plutôt que de le perdre hors de vue.
+        for dock in (patients, messaging):
+            if dock.isFloating() and not _on_a_screen(dock):
+                dock.setFloating(False)
+        return True
+
     # --- suivi des dépôts utilisateur --------------------------------------
 
     def track(self, dock) -> None:
@@ -180,6 +248,9 @@ class DockArranger(QObject):
         self._tracked = [d for d in self._tracked if _alive(d)] + [dock]
         dock.dockLocationChanged.connect(self._schedule_capture)
         dock.topLevelChanged.connect(self._schedule_capture)
+        # Onglet passé au premier plan, ouverture/fermeture : l'état
+        # enregistré suit.
+        dock.visibilityChanged.connect(self._schedule_capture)
         dock.destroyed.connect(self._forget_destroyed)
 
     def _forget_destroyed(self, *_args):
@@ -216,23 +287,24 @@ class DockArranger(QObject):
                 setattr(window, attr, name)
         if patients is None or messaging is None:
             return
-        if (patients.isFloating() or messaging.isFloating()
-                or patients.isHidden() or messaging.isHidden()):
-            return
         area = window.dockWidgetArea(messaging)
-        if area == Qt.DockWidgetArea.NoDockWidgetArea or area != window.dockWidgetArea(patients):
-            return
-        tabbed = patients in window.tabifiedDockWidgets(messaging)
-        observed = observed_layout(
-            tabbed,
-            messaging.geometry().topLeft().toTuple(),
-            patients.geometry().topLeft().toTuple(),
-        )
-        # Si l'observation correspond déjà à la disposition « automatique »
-        # du mode courant, on laisse le réglage automatique en place.
-        if observed != self.current_layout():
-            settings.setValue(LAYOUT_KEY, observed)
-        self._sync_menu()
+        if not (patients.isFloating() or messaging.isFloating()
+                or patients.isHidden() or messaging.isHidden()
+                or area == Qt.DockWidgetArea.NoDockWidgetArea
+                or area != window.dockWidgetArea(patients)):
+            tabbed = patients in window.tabifiedDockWidgets(messaging)
+            observed = observed_layout(
+                tabbed,
+                messaging.geometry().topLeft().toTuple(),
+                patients.geometry().topLeft().toTuple(),
+            )
+            # Si l'observation correspond déjà à la disposition
+            # « automatique » du mode courant, on laisse le réglage
+            # automatique en place.
+            if observed != self.current_layout():
+                settings.setValue(LAYOUT_KEY, observed)
+            self._sync_menu()
+        self.save_state()
 
     # --- application ------------------------------------------------------
 
@@ -241,7 +313,8 @@ class DockArranger(QObject):
         self._settings_factory().setValue(LAYOUT_KEY, normalize_layout(layout))
         self.apply()
         self._sync_menu()
-        fit = getattr(self.window, "fit_window_to_content", None)
+        self.save_state()
+        fit =getattr(self.window, "fit_window_to_content", None)
         if callable(fit):
             QTimer.singleShot(0, fit)
 
@@ -255,6 +328,21 @@ class DockArranger(QObject):
         if patients is None or messaging is None:
             return
         window = self.window
+        mode = self._current_mode_key()
+        if mode != self._mode_key:
+            # Premier placement de ces panneaux, ou changement de mode
+            # d'affichage : l'état du mode quitté est enregistré, celui du
+            # mode courant (s'il existe) restauré tel que laissé.
+            if self._mode_key is not None:
+                self.save_state()
+            self._mode_key = mode
+            self.busy = True
+            try:
+                restored = self._restore_state(patients, messaging)
+            finally:
+                self.busy = False
+            if restored:
+                return
         if patients.isFloating() or messaging.isFloating():
             return
         area = window.dockWidgetArea(messaging)
@@ -279,7 +367,13 @@ class DockArranger(QObject):
                 first, second = ((messaging, patients)
                                  if layout == STACKED_MESSAGING_FIRST
                                  else (patients, messaging))
-                in_order = (not tabbed and not hidden and observed_layout(
+                # Les positions ne sont fiables qu'une fois tout affiché : avant
+                # le premier affichage, les deux panneaux sont en (0, 0) et
+                # sembleraient déjà « dans l'ordre ». Un côte à côte laissé par
+                # l'utilisateur (tête à gauche) est respecté.
+                laid_out = (window.isVisible() and not hidden
+                            and patients.isVisible() and messaging.isVisible())
+                in_order = (not tabbed and laid_out and observed_layout(
                     False, messaging.geometry().topLeft().toTuple(),
                     patients.geometry().topLeft().toTuple()) == layout)
                 if not in_order:
@@ -336,6 +430,12 @@ class DockArranger(QObject):
             except RuntimeError:
                 self._actions = {}
                 return
+
+
+def _on_a_screen(dock) -> bool:
+    frame = dock.frameGeometry()
+    return any(screen.availableGeometry().intersects(frame)
+               for screen in QGuiApplication.screens())
 
 
 def _alive(obj) -> bool:

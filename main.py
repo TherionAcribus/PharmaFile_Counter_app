@@ -724,8 +724,32 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.fit_window_to_content)
     
     def hide_patient_list(self):
-        self.patient_list_dock.hide()
+        # Masquage technique (écran de connexion) : pas un choix de
+        # l'utilisateur, la préférence d'affichage reste inchangée.
+        self._patient_list_auto_hide = True
+        try:
+            self.patient_list_dock.hide()
+        finally:
+            self._patient_list_auto_hide = False
         QTimer.singleShot(0, self.fit_window_to_content)
+
+    #: Fabrique des réglages de la file (remplaçable dans les tests).
+    settings_factory = QSettings
+
+    def _on_patient_list_visibility_changed(self, _visible):
+        """Ouverture/fermeture de la file par l'utilisateur (bouton
+        « Patients », menu, croix du panneau) : retenue pour le prochain
+        démarrage, comme la messagerie. Un simple changement d'onglet ne
+        modifie pas isHidden() et n'écrit donc rien."""
+        arranger = getattr(getattr(self, "messaging", None), "arranger", None)
+        if (getattr(self, "_patient_list_auto_hide", False)
+                or getattr(self, "shutting_down", False)
+                or (arranger is not None and arranger.busy)):
+            return
+        shown = not self.patient_list_dock.isHidden()
+        if shown != self.display_patient_list:
+            self.display_patient_list = shown
+            self.settings_factory().setValue("display_patient_list", shown)
 
     def fit_window_to_content(self, dock=False):
         """Garde une fenêtre aussi petite que possible après un changement d'UI.

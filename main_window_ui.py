@@ -583,6 +583,9 @@ def _create_patient_list_widget(window):
         
         # Set the container as the dock widget's content
         window.patient_list_dock.setWidget(container_widget)
+        # Ouverture/fermeture retenue d'un démarrage à l'autre.
+        window.patient_list_dock.visibilityChanged.connect(
+            window._on_patient_list_visibility_changed)
         
         # Add dock widget to main window
         window.addDockWidget(Qt.RightDockWidgetArea, window.patient_list_dock)
