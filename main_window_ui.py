@@ -440,13 +440,18 @@ def _create_icon_button(window, icon_path, icon_inactive_path, flask_url, toolti
 
 def _create_auto_calling_button(window):
     window.logger.info("Connexion pour charger le bouton d'appel automatique...")
-    window.btn_auto_calling = _create_icon_button(window, 
+    # Bouton masqué par défaut (réglage « show_auto_call_button ») : l'action
+    # reste accessible via le menu « Menu ». Dès que l'appel automatique est
+    # actif, le bouton réapparaît pour permettre de le couper d'un clic
+    # (cf. IconeButton.update_button_icon : « active » => show()).
+    window.btn_auto_calling = _create_icon_button(window,
         "assets/images/loop_yes.ico",
         "assets/images/loop_no.ico",
         endpoints.auto_calling(window.web_url),
         "Desactiver l'appel automatique",
         "Activer l'appel automatique",
         window.autocalling,
+        is_always_visible=getattr(window, "show_auto_call_button", False),
         accessible_name="Appel automatique des patients"
     )
 
@@ -502,9 +507,17 @@ def _create_more_button(window):
     window.paper_action.triggered.connect(window.trigger_paper_button)
     window.update_paper_action_text(window.add_paper)  # Mettre à jour le texte initial
 
+    # Idem pour l'appel automatique : le libellé suit l'état (« Activer » /
+    # « Désactiver ») et est repoussé à chaque bascule — le menu n'est pas
+    # reconstruit sur les évènements websocket.
+    window.auto_calling_action = QAction("Activer l'appel automatique", window)
+    window.auto_calling_action.triggered.connect(window.toggle_auto_calling)
+    window.update_auto_calling_action_text(getattr(window, "autocalling", "inactive"))
+
     actions = [
         ("Relancer l'appel ", window.recall_shortcut, window.recall),
         (None, None, window.paper_action),
+        (None, None, window.auto_calling_action),
         ("Changer l'orientation", None, window.toggle_orientation),
         # Libellé explicite selon l'état courant (« Activer »/« Désactiver ») :
         # le menu est reconstruit à chaque create_interface(), donc après le

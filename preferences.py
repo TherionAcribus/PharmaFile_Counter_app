@@ -282,6 +282,17 @@ class PreferencesDialog(QDialog):
             "avec menu contextuel (clic gauche = afficher le panneau).")
         self.general_layout.addWidget(self.tray_single_icon_checkbox)
 
+        # Bouton-icône « appel automatique » : masqué par défaut pour gagner de
+        # la place — l'action reste dans le menu « Menu », et le bouton
+        # réapparaît de lui-même tant que l'appel automatique est actif.
+        self.show_auto_call_button_checkbox = QCheckBox(
+            "Afficher le bouton d'appel automatique", self.general_page)
+        self.show_auto_call_button_checkbox.setToolTip(
+            "Épingle l'icône d'appel automatique dans le panneau. Décoché : "
+            "l'action reste dans le menu « Menu » et l'icône n'apparaît que "
+            "tant que l'appel automatique est actif.")
+        self.general_layout.addWidget(self.show_auto_call_button_checkbox)
+
         self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
         self.general_layout.addWidget(self.display_patient_list)
 
@@ -800,6 +811,7 @@ class PreferencesDialog(QDialog):
         self.panel_snap_checkbox.setChecked(settings_schema.read(settings, "panel_snap"))
         self.panel_thickness_spinbox.setValue(settings_schema.read(settings, "panel_thickness"))
         self.tray_single_icon_checkbox.setChecked(settings_schema.read(settings, "tray_single_icon"))
+        self.show_auto_call_button_checkbox.setChecked(settings_schema.read(settings, "show_auto_call_button"))
         self.display_patient_list.setChecked(settings_schema.read(settings, "display_patient_list"))
         self.patient_list_font_size_spinbox.setValue(settings_schema.read(settings, "patient_list_font_size"))
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
@@ -1067,6 +1079,7 @@ class PreferencesDialog(QDialog):
         settings.setValue("panel_snap", self.panel_snap_checkbox.isChecked())
         settings.setValue("panel_thickness", self.panel_thickness_spinbox.value())
         settings.setValue("tray_single_icon", self.tray_single_icon_checkbox.isChecked())
+        settings.setValue("show_auto_call_button", self.show_auto_call_button_checkbox.isChecked())
         settings.setValue("display_patient_list", self.display_patient_list.isChecked())
         settings.setValue("patient_list_font_size", self.patient_list_font_size_spinbox.value())
         settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])

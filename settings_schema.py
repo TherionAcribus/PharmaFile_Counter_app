@@ -132,6 +132,10 @@ SETTINGS = {
     "compact_mode": Setting(default=False, kind=bool),
     "panel_snap": Setting(default=True, kind=bool),
     "panel_thickness": Setting(default=DEFAULT_PANEL_THICKNESS, coerce=clamp_thickness),
+    # Bouton-icône « appel automatique » affiché en permanence : off par défaut
+    # (l'action reste dans le menu « Menu » et le bouton réapparaît tant que
+    # l'appel automatique est actif, pour pouvoir le couper d'un clic).
+    "show_auto_call_button": Setting(default=False, kind=bool),
 
     # --- File des patients ---------------------------------------------------
     "display_patient_list": Setting(default=True, kind=bool),

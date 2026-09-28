@@ -26,6 +26,7 @@ def _win(url="http://a", secret="s", counter=1):
         horizontal_mode=False, compact_mode=False, panel_thickness=300,
         display_patient_list=False, patient_list_position_vertical="bottom",
         patient_list_position_horizontal="right", staff_id=None,
+        show_auto_call_button=False,
         # « Toujours au premier plan » (point 7) : lu par apply_preferences pour
         # n'appliquer le drapeau de fenêtre qu'en cas de changement.
         always_on_top=False,

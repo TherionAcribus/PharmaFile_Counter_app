@@ -212,8 +212,20 @@ class IconeButton(DebounceButton):
         logger.debug("État mis à jour : %s", self.state)
         self.update_button_icon()
 
-        if "paper" in self.flask_url and isinstance(self.main_window, QMainWindow):
-            self.main_window.update_paper_action_text(self.state)
+    def _notify_window_state(self):
+        """Reflète l'état du bouton dans l'entrée associée du menu « Menu »
+        (papier, appel automatique). Le menu n'est PAS reconstruit quand l'état
+        bascule (websocket, resync, clic) : le libellé doit donc être poussé à
+        chaque changement — d'où l'appel depuis update_button_icon."""
+        if not isinstance(self.main_window, QMainWindow):
+            return
+        updater = None
+        if "paper" in self.flask_url:
+            updater = getattr(self.main_window, "update_paper_action_text", None)
+        elif "auto_calling" in self.flask_url:
+            updater = getattr(self.main_window, "update_auto_calling_action_text", None)
+        if callable(updater):
+            updater(self.state)
 
     def send_request(self, action):
         logger.debug("Envoi de la requête bouton (action=%s)", action)
@@ -256,6 +268,7 @@ class IconeButton(DebounceButton):
             self.setIconSize(self._icon_size)
             self.setEnabled(False)
             self._set_state_hint("En attente d'une connexion")
+        self._notify_window_state()
 
     def _set_state_hint(self, text):
         """Reflète l'action/l'état courant à la fois dans l'infobulle et dans la

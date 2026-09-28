@@ -380,6 +380,10 @@ class MainWindow(QMainWindow):
         # plutôt qu'une fenêtre générique. En mode vertical, colonne étroite ; en
         # mode horizontal, barre fine au-dessus du progiciel.
         self.compact_mode = settings_schema.read(settings, "compact_mode")
+        # Bouton-icône « appel automatique » affiché en permanence (sinon il
+        # n'apparaît que tant que l'appel automatique est actif ; l'action reste
+        # dans le menu « Menu » dans tous les cas).
+        self.show_auto_call_button = settings_schema.read(settings, "show_auto_call_button")
         # Magnétisme aux bords de l'écran lors d'un déplacement manuel.
         self.panel_snap = settings_schema.read(settings, "panel_snap")
         # Épaisseur du panneau (largeur en vertical, hauteur en horizontal), bornée.
@@ -553,6 +557,32 @@ class MainWindow(QMainWindow):
                 self.paper_action.setText("J'ai changé le papier")
             else:
                 self.paper_action.setText("Changement papier nécessaire")
+
+    def toggle_auto_calling(self):
+        """(Dés)active l'appel automatique depuis le menu « Menu » : délègue au
+        bouton-icône, qui porte la machine à états et la requête — même quand il
+        est masqué (bouton non épinglé et appel inactif)."""
+        if hasattr(self, 'btn_auto_calling'):
+            self.logger.debug("toggle_auto_calling (état=%s)", self.btn_auto_calling.state)
+            self.btn_auto_calling.toggle_state()
+
+    def update_auto_calling_action_text(self, state):
+        """Intitulé de l'entrée « appel automatique » du menu « Menu » : annonce
+        l'action à venir (« Désactiver » si l'appel tourne, « Activer » sinon).
+        Appelée à chaque changement d'état du bouton (clic, réponse serveur,
+        websocket, resync) car le menu n'est pas reconstruit. Pendant une
+        requête en vol (« waiting ») on conserve le libellé et on désactive
+        l'entrée — un second déclenchement partirait d'un état dépassé."""
+        action = getattr(self, 'auto_calling_action', None)
+        if action is None:
+            return
+        action.setEnabled(state != "waiting")
+        if state == "waiting":
+            return
+        if state == "active":
+            action.setText("Désactiver l'appel automatique")
+        else:
+            action.setText("Activer l'appel automatique")
 
     # --- garde commune des actions patient (boutons, menus, raccourcis, systray) ---
 
@@ -1546,7 +1576,8 @@ class MainWindow(QMainWindow):
         # compact, épaisseur, liste des patients).
         old_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
                       self.display_patient_list, self.patient_list_position_vertical,
-                      self.patient_list_position_horizontal)
+                      self.patient_list_position_horizontal,
+                      getattr(self, "show_auto_call_button", False))
         old_on_top = getattr(self, "always_on_top", False)
         old_tray_single = getattr(self, "tray_single_icon", False)
         self.load_preferences()
@@ -1566,7 +1597,8 @@ class MainWindow(QMainWindow):
                "counter_id": self.counter_id}
         new_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
                       self.display_patient_list, self.patient_list_position_vertical,
-                      self.patient_list_position_horizontal)
+                      self.patient_list_position_horizontal,
+                      getattr(self, "show_auto_call_button", False))
 
         # Réglages cosmétiques : toujours appliqués, aucune reconnexion requise.
         self.setup_global_shortcut()
