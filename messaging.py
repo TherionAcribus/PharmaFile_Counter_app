@@ -42,6 +42,11 @@ class MessagingController:
         self.messages = []
         self.unread_total = 0
         self._pending_event = None
+        # Génération d'identité : incrémentée à chaque purge d'agent. Les
+        # requêtes réseau en vol ne sont pas annulables : chaque on_result
+        # capture la génération à l'émission et n'applique sa réponse que si
+        # elle est encore courante (cf. _network_callback).
+        self._identity_generation = 0
         self.button = None
         self.menu_action = None
         self.dock = None
@@ -95,11 +100,23 @@ class MessagingController:
             self.heartbeat()
 
     def set_identity(self, staff_id, staff_name):
-        self.staff_id = int(staff_id) if staff_id else None
+        new_id = int(staff_id) if staff_id else None
+        if new_id != self.staff_id:
+            # Changement d'agent sans déconnexion préalable (agent relu
+            # différent en resynchronisation) : les données de l'agent
+            # précédent — fil, conversations, badge, brouillon, envoi en
+            # vol — sont purgées immédiatement, AVANT toute nouvelle
+            # requête, et ses réponses encore en vol seront ignorées
+            # (génération incrémentée dans _clear_runtime_data).
+            self._clear_runtime_data()
+            self._clear_displayed_data()
+        self.staff_id = new_id
         self.staff_name = staff_name or None
         if self.enabled and self.staff_id:
             self.attach_to_interface()
             self.heartbeat()
+        else:
+            self.heartbeat_timer.stop()
 
     def clear_identity(self, notify_server=True):
         if notify_server and self.enabled and self.staff_id:
@@ -127,6 +144,9 @@ class MessagingController:
                 pass
 
     def _clear_runtime_data(self):
+        # Nouvelle génération : toute réponse d'une requête partie sous
+        # l'identité précédente devient caduque.
+        self._identity_generation += 1
         self.conversations = []
         self.messages = []
         self.unread_total = 0
@@ -136,6 +156,36 @@ class MessagingController:
         # au cycle de vie de la requête.
         self._send_in_flight = False
         self._sent_body = None
+
+    def _clear_displayed_data(self):
+        """Vide immédiatement ce qui est affiché quand l'agent change alors
+        que le panneau existe déjà : le fil et le brouillon de l'agent
+        précédent ne doivent pas rester visibles le temps des premières
+        réponses du nouvel agent. Le dock, son placement et sa visibilité
+        ne sont pas touchés."""
+        if self.selector is not None:
+            # currentIndexChanged déclencherait _conversation_changed : la
+            # purge faite ici suffit.
+            self.selector.blockSignals(True)
+            self.selector.clear()
+            self.selector.blockSignals(False)
+        if self.thread is not None:
+            self.thread.clear()
+        if self.input is not None:
+            self.input.clear()
+        if self.status_label is not None:
+            self.status_label.clear()
+        self._update_composer()
+        self._update_badge()
+
+    def _network_callback(self, callback):
+        """``on_result`` protégé par génération : une réponse émise pour un
+        agent n'est jamais appliquée à l'agent suivant."""
+        generation = self._identity_generation
+        def _guarded(result):
+            if generation == self._identity_generation:
+                callback(result)
+        return _guarded
 
     def attach_to_interface(self):
         if not self.enabled or not self.staff_id:
@@ -368,13 +418,15 @@ class MessagingController:
         if not self.enabled or not self.staff_id:
             return
         self.window.api.messaging_presence(
-            self.client_instance_id, on_result=self._handle_state_result)
+            self.client_instance_id,
+            on_result=self._network_callback(self._handle_state_result))
         if not self.heartbeat_timer.isActive():
             self.heartbeat_timer.start()
 
     def request_state(self):
         if self.enabled and self.staff_id:
-            self.window.api.messaging_state(on_result=self._handle_state_result)
+            self.window.api.messaging_state(
+                on_result=self._network_callback(self._handle_state_result))
 
     def _handle_state_result(self, result):
         if result.status == 200 and isinstance(result.data, dict):
@@ -443,8 +495,9 @@ class MessagingController:
         peer_id = conversation.get("staff_id") if kind == "direct" else None
         self.window.api.messaging_messages(
             kind, peer_staff_id=peer_id,
-            on_result=lambda result, _key=key:
-                self._handle_messages_result(result, _key))
+            on_result=self._network_callback(
+                lambda result, _key=key:
+                    self._handle_messages_result(result, _key)))
 
     def _handle_messages_result(self, result, key=None):
         # Réponse tardive d'une conversation quittée entretemps : on l'ignore
@@ -511,7 +564,10 @@ class MessagingController:
         ids = [item.get("id") for item in self.messages if item.get("is_unread")]
         ids = [value for value in ids if value is not None]
         if ids:
-            self.window.api.messaging_read(ids, on_result=lambda _result: self.request_state())
+            self.window.api.messaging_read(
+                ids,
+                on_result=self._network_callback(
+                    lambda _result: self.request_state()))
 
     def _update_composer(self):
         conversation = self._selected()
@@ -564,7 +620,7 @@ class MessagingController:
         self._update_composer()  # bouton grisé tant que la requête est en vol
         self.window.api.messaging_send(
             client_message_id, kind, body, recipient_id,
-            on_result=self._handle_send_result,
+            on_result=self._network_callback(self._handle_send_result),
         )
 
     def _handle_send_result(self, result):

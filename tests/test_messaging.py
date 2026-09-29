@@ -364,3 +364,158 @@ def test_socket_disable_removes_every_entry_point():
     assert not controller.enabled
     assert controller.button is None
     assert controller.dock is None
+
+
+def _last_callback(api, name, index):
+    return [call for call in api.calls if call[0] == name][-1][index]
+
+
+def test_direct_identity_switch_wipes_previous_agent_immediately():
+    # Régression : set_identity(Alice→Bob) direct — agent relu différent en
+    # resynchronisation — laissait le fil, le badge et le brouillon d'Alice
+    # affichés jusqu'à la prochaine réponse réseau.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _last_callback(window.api, "messages", 3)(NetResult(200, data={
+        "messages": [{"id": 9, "body": "Secret d'Alice",
+                      "sender": {"name": "Bob"}}]}))
+    controller.input.setPlainText("Brouillon d'Alice")
+    assert "1" in controller.button.text()
+    assert "Secret" in controller.thread.toPlainText()
+
+    dock = controller.dock
+    controller.set_identity(2, "Bob")
+
+    assert controller.staff_id == 2
+    assert controller.messages == []
+    assert controller.conversations == []
+    assert controller.unread_total == 0
+    assert controller._pending_event is None
+    assert not controller._send_in_flight
+    assert controller.selector.count() == 0
+    assert "Secret" not in controller.thread.toPlainText()
+    assert controller.input.toPlainText() == ""
+    assert controller.status_label.text() == ""
+    assert controller.button.text() == "💬"
+    # Le panneau n'est ni détruit ni déplacé pendant le changement.
+    assert controller.dock is dock
+    assert any(call[0] == "presence" for call in window.api.calls)
+
+
+def test_identity_switch_preserves_dock_placement_and_visibility():
+    previous = dict(FakeSettings.values)
+    FakeSettings.values["messaging_dock_area"] = "right"
+    FakeSettings.values["messaging_dock_visible"] = True
+    try:
+        window, controller = _controller()
+        controller.set_enabled(True)
+        dock = controller.dock
+        controller.set_identity(2, "Bob")
+        assert controller.dock is dock
+        assert window.dockWidgetArea(dock) == Qt.RightDockWidgetArea
+        assert not dock.isHidden()
+    finally:
+        FakeSettings.values.clear()
+        FakeSettings.values.update(previous)
+
+
+def test_same_identity_resync_keeps_displayed_data():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Brouillon")
+
+    controller.set_identity(1, "Alice")  # même agent relu en resync
+
+    assert controller.input.toPlainText() == "Brouillon"
+    assert controller.selector.count() == 2
+
+
+def test_stale_state_response_of_previous_agent_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller.request_state()
+    stale_cb = _last_callback(window.api, "state", 1)
+    controller.set_identity(2, "Bob")
+    stale_cb(NetResult(200, data=_state(unread=5)))
+    assert controller.conversations == []
+    assert controller.unread_total == 0
+    assert controller.selector.count() == 0
+    assert controller.button.text() == "💬"
+
+
+def test_stale_presence_response_of_previous_agent_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)  # heartbeat : présence d'Alice en vol
+    stale_cb = _last_callback(window.api, "presence", 2)
+    controller.set_identity(2, "Bob")
+    stale_cb(NetResult(200, data=_state(unread=5)))
+    assert controller.conversations == []
+    assert controller.unread_total == 0
+
+
+def test_stale_messages_response_of_previous_agent_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    # « broadcast » est la conversation sélectionnée par défaut.
+    assert controller._selected()["key"] == "broadcast"
+    controller.request_messages()
+    stale_cb = _last_callback(window.api, "messages", 3)
+    controller.set_identity(2, "Bob")
+    # « broadcast » est aussi une conversation de Bob : la clé de fil ne
+    # suffit pas, seule la génération écarte la réponse d'Alice.
+    stale_cb(NetResult(200, data={
+        "messages": [{"id": 9, "body": "fil d'Alice",
+                      "sender": {"name": "Carol"}}]}))
+    assert controller.messages == []
+    assert "fil d'Alice" not in controller.thread.toPlainText()
+
+
+def test_stale_send_response_of_previous_agent_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.input.setPlainText("Message d'Alice")
+    controller.send()
+    stale_cb = _sends(window.api)[-1][4]
+    controller.set_identity(2, "Bob")
+    controller.input.setPlainText("Brouillon de Bob")
+    calls_before = len(window.api.calls)
+    stale_cb(NetResult(201, data={"id": 1}))
+    # Ni effacement du brouillon de Bob, ni rafraîchissement pour Alice.
+    assert controller.input.toPlainText() == "Brouillon de Bob"
+    assert len(window.api.calls) == calls_before
+
+
+def test_stale_read_response_of_previous_agent_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.dock.show()
+    controller.messages = [{"id": 4, "is_unread": True}]
+    controller._mark_visible_read()
+    stale_cb = _last_callback(window.api, "read", 2)
+    controller.set_identity(2, "Bob")
+    calls_before = len(window.api.calls)
+    stale_cb(NetResult(200, data={}))
+    # L'accusé d'Alice ne doit pas relancer une lecture d'état pour Bob.
+    assert len(window.api.calls) == calls_before
+
+
+def test_response_arriving_after_disable_is_ignored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller.request_state()
+    stale_cb = _last_callback(window.api, "state", 1)
+    controller.set_enabled(False)
+    stale_cb(NetResult(200, data=_state(unread=5)))
+    assert controller.conversations == []
+    assert controller.unread_total == 0
+    assert controller.button is None
+    assert controller.dock is None
