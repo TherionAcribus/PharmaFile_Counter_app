@@ -392,7 +392,19 @@ class PreferencesDialog(QDialog):
 
         self.app_secret_input = QLineEdit()
         self.app_secret_input.setEchoMode(QLineEdit.Password)
-        self.connexion_layout.addWidget(self.app_secret_input)
+
+        # Le secret est long : saisie masquée par défaut, mais une case
+        # « Afficher » permet de vérifier ce qu'on tape sans retaper à l'aveugle.
+        self.app_secret_row = QHBoxLayout()
+        self.app_secret_row.addWidget(self.app_secret_input)
+        self.show_secret_checkbox = QCheckBox("Afficher", self.connexion_page)
+        self.show_secret_checkbox.setToolTip(
+            "Affiche le secret en clair dans le champ pour vérifier la saisie.")
+        self.show_secret_checkbox.toggled.connect(
+            lambda checked: self.app_secret_input.setEchoMode(
+                QLineEdit.Normal if checked else QLineEdit.Password))
+        self.app_secret_row.addWidget(self.show_secret_checkbox)
+        self.connexion_layout.addLayout(self.app_secret_row)
 
         self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
         self.connexion_layout.addWidget(self.counter_label)
