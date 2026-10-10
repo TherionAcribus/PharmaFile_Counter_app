@@ -12,6 +12,8 @@ Deux responsabilités :
   qu'une vraie erreur de programmation.
 """
 
+import math
+import time
 from typing import NamedTuple, Optional
 
 
@@ -45,6 +47,31 @@ class PatientButtons(NamedTuple):
     validate_enabled: bool
     validate_alert: Optional[bool]
     start_call_timer: bool
+
+
+class CallAutoValidationState(NamedTuple):
+    armed: bool
+    warning_active: bool
+    remaining_seconds: int
+
+
+INACTIVE_AUTO_VALIDATION = CallAutoValidationState(False, False, 0)
+
+
+def resolve_call_auto_validation(patient, config, now=None):
+    """État pur du compte à rebours serveur pour le patient courant."""
+    if not isinstance(patient, dict) or patient.get("status") != "calling":
+        return INACTIVE_AUTO_VALIDATION
+    if not isinstance(config, dict) or not config.get("enabled"):
+        return INACTIVE_AUTO_VALIDATION
+    deadline = patient.get("call_auto_validate_at")
+    if not isinstance(deadline, (int, float)):
+        return INACTIVE_AUTO_VALIDATION
+    grace = config.get("grace_seconds", 0)
+    if not isinstance(grace, (int, float)) or grace <= 0:
+        return INACTIVE_AUTO_VALIDATION
+    remaining = max(0, math.ceil(deadline - (time.time() if now is None else now)))
+    return CallAutoValidationState(True, remaining <= grace, remaining)
 
 
 #: Aucun patient exploitable : plus aucune action possible, minuteur arrêté.

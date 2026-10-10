@@ -40,6 +40,8 @@ CASES = [
     (endpoints.auto_calling, (), "/app/counter/auto_calling"),
     (endpoints.paper_add, (), "/app/counter/paper_add"),
     (endpoints.relaunch_patient_call, (3,), "/app/counter/relaunch_patient_call/3"),
+    (endpoints.extend_patient_call, (3, 12),
+     "/app/counter/extend_patient_call/3/12"),
     (endpoints.update_staff, (), "/app/counter/update_staff"),
     (endpoints.remove_staff, (), "/app/counter/remove_staff"),
     (endpoints.socket_url, (), "/socket_app_counter"),

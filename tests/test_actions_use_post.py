@@ -35,6 +35,7 @@ MODIFYING_ACTIONS = [
     "validate_queued_patient",
     "pause_current_patient",
     "relaunch_call",
+    "extend_current_call",
     "call_specific_patient",
     "put_standing",
     "delete_patient",

@@ -211,6 +211,13 @@ class CounterApi:
                           on_result=on_result, key="recall", busy_button=busy_button,
                           group=PATIENT_ACTION_GROUP)
 
+    def extend_current_call(self, patient_id, on_result=None, busy_button=None):
+        return self._post(
+            endpoints.extend_patient_call(
+                self._url(), self._counter_id(), patient_id),
+            on_result=on_result, key="extend_call", busy_button=busy_button,
+            group=PATIENT_ACTION_GROUP)
+
     # --- actions sur un patient de la file ---------------------------------
 
     def call_specific_patient(self, patient_id, on_result=None, busy_button=None):

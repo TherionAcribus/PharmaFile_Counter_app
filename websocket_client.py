@@ -71,6 +71,7 @@ class WebSocketClient(QThread):
     messaging_changed = Signal(object)
     messaging_presence_changed = Signal()
     messaging_config_changed = Signal(bool)
+    counter_state_changed = Signal(object)
 
     def __init__(self, parent, username="Counter App"):
         super().__init__()
@@ -112,6 +113,7 @@ class WebSocketClient(QThread):
         self.sio.on('messaging_changed', self.on_messaging_changed, namespace='/socket_app_counter')
         self.sio.on('messaging_presence_changed', self.on_messaging_presence_changed, namespace='/socket_app_counter')
         self.sio.on('messaging_config_changed', self.on_messaging_config_changed, namespace='/socket_app_counter')
+        self.sio.on('counter_state_changed', self.on_counter_state_changed, namespace='/socket_app_counter')
 
     def _current_token(self):
         return getattr(self.parent, "app_token", None)
@@ -264,6 +266,12 @@ class WebSocketClient(QThread):
         payload = self._payload(data)
         self.messaging_config_changed.emit(bool(payload.get("enabled")))
 
+    def on_counter_state_changed(self, data):
+        payload = self._payload(data)
+        counter_id = payload.get("counter_id")
+        if counter_id is None or self._event_targets_this_counter(data):
+            self.counter_state_changed.emit(payload)
+
     def on_update_patient_list(self, data):
         try:
             if isinstance(data, str):
@@ -283,5 +291,4 @@ class WebSocketClient(QThread):
     def on_refresh_after_clear_patient_list(self, data):
         logger.debug("Rafraîchissement après purge de la liste des patients")
         self.refresh_after_clear_patient_list.emit(True)
-
 

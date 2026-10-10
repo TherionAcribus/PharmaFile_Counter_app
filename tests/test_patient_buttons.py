@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from button_state import (  # noqa: E402
     CALLING_BUTTONS, IDLE_BUTTONS, MALFORMED, ONGOING_BUTTONS, OTHER_COUNTER,
-    UNKNOWN_STATUS, resolve_patient_buttons,
+    UNKNOWN_STATUS, resolve_call_auto_validation, resolve_patient_buttons,
 )
 
 COUNTER = 3
@@ -49,6 +49,85 @@ def test_patient_en_appel():
     assert state.start_call_timer is True
     # L'alerte visuelle n'est PAS touchée pendant l'appel.
     assert state.validate_alert is None
+
+
+def test_validation_automatique_inactive_sans_echeance():
+    state = resolve_call_auto_validation(
+        {"status": "calling", "call_auto_validate_at": None},
+        {"enabled": True, "grace_seconds": 30}, now=100)
+    assert state.armed is False
+
+
+def test_validation_automatique_avant_avertissement():
+    state = resolve_call_auto_validation(
+        {"status": "calling", "call_auto_validate_at": 190},
+        {"enabled": True, "grace_seconds": 30}, now=100)
+    assert state.armed is True
+    assert state.warning_active is False
+    assert state.remaining_seconds == 90
+
+
+def test_validation_automatique_en_phase_de_prolongation():
+    state = resolve_call_auto_validation(
+        {"status": "calling", "call_auto_validate_at": 125.2},
+        {"enabled": True, "grace_seconds": 30}, now=100)
+    assert state.armed is True
+    assert state.warning_active is True
+    assert state.remaining_seconds == 26
+
+
+class WarningButton:
+    def __init__(self):
+        self.text = "Pause"
+        self.enabled = False
+        self._base_label = "Pause\nAlt+P"
+        self._base_tooltip = "Pause (raccourci : Alt+P)"
+
+    def setText(self, text):
+        self.text = text
+
+    def setAccessibleName(self, text):
+        self.accessible_name = text
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+    def setAccessibleDescription(self, text):
+        self.description = text
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+
+def test_phase_avertissement_reutilise_pause_sans_ajouter_bouton():
+    import types
+
+    window = types.SimpleNamespace(
+        patient_id=7,
+        my_patient={"call_auto_validate_at": 130},
+        btn_pause=WarningButton(),
+        _auto_warning_active=False,
+        _auto_warning_key=None,
+        alerts=[], notifications=[], blink_starts=0,
+    )
+    window._set_validate_alert = lambda active: window.alerts.append(active)
+    window._start_validate_blink = lambda: setattr(
+        window, "blink_starts", window.blink_starts + 1)
+    window.show_notification = lambda data, **kwargs: window.notifications.append(
+        (data, kwargs))
+    window._set_extend_button = types.MethodType(
+        main.MainWindow._set_extend_button, window)
+    window._render_call_auto_validation = types.MethodType(
+        main.MainWindow._render_call_auto_validation, window)
+
+    state = types.SimpleNamespace(warning_active=True, remaining_seconds=30)
+    window._render_call_auto_validation(state)
+    window._render_call_auto_validation(state)
+
+    assert window.btn_pause.enabled is True
+    assert "Prolonger" in window.btn_pause.text
+    assert window.alerts == [True, True]
+    assert len(window.notifications) == 1
 
 
 def test_patient_pris_en_charge():

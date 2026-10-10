@@ -137,6 +137,12 @@ def relaunch_patient_call(web_url, counter_id):
     return f"{_base(web_url)}/app/counter/relaunch_patient_call/{_seg(counter_id)}"
 
 
+def extend_patient_call(web_url, counter_id, patient_id):
+    """POST — prolonge l'échéance du patient encore en appel."""
+    return (f"{_base(web_url)}/app/counter/extend_patient_call/"
+            f"{_seg(counter_id)}/{_seg(patient_id)}")
+
+
 def update_staff(web_url):
     """POST — prise de poste d'un agent sur le comptoir."""
     return f"{_base(web_url)}/app/counter/update_staff"

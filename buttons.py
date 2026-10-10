@@ -13,6 +13,9 @@ class DebounceButton(QPushButton):
 
     #: Feuille posée sur le bouton pendant l'alerte « patient à valider ».
     ALERT_STYLESHEET = "background-color: #c0392b; color: #ffffff;"
+    ALERT_PULSE_STYLESHEET = (
+        "background-color: #7f1d1d; color: #ffffff;"
+    )
 
     #: Infobulle affichée pendant le verrou « requête en cours » : le bouton
     #: grisé explique pourquoi il ne répond pas — sans elle, une requête lente
@@ -112,9 +115,16 @@ class DebounceButton(QPushButton):
         if self.color_changed:
             # Ne restaurer que si la feuille n'a pas été remplacée pendant
             # l'alerte : sinon on écraserait le style le plus récent.
-            if self.styleSheet() == self.ALERT_STYLESHEET:
+            if self.styleSheet() in (
+                    self.ALERT_STYLESHEET, self.ALERT_PULSE_STYLESHEET):
                 self.setStyleSheet(self.original_style)
             self.color_changed = False
+
+    def setAlertPulse(self, highlighted):
+        if self.color_changed:
+            self.setStyleSheet(
+                self.ALERT_PULSE_STYLESHEET if highlighted
+                else self.ALERT_STYLESHEET)
 
 
 class IconeButton(DebounceButton):
@@ -276,4 +286,3 @@ class IconeButton(DebounceButton):
         au nom accessible qui, lui, reste stable."""
         self.setToolTip(text)
         self.setAccessibleDescription(text)
-

@@ -140,6 +140,8 @@ CAS = [
     ("validate_queued_patient", (7,), f"{BASE}/api/counter/validate_patient/7", "POST", "validate"),
     ("pause_current_patient", (7,), f"{BASE}/pause_patient/{COUNTER}/7", "POST", "pause"),
     ("relaunch_call", (), f"{BASE}/app/counter/relaunch_patient_call/{COUNTER}", "POST", "recall"),
+    ("extend_current_call", (7,),
+     f"{BASE}/app/counter/extend_patient_call/{COUNTER}/7", "POST", "extend_call"),
     ("call_specific_patient", (7,), f"{BASE}/call_specific_patient/{COUNTER}/7",
      "POST", "call_specific:7"),
     ("put_standing", (7,), f"{BASE}/api/counter/put_standing_list/7", "POST", "put_standing:7"),

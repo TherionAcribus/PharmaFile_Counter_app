@@ -10,7 +10,7 @@ from preferences import PreferencesDialog
 from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
 from button_state import (
     CALLING, MALFORMED, NO_CURRENT_PATIENT, NO_PATIENT, ONGOING,
-    resolve_patient_buttons,
+    resolve_call_auto_validation, resolve_patient_buttons,
 )
 from patient_list_model import PatientListModel
 import notification_rules
@@ -156,6 +156,10 @@ class MainWindow(QMainWindow):
         self.activities_staff = None  # pour être en global
         # Gestionnaire de notifications (créé paresseusement au premier affichage).
         self.notification_manager = None
+        self.call_auto_validation = {"enabled": False}
+        self._auto_warning_active = False
+        self._auto_warning_key = None
+        self._validate_blink_highlighted = False
 
         # LOAD PREFERENCES
         self.load_preferences()
@@ -538,6 +542,7 @@ class MainWindow(QMainWindow):
             button.setAccessibleName("Patient à valider")
             button.setToolTip("Patient à valider — cliquez pour valider")
         else:
+            self._stop_validate_blink()
             button.resetColor()
             button.setText(base_label)
             button.setAccessibleName("Valider")
@@ -713,11 +718,33 @@ class MainWindow(QMainWindow):
             manager.dismiss("please_validate")
 
     def call_web_function_pause(self):
+        if getattr(self, "_auto_warning_active", False):
+            self.call_web_function_extend_call()
+            return
         if not self._patient_action_ready("pause") or not self.patient_id:
             return
         self.logger.debug("Mise en pause du patient")
         self.api.pause_current_patient(self.patient_id, on_result=self.handle_result,
                                        busy_button=self._busy_ref())
+
+    def call_web_function_extend_call(self):
+        if not self._patient_action_ready("extend_call") or not self.patient_id:
+            return
+        self.api.extend_current_call(
+            self.patient_id,
+            on_result=self.handle_extend_call_result,
+            busy_button=self._busy_ref())
+
+    @Slot(object)
+    def handle_extend_call_result(self, result):
+        if result.status == 200 and isinstance(result.data, dict):
+            self.close_please_validate_notification()
+            self.update_my_patient(result.data)
+            self.update_my_buttons(result.data)
+            self._show_inline_notice("Appel prolongé.")
+            return
+        self._notify_network_error(result)
+        self._resync_if_uncertain(result)
 
 
 
@@ -1010,7 +1037,13 @@ class MainWindow(QMainWindow):
         self.socket_io_client.messaging_changed.connect(self.messaging.socket_changed)
         self.socket_io_client.messaging_presence_changed.connect(self.messaging.socket_presence_changed)
         self.socket_io_client.messaging_config_changed.connect(self.messaging.socket_config_changed)
+        self.socket_io_client.counter_state_changed.connect(
+            self._on_counter_state_changed)
         self.socket_io_client.start()
+
+    @Slot(object)
+    def _on_counter_state_changed(self, _payload):
+        self._request_resync()
 
     def init_state(self):
         """ Récupère l'état autoritatif complet du comptoir en une seule requête
@@ -1030,6 +1063,9 @@ class MainWindow(QMainWindow):
         self.add_paper = "active" if state.get("add_paper") else "inactive"
         if hasattr(self, "messaging"):
             self.messaging.set_enabled(state.get("messaging_enabled", False))
+        config = state.get("call_auto_validation")
+        self.call_auto_validation = (
+            config if isinstance(config, dict) else {"enabled": False})
         if state.get("counter_name"):
             self.counter_name = state.get("counter_name")
         if state.get("activities_staff"):
@@ -1314,9 +1350,20 @@ class MainWindow(QMainWindow):
             # call_timer peut manquer : create_interface s'appelle avant
             # create_call_timer dans __init__, et hors contexte complet.
             if decision.start_call_timer:
-                self.call_timer.start()   # patient en appel : minuteur de relance
+                sync_timers = getattr(self, "_sync_call_timers", None)
+                if callable(sync_timers):
+                    sync_timers()
+                else:
+                    self.call_timer.start()
             else:
-                self.call_timer.stop()    # plus personne à valider : minuteur arrêté
+                self.call_timer.stop()
+                deadline_timer = getattr(self, "call_deadline_timer", None)
+                if deadline_timer is not None:
+                    deadline_timer.stop()
+                clear_warning = getattr(
+                    self, "_clear_call_extension_warning", None)
+                if callable(clear_warning):
+                    clear_warning()
 
     def _apply_patient_buttons(self, decision, reason=None):
         """ Écrit l'état Valider/Pause + l'alerte éventuelle. Appelée via
@@ -1776,6 +1823,8 @@ class MainWindow(QMainWindow):
         # 2. Arrêt des timers.
         if hasattr(self, 'call_timer'):
             self.call_timer.stop()
+            self.call_deadline_timer.stop()
+            self._validate_blink_timer.stop()
 
         # 3. Arrêt du WebSocket (drapeau + disconnect + attente bornée). Empêche
         #    aussi le déclenchement de nouveaux ResyncWorker.
@@ -2100,15 +2149,128 @@ class MainWindow(QMainWindow):
             self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
 
     def call_timer_delay_expired(self):
+        if hasattr(self, "my_patient"):
+            state = resolve_call_auto_validation(
+                self.my_patient,
+                getattr(self, "call_auto_validation", {"enabled": False}))
+            if state.armed or not isinstance(self.my_patient, dict):
+                return
+            if self.my_patient.get("status") != "calling":
+                return
         self._set_validate_alert(True)
         self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."},
                                internal=True, patient_id=self.patient_id)
+
+    def _sync_call_timers(self):
+        state = resolve_call_auto_validation(
+            self.my_patient, self.call_auto_validation)
+        if state.armed:
+            self.call_timer.stop()
+            if not self.call_deadline_timer.isActive():
+                self.call_deadline_timer.start()
+            self._render_call_auto_validation(state)
+            return
+        self.call_deadline_timer.stop()
+        self._clear_call_extension_warning()
+        if not self.call_timer.isActive():
+            self.call_timer.start()
+
+    def _update_call_deadline(self):
+        state = resolve_call_auto_validation(
+            self.my_patient, self.call_auto_validation)
+        if not state.armed:
+            self.call_deadline_timer.stop()
+            self._clear_call_extension_warning()
+            return
+        self._render_call_auto_validation(state)
+
+    def _render_call_auto_validation(self, state):
+        if not state.warning_active:
+            self._clear_call_extension_warning()
+            return
+
+        if not self._auto_warning_active:
+            self._auto_warning_active = True
+        self._set_validate_alert(True)
+        self._start_validate_blink()
+
+        self._set_extend_button(state.remaining_seconds)
+        warning_key = (
+            self.patient_id,
+            self.my_patient.get("call_auto_validate_at")
+            if isinstance(self.my_patient, dict) else None,
+        )
+        if warning_key != self._auto_warning_key:
+            self._auto_warning_key = warning_key
+            self.show_notification({
+                "origin": "please_validate",
+                "message": (
+                    "Le patient sera retiré automatiquement de l'écran "
+                    f"d'appel dans {state.remaining_seconds} secondes. "
+                    "Validez-le ou prolongez l'appel."
+                ),
+            }, internal=True, patient_id=self.patient_id)
+
+    def _set_extend_button(self, remaining_seconds):
+        button = getattr(self, "btn_pause", None)
+        if button is None:
+            return
+        button.setText(f"↻ Prolonger\n{remaining_seconds} s")
+        button.setAccessibleName("Prolonger l'appel")
+        hint = (
+            "Conserver le patient sur l'écran d'appel et relancer le délai "
+            f"({remaining_seconds} s restantes)"
+        )
+        button.setToolTip(hint)
+        button.setAccessibleDescription(hint)
+        button.setEnabled(True)
+
+    def _clear_call_extension_warning(self):
+        was_active = self._auto_warning_active
+        self._auto_warning_active = False
+        self._auto_warning_key = None
+        self._stop_validate_blink()
+        button = getattr(self, "btn_pause", None)
+        if button is not None:
+            button.setText(getattr(button, "_base_label", "Pause"))
+            button.setAccessibleName("Pause")
+            tooltip = getattr(button, "_base_tooltip", None) or "Pause"
+            button.setToolTip(tooltip)
+            button.setAccessibleDescription(tooltip)
+        if was_active:
+            self._set_validate_alert(False)
+            self.close_please_validate_notification()
+
+    def _start_validate_blink(self):
+        if not self._validate_blink_timer.isActive():
+            self._validate_blink_timer.start()
+
+    def _toggle_validate_blink(self):
+        self._validate_blink_highlighted = not self._validate_blink_highlighted
+        button = getattr(self, "btn_validate", None)
+        if button is not None:
+            button.setAlertPulse(self._validate_blink_highlighted)
+
+    def _stop_validate_blink(self):
+        timer = getattr(self, "_validate_blink_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._validate_blink_highlighted = False
+        button = getattr(self, "btn_validate", None)
+        if button is not None:
+            button.setAlertPulse(False)
 
     def create_call_timer(self):
         """ Permet de définir un timer qui envoye une alerte si le patient n'est pas validé """
         self.call_timer = QTimer(self)
         self.call_timer.setInterval(self.timer_after_calling * 1000)
         self.call_timer.timeout.connect(self.call_timer_delay_expired)
+        self.call_deadline_timer = QTimer(self)
+        self.call_deadline_timer.setInterval(1000)
+        self.call_deadline_timer.timeout.connect(self._update_call_deadline)
+        self._validate_blink_timer = QTimer(self)
+        self._validate_blink_timer.setInterval(450)
+        self._validate_blink_timer.timeout.connect(self._toggle_validate_blink)
 def setup_application(app):
     """ Prépare l'application Qt AVANT toute lecture de configuration : identité
     (dont dépend l'emplacement de QSettings) puis reprise des réglages laissés
