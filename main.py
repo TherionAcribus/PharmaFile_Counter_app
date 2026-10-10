@@ -338,6 +338,10 @@ class MainWindow(QMainWindow):
         # comparaisons (WebSocket, patient["counter_id"]...) soient cohérentes.
         # Défaut contextuel (runtime = 1) : géré hors schéma, cf. settings_schema.
         self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
+        # Reconnexion automatique au démarrage avec les initiales du dernier
+        # équipier validé (persistées dans last_staff_initials) : option activée
+        # par défaut, l'écran de connexion reste le repli en cas d'échec.
+        self.reconnect_last_user = settings_schema.read(settings, "reconnect_last_user")
         # Raccourcis : défauts centralisés dans shortcut_defaults (source unique)
         # + migration transparente des anciennes valeurs erronées (ex: "Altl+P").
         # Lecture via read_shortcut (shortcut_defaults) : MÊME fonction que celle
@@ -990,17 +994,52 @@ class MainWindow(QMainWindow):
         # si personne au comptoir
         elif result.status == 204:
             self.logger.debug("Aucun staff sur le comptoir")
-            # deconnexion
-            self.disconnect_from_counter()
             self.staff_id = False
             # on modifie le titre
             self.update_window_title("Connectez-vous !")
-            # on affiche l'interface de connexion
-            self.deconnexion_interface()
+            # Reconnexion automatique du dernier équipier (option, activée par
+            # défaut) : l'écran de connexion n'apparaît qu'en cas d'échec. Le
+            # remove_staff de nettoyage n'est PAS envoyé dans ce cas : traité
+            # après le login_staff, il déconnecterait aussitôt l'équipier qui
+            # vient de se reconnecter (ordre des POST non garanti).
+            if not self._start_auto_relogin():
+                # deconnexion
+                self.disconnect_from_counter()
+                # on affiche l'interface de connexion
+                self.deconnexion_interface()
         else:
             self._notify_network_error(result)
-        
-        
+
+    def _start_auto_relogin(self):
+        """ Tente une connexion avec les initiales du dernier équipier validé
+        (préférence « ouvrir la session avec le même utilisateur »). Renvoie
+        True si une tentative réseau est lancée : l'écran de connexion ne
+        s'affiche alors qu'en cas d'échec (handle_auto_login_result). """
+        initials = QSettings().value("last_staff_initials", "", type=str) or ""
+        if not (self.reconnect_last_user and initials and self.app_token):
+            return False
+        self.logger.info("Connexion automatique du dernier équipier connu")
+        self._pending_initials = initials
+        # Même choix que la case « Déconnexion sur tous les autres postes » de
+        # l'écran de connexion (cochée par défaut) : on reprend le comptoir
+        # même si l'équipier est encore identifié ailleurs.
+        self.api.login_staff(initials, True, on_result=self.handle_auto_login_result)
+        return True
+
+    @Slot(object)
+    def handle_auto_login_result(self, result):
+        """ Résultat de la connexion automatique au démarrage. En cas d'échec,
+        l'écran de connexion est créé AVANT de déléguer à handle_login_result :
+        la branche 204 écrit « Initiales incorrectes » dans label_connexion. """
+        if result.status == 204:
+            # Initiales mémorisées inconnues du serveur (équipier supprimé ?) :
+            # oubliées pour ne pas retenter une connexion vouée à l'échec.
+            QSettings().remove("last_staff_initials")
+        if result.status != 200:
+            self.deconnexion_interface()
+        self.handle_login_result(result)
+
+
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
         self.setWindowTitle(f"PharmaFile - {self.counter_name} - {staff_name}")
@@ -1498,6 +1537,11 @@ class MainWindow(QMainWindow):
         cb_deconnexion_on_all = self.checkbox_on_all.isChecked()
 
         if initials:
+            # Conservées jusqu'au verdict du serveur : seules des initiales
+            # VALIDÉES sont persistées pour la reconnexion automatique au
+            # prochain démarrage (handle_login_result), jamais une saisie
+            # refusée (faute de frappe, équipier inconnu).
+            self._pending_initials = initials
             self.api.login_staff(initials, cb_deconnexion_on_all,
                                  on_result=self.handle_login_result)
 
@@ -1513,6 +1557,11 @@ class MainWindow(QMainWindow):
                 self.logger.warning("Réponse de connexion inexploitable")
                 QMessageBox.warning(self, "Erreur de connexion", "Réponse inattendue du serveur.")
                 return
+            # Initiales validées par le serveur : persistées pour la connexion
+            # automatique au prochain démarrage (option « même utilisateur »).
+            # Non sensibles : un identifiant saisi en clair, pas un secret.
+            if getattr(self, "_pending_initials", None):
+                QSettings().setValue("last_staff_initials", self._pending_initials)
             # Mise à jour de la barre de titre
             self.update_window_title(staff_name)
             # Recréer l'interface principale1

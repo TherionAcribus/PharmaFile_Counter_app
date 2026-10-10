@@ -411,7 +411,18 @@ class PreferencesDialog(QDialog):
         
         self.counter_combobox = QComboBox(self.connexion_page)
         self.connexion_layout.addWidget(self.counter_combobox)
-        
+
+        # Reconnexion automatique au démarrage : les postes sont le plus
+        # souvent occupés par le même équipier, on évite la ressaisie du code.
+        self.reconnect_last_user_checkbox = QCheckBox(
+            "Au prochain démarrage, ouvrir la session avec le même utilisateur",
+            self.connexion_page)
+        self.reconnect_last_user_checkbox.setToolTip(
+            "Mémorise les initiales du dernier équipier connecté et tente une "
+            "connexion automatique au lancement de l'application.\n"
+            "En cas d'échec, l'écran de connexion s'affiche normalement.")
+        self.connexion_layout.addWidget(self.reconnect_last_user_checkbox)
+
         self.connexion_layout.addStretch()
         
         self.stacked_widget.addWidget(self.connexion_page)
@@ -773,6 +784,8 @@ class PreferencesDialog(QDialog):
         self.counter_id = coerce_counter_id(settings.value("counter_id", None))
         label = f"{self.counter_id} - Chargement en cours..." if self.counter_id else "Sélectionnez un comptoir..."
         self.counter_combobox.addItem(label, self.counter_id)
+        self.reconnect_last_user_checkbox.setChecked(
+            settings_schema.read(settings, "reconnect_last_user"))
         vertical_position = settings_schema.read(settings, "patient_list_vertical_position")
         horizontal_position = settings_schema.read(settings, "patient_list_horizontal_position")
 
@@ -1062,6 +1075,7 @@ class PreferencesDialog(QDialog):
         # Valeurs relues des widgets (le dialogue est modal : elles n'ont pas
         # changé depuis la validation). counter_id normalisé en entier.
         settings.setValue("counter_id", coerce_counter_id(self.counter_combobox.currentData()))
+        settings.setValue("reconnect_last_user", self.reconnect_last_user_checkbox.isChecked())
         settings.setValue("next_patient_shortcut", self.get_shortcut_text(self.next_patient_shortcut_input))
         settings.setValue("validate_patient_shortcut", self.get_shortcut_text(self.validate_patient_shortcut_input))
         settings.setValue("pause_shortcut", self.get_shortcut_text(self.pause_shortcut_input))

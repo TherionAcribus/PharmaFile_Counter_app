@@ -73,6 +73,11 @@ SETTINGS = {
     # le plus simple à maintenir (l'adresse Render/officine peut changer sans
     # nouvelle version de l'application).
     "web_url": Setting(default="", kind=str),
+    # Reconnexion automatique au démarrage avec les initiales du dernier
+    # équipier validé par le serveur : activée par défaut (les postes sont
+    # généralement occupés par la même personne). En cas d'échec, l'écran
+    # de connexion classique s'affiche.
+    "reconnect_last_user": Setting(default=True, kind=bool),
 
     # --- Raccourcis (mode + options ; combinaisons : voir shortcut_defaults) --
     "shortcut_mode": Setting(default=DEFAULT_MODE, kind=str, coerce=normalize_mode),
