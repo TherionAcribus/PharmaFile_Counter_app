@@ -153,6 +153,12 @@ def remove_staff(web_url):
     return f"{_base(web_url)}/app/counter/remove_staff"
 
 
+def counter_realtime_health(web_url, counter_id):
+    """POST — mesures de livraison temps réel du comptoir
+    (routes/counter.py:/api/counter/<id>/realtime_health)."""
+    return f"{_base(web_url)}/api/counter/{_seg(counter_id)}/realtime_health"
+
+
 # --- Messagerie -----------------------------------------------------------
 
 def messaging_presence(web_url):

@@ -265,6 +265,15 @@ class CounterApi:
         return self._post(endpoints.remove_staff(self._url()), data=data,
                           on_result=on_result, key="disconnect")
 
+    # --- mesures temps réel ---------------------------------------------------
+
+    def report_realtime_health(self, report, on_result=None):
+        """ Envoie les compteurs de livraison temps réel (realtime_health). Pas
+        d'idempotence : un rapport rejoué compterait double, mais un échec
+        réseau est rare et l'écart reste négligeable sur une heure. """
+        return self._post(endpoints.counter_realtime_health(self._url(), self._counter_id()),
+                          data=report, on_result=on_result, key="realtime_health")
+
     # --- messagerie --------------------------------------------------------
 
     def messaging_presence(self, client_instance_id, on_result=None):

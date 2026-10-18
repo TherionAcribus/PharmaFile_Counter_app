@@ -45,6 +45,7 @@ MODIFYING_ACTIONS = [
     "messaging_leave",
     "messaging_send",
     "messaging_read",
+    "report_realtime_health",
 ]
 
 # Lectures seules : GET.

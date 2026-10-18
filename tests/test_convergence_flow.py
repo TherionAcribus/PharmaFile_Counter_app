@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import main  # noqa: E402
+from realtime_health import RealtimeHealth  # noqa: E402
 from resync_coordinator import ResyncCoordinator  # noqa: E402
 
 
@@ -35,6 +36,7 @@ def _wnp(queue_revision=None):
         list_patients=[],
         shutting_down=False,
         calls={"refresh": 0, "resync": 0},
+        realtime_health=RealtimeHealth(),
     )
     w.refresh_patient_lists = lambda: w.calls.__setitem__("refresh", w.calls["refresh"] + 1)
     w._request_resync = lambda: w.calls.__setitem__("resync", w.calls["resync"] + 1)
@@ -127,6 +129,7 @@ def _wsc(socket_was_disconnected=False):
         disconnect_notification_shown=False,
         disconnect_timer=_FakeTimer(),
         calls={"resync": 0, "status": [], "notify": []},
+        realtime_health=RealtimeHealth(),
     )
     w.connection_indicator = types.SimpleNamespace(
         set_status=lambda *a: w.calls["status"].append(a))

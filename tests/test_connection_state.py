@@ -27,6 +27,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import main  # noqa: E402
 from main_window_ui import ConnectionStatusIndicator  # noqa: E402
+from realtime_health import RealtimeHealth  # noqa: E402
 
 
 class _FakeTimer:
@@ -58,6 +59,7 @@ def _win(socket_was_disconnected=False):
         notification_after_deconnection=5,
         list_patients=[{"id": 1}, {"id": 2}],
         calls={"resync": 0, "status": [], "notify": []},
+        realtime_health=RealtimeHealth(),
     )
     w.connection_indicator = types.SimpleNamespace(
         set_status=lambda *a: w.calls["status"].append(a))

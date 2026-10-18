@@ -30,6 +30,7 @@ from my_logger import AppLogger, register_secret
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import snapshot_is_fresh
+from realtime_health import REPORT_INTERVAL_SECONDS, RealtimeHealth
 from messaging import MessagingController
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import read_shortcut
@@ -136,6 +137,16 @@ class MainWindow(QMainWindow):
         self.disconnect_timer = QTimer(self)  # Timer créé dans le thread principal
         self.disconnect_timer.setSingleShot(True)
         self.disconnect_timer.timeout.connect(self._handle_disconnection_timeout)
+
+        # Mesure de la livraison temps réel (trous de révision, coupures), envoyée
+        # périodiquement au serveur : l'administration voit si un comptoir perd
+        # des évènements en service (page Performance).
+        self.realtime_health = RealtimeHealth()
+        self._realtime_health_supported = True
+        self.realtime_health_timer = QTimer(self)
+        self.realtime_health_timer.setInterval(REPORT_INTERVAL_SECONDS * 1000)
+        self.realtime_health_timer.timeout.connect(self._report_realtime_health)
+        self.realtime_health_timer.start()
 
         # Placement de la fenêtre (point 10.12) : géométrie persistée,
         # garde-fou multi-écran, mode panneau compact et magnétisme aux bords.
@@ -1110,6 +1121,35 @@ class MainWindow(QMainWindow):
         if state.get("activities_staff"):
             self.activities_staff = state["activities_staff"]
 
+    def _report_realtime_health(self):
+        """ Envoie les mesures de livraison temps réel de la fenêtre écoulée.
+        Rien n'est envoyé si rien n'a été observé, ni pendant l'arrêt, ni si le
+        serveur ne connaît pas cette route (version antérieure). """
+        if (self.shutting_down or not self._realtime_health_supported
+                or not getattr(self, "counter_id", None)):
+            return
+        report = self.realtime_health.take_report()
+        if report is None:
+            return
+        handle = self.api.report_realtime_health(
+            report, on_result=partial(self._on_realtime_health_reported, report))
+        if handle is None:  # refusé localement (arrêt, envoi déjà en vol)
+            self.realtime_health.restore(report)
+
+    def _on_realtime_health_reported(self, report, result):
+        if result.status == 200:
+            return
+        if result.status == 404:
+            # Serveur antérieur à cette mesure, ou comptoir supprimé : inutile
+            # d'insister jusqu'au prochain démarrage.
+            self._realtime_health_supported = False
+            self.logger.info("Mesures temps réel non acceptées par le serveur (404) : envoi désactivé")
+        elif result.status == 0 or result.status >= 500 or result.status == 401:
+            # Serveur injoignable : les compteurs repartent avec le prochain envoi.
+            self.realtime_health.restore(report)
+        else:
+            self.logger.warning("Mesures temps réel refusées (statut %s)", result.status)
+
     def _request_resync(self):
         """ Demande une resynchronisation de l'état autoritatif. Le contrôleur de
         session garantit qu'une seule passe réseau est active à la fois et fusionne
@@ -1129,6 +1169,8 @@ class MainWindow(QMainWindow):
         if status is None:  # Connecting
             self._set_rt_status("connecting", reconnection_attempts)
         elif status:  # Connected
+            self.realtime_health.record_connected(
+                was_disconnected=self.socket_was_disconnected)
             if self.disconnect_notification_shown and display_notification:
                 self.show_notification({
                     "origin": "socket_connection_true",
@@ -1151,6 +1193,7 @@ class MainWindow(QMainWindow):
             self._set_rt_status("connected")
         else:  # Disconnected
             self.socket_was_disconnected = True
+            self.realtime_health.record_disconnected()
             if display_notification:
                 self.disconnect_notification_shown = True
                 self.show_notification({
@@ -1215,6 +1258,7 @@ class MainWindow(QMainWindow):
         """ Applique effectivement la snapshot et rafraîchit l'UI (patient courant,
         liste, papier, autocalling ET staff). """
         self._apply_state(state)
+        self.realtime_health.record_resync_applied()
 
         # Staff en premier : peut faire basculer entre l'écran de connexion et
         # l'interface principale (donc reconstruire les widgets patient).
@@ -1870,6 +1914,8 @@ class MainWindow(QMainWindow):
             self.shortcuts.shutdown()
 
         # 2. Arrêt des timers.
+        if hasattr(self, 'realtime_health_timer'):
+            self.realtime_health_timer.stop()
         if hasattr(self, 'call_timer'):
             self.call_timer.stop()
             self.call_deadline_timer.stop()
@@ -1977,17 +2023,20 @@ class MainWindow(QMainWindow):
                     # Message périmé ou dupliqué (ex. réordonnancement réseau) :
                     # on a déjà un état au moins aussi récent, on l'ignore.
                     self.logger.debug("new_patient ignoré (rev %s <= %s)", revision, self.queue_revision)
+                    self.realtime_health.record_stale()
                     return
                 if revision > self.queue_revision + 1:
                     # Trou : au moins un évènement a été manqué. On ne fait pas
                     # confiance à ce seul message et on recharge l'état autoritatif.
                     self.logger.info("Trou de révision (%s -> %s), rechargement de l'état",
                                      self.queue_revision, revision)
+                    self.realtime_health.record_gap(revision - self.queue_revision - 1)
                     self.queue_revision = revision
                     self._request_resync()
                     return
             # Établit (si pas encore de référence) ou avance la révision connue.
             self.queue_revision = revision
+        self.realtime_health.record_event()
 
         # mise à jour de self.patient
         self.list_patients = patient
