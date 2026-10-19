@@ -144,6 +144,9 @@ def test_bouton_appliquer_sauvegarde_sans_fermer(isolated_settings, monkeypatch)
                         lambda close_dialog=True: seen.append(close_dialog))
     assert dialog.button_box.buttonRole(dialog.apply_button) \
         == QDialogButtonBox.ApplyRole
+    # « Appliquer » n'est actif qu'avec une modification en attente.
+    dialog.notification_duration_spinbox.setValue(
+        dialog.notification_duration_spinbox.value() + 1)
     dialog.apply_button.click()
     dialog.save_button.click()
     assert seen == [False, True]

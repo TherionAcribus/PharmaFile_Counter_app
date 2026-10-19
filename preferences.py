@@ -34,6 +34,10 @@ logger = logging.getLogger("appcomptoir.preferences")
 #: Les clés viennent de ``audio.SOUNDS`` : si un son est ajouté côté lecteur,
 #: il apparaît automatiquement ici (avec son nom technique si aucun libellé
 #: convivial n'est défini).
+#: Libellé de l'entrée « aucun thème » du sélecteur (valeur enregistrée :
+#: ``resources.NO_SKIN``).
+NO_SKIN_LABEL = "Aucun (style standard)"
+
 SOUND_LABELS = {
     "ding": "Ding (nouveau patient)",
     "patient_taken": "Patient déjà pris",
@@ -132,6 +136,16 @@ class PreferencesDialog(QDialog):
         self.horizontal_mode_checkbox = QCheckBox("Orientation horizontale", window_box)
         window_box_layout.addWidget(self.horizontal_mode_checkbox)
 
+        # Magnétisme : agit à chaque déplacement manuel, panneau compact ou non
+        # (window_placement.on_window_moved) — d'où sa place ici et non dans
+        # « Panneau compact ».
+        self.panel_snap_checkbox = QCheckBox(
+            "Aimanter la fenêtre aux bords de l'écran", window_box)
+        self.panel_snap_checkbox.setToolTip(
+            "Après un déplacement à la souris, la fenêtre se colle au bord "
+            "d'écran le plus proche.")
+        window_box_layout.addWidget(self.panel_snap_checkbox)
+
         # Réinitialise taille/position de la fenêtre (utile si elle est perdue
         # hors écran après un changement de moniteur). Voir point 24.
         self.reset_position_button = QPushButton("Réinitialiser la position de la fenêtre", window_box)
@@ -148,14 +162,15 @@ class PreferencesDialog(QDialog):
         self.compact_mode_checkbox = QCheckBox("Mode panneau compact (docké sur un bord)", panel_box)
         panel_box_layout.addWidget(self.compact_mode_checkbox)
 
-        self.panel_snap_checkbox = QCheckBox("Magnétisme aux bords de l'écran", panel_box)
-        panel_box_layout.addWidget(self.panel_snap_checkbox)
-
+        # Épaisseur : n'a d'effet qu'en mode compact (grisée sinon, cf.
+        # _update_dependent_controls).
         self.panel_thickness_layout = QHBoxLayout()
-        self.panel_thickness_label = QLabel("Épaisseur du panneau (px):", panel_box)
+        self.panel_thickness_label = QLabel("Épaisseur du panneau :", panel_box)
         self.panel_thickness_spinbox = QSpinBox(panel_box)
         self.panel_thickness_spinbox.setRange(MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS)
         self.panel_thickness_spinbox.setSingleStep(10)
+        self.panel_thickness_spinbox.setSuffix(" px")
+        self.panel_thickness_label.setBuddy(self.panel_thickness_spinbox)
         self.panel_thickness_layout.addWidget(self.panel_thickness_label)
         self.panel_thickness_layout.addWidget(self.panel_thickness_spinbox)
         panel_box_layout.addLayout(self.panel_thickness_layout)
@@ -206,54 +221,70 @@ class PreferencesDialog(QDialog):
         lists_box_layout = QVBoxLayout(lists_box)
         self.general_layout.addWidget(lists_box)
 
-        self.display_patient_list = QCheckBox("Liste des patients", lists_box)
+        self.display_patient_list = QCheckBox("Afficher la liste des patients", lists_box)
         lists_box_layout.addWidget(self.display_patient_list)
 
-        self.patient_list_position_vertical_label = QLabel("Position de la liste des patients en mode verticale:", lists_box)
-        lists_box_layout.addWidget(self.patient_list_position_vertical_label)
-
+        # Une position est mémorisée PAR orientation ; seule celle de
+        # l'orientation choisie (case « Orientation horizontale ») est
+        # affichée — auparavant les deux listes étaient visibles, avec un
+        # libellé « mode verticale » qui ne correspondait à aucune case.
+        self.patient_list_position_row = QHBoxLayout()
+        self.patient_list_position_label = QLabel(
+            "Position de la liste des patients :", lists_box)
         self.patient_list_position_vertical = QComboBox(lists_box)
         self.patient_list_position_vertical.addItems([BOTTOM_TEXT, RIGHT_TEXT])
-        lists_box_layout.addWidget(self.patient_list_position_vertical)
-
-        self.patient_list_position_horizontal_label = QLabel("Position de la liste des patients en mode horizontal:", lists_box)
-        lists_box_layout.addWidget(self.patient_list_position_horizontal_label)
-
+        self.patient_list_position_vertical.setAccessibleName(
+            "Position de la liste des patients (orientation verticale)")
         self.patient_list_position_horizontal = QComboBox(lists_box)
         self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
-        lists_box_layout.addWidget(self.patient_list_position_horizontal)
+        self.patient_list_position_horizontal.setAccessibleName(
+            "Position de la liste des patients (orientation horizontale)")
+        self.patient_list_position_row.addWidget(self.patient_list_position_label)
+        self.patient_list_position_row.addWidget(self.patient_list_position_vertical)
+        self.patient_list_position_row.addWidget(self.patient_list_position_horizontal)
+        lists_box_layout.addLayout(self.patient_list_position_row)
 
         # Position de la messagerie : même mécanisme que la liste des patients.
         # Du même côté que la file, les deux panneaux suivent la disposition
         # choisie dans « Menu › Disposition des panneaux » (empilés ou en
         # onglets) ; choisir un autre côté la détache.
+        # Taille de police de la file des patients (point 28) : configurable, avec
+        # un plancher de lisibilité (l'ancienne valeur figée de 8 pt était petite).
+        self.patient_list_font_size_layout = QHBoxLayout()
+        self.patient_list_font_size_label = QLabel("Taille du texte de la liste :", lists_box)
+        self.patient_list_font_size_spinbox = QSpinBox(lists_box)
+        self.patient_list_font_size_spinbox.setRange(MIN_FONT_POINT_SIZE, 24)
+        self.patient_list_font_size_spinbox.setSuffix(" pt")
+        self.patient_list_font_size_label.setBuddy(self.patient_list_font_size_spinbox)
+        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_label)
+        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_spinbox)
+        lists_box_layout.addLayout(self.patient_list_font_size_layout)
+
+        # Position de la messagerie : même mécanisme que la liste des patients.
+        # Du même côté que la file, les deux panneaux suivent la disposition
+        # choisie dans « Menu › Disposition des panneaux » (empilés ou en
+        # onglets) ; choisir un autre côté la détache. Indépendante de
+        # l'affichage de la liste, elle reste toujours active.
+        self.messaging_position_row = QHBoxLayout()
         self.messaging_position_label = QLabel(
             "Position de la messagerie :", lists_box)
-        lists_box_layout.addWidget(self.messaging_position_label)
         self.messaging_position = QComboBox(lists_box)
         self.messaging_position.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.messaging_position.setToolTip(
             "Du même côté que la liste des patients, les deux panneaux sont "
             "empilés ou regroupés en onglets (Menu › Disposition des panneaux) ; "
             "de l'autre côté, la messagerie a sa propre zone.")
-        lists_box_layout.addWidget(self.messaging_position)
-
-        # Taille de police de la file des patients (point 28) : configurable, avec
-        # un plancher de lisibilité (l'ancienne valeur figée de 8 pt était petite).
-        self.patient_list_font_size_layout = QHBoxLayout()
-        self.patient_list_font_size_label = QLabel("Taille de police de la liste:", lists_box)
-        self.patient_list_font_size_spinbox = QSpinBox(lists_box)
-        self.patient_list_font_size_spinbox.setRange(MIN_FONT_POINT_SIZE, 24)
-        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_label)
-        self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_spinbox)
-        lists_box_layout.addLayout(self.patient_list_font_size_layout)
+        self.messaging_position_label.setBuddy(self.messaging_position)
+        self.messaging_position_row.addWidget(self.messaging_position_label)
+        self.messaging_position_row.addWidget(self.messaging_position)
+        lists_box_layout.addLayout(self.messaging_position_row)
 
         # --- Apparence ---
         appearance_box = QGroupBox("Apparence", self.general_page)
-        appearance_box_layout = QVBoxLayout(appearance_box)
+        appearance_box_layout = QHBoxLayout(appearance_box)
         self.general_layout.addWidget(appearance_box)
 
-        self.skin_label = QLabel("Sélectionner un skin:", appearance_box)
+        self.skin_label = QLabel("Thème :", appearance_box)
         appearance_box_layout.addWidget(self.skin_label)
 
         # L'aperçu n'est branché qu'APRÈS le chargement des préférences (fin de
@@ -261,18 +292,28 @@ class PreferencesDialog(QDialog):
         # doit rien appliquer — auparavant le skin était retiré puis remis à
         # chaque ouverture du dialogue.
         self.skin_combo = QComboBox(appearance_box)
-        appearance_box_layout.addWidget(self.skin_combo)
+        self.skin_combo.setToolTip("Aperçu immédiat ; annulé si vous fermez sans enregistrer.")
+        self.skin_label.setBuddy(self.skin_combo)
+        appearance_box_layout.addWidget(self.skin_combo, 1)
 
         # --- Journal ---
         log_box = QGroupBox("Journal", self.general_page)
         log_box_layout = QVBoxLayout(log_box)
         self.general_layout.addWidget(log_box)
 
-        self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", log_box)
+        # La case active AUSSI la journalisation détaillée (DEBUG, cf.
+        # main.load_preferences) : le libellé le dit désormais.
+        self.debug_window = QCheckBox(
+            "Mode diagnostic : journal détaillé et fenêtre de journal ouverte",
+            log_box)
+        self.debug_window.setToolTip(
+            "Garde la fenêtre de journal ouverte après le démarrage et "
+            "enregistre des journaux détaillés (niveau DEBUG). À réserver au "
+            "dépannage.")
         log_box_layout.addWidget(self.debug_window)
         self.open_logs_button = QPushButton("Ouvrir le dossier des journaux", log_box)
         self.open_logs_button.setToolTip(
-            "Ouvre l'explorateur sur les fichiers de log de l'application.")
+            "Ouvre l'explorateur sur les fichiers journaux de l'application.")
         self.open_logs_button.clicked.connect(self._open_log_folder)
         log_box_layout.addWidget(self.open_logs_button)
 
@@ -363,10 +404,14 @@ class PreferencesDialog(QDialog):
         
         self.raccourcis_page, self.raccourcis_layout = self._scrollable_page()
 
-        # --- Mode des raccourcis (point 27) ---
-        self.shortcut_mode_label = QLabel("Mode des raccourcis:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.shortcut_mode_label)
-        self.shortcut_mode_combo = QComboBox(self.raccourcis_page)
+        # --- Comportement des raccourcis (point 27) ---
+        shortcut_behaviour_box = QGroupBox("Comportement", self.raccourcis_page)
+        shortcut_behaviour_layout = QVBoxLayout(shortcut_behaviour_box)
+        self.raccourcis_layout.addWidget(shortcut_behaviour_box)
+
+        self.shortcut_mode_row = QHBoxLayout()
+        self.shortcut_mode_label = QLabel("Mode des raccourcis :", shortcut_behaviour_box)
+        self.shortcut_mode_combo = QComboBox(shortcut_behaviour_box)
         # (libellé affiché, valeur enregistrée)
         self.shortcut_mode_options = [
             ("Désactivés", MODE_DISABLED),
@@ -375,74 +420,74 @@ class PreferencesDialog(QDialog):
         ]
         for label, value in self.shortcut_mode_options:
             self.shortcut_mode_combo.addItem(label, value)
-        self.raccourcis_layout.addWidget(self.shortcut_mode_combo)
+        self.shortcut_mode_label.setBuddy(self.shortcut_mode_combo)
+        self.shortcut_mode_row.addWidget(self.shortcut_mode_label)
+        self.shortcut_mode_row.addWidget(self.shortcut_mode_combo, 1)
+        shortcut_behaviour_layout.addLayout(self.shortcut_mode_row)
 
         self.confirm_sensitive_checkbox = QCheckBox(
             "Confirmer les actions sensibles (déconnexion) déclenchées par raccourci",
-            self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.confirm_sensitive_checkbox)
+            shortcut_behaviour_box)
+        shortcut_behaviour_layout.addWidget(self.confirm_sensitive_checkbox)
 
         self.shortcut_feedback_checkbox = QCheckBox(
-            "Afficher brièvement l'action déclenchée par raccourci", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.shortcut_feedback_checkbox)
+            "Afficher brièvement l'action déclenchée par raccourci",
+            shortcut_behaviour_box)
+        shortcut_behaviour_layout.addWidget(self.shortcut_feedback_checkbox)
 
-        self.next_patient_shortcut_label = QLabel("Raccourci - Patient suivant:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.next_patient_shortcut_label)
-        
-        self.next_patient_shortcut_input = self.create_shortcut_input(
-            "Raccourci patient suivant")
-        self.raccourcis_layout.addWidget(self.next_patient_shortcut_input)
-        
-        self.validate_patient_shortcut_label = QLabel("Raccourci - Valider patient:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.validate_patient_shortcut_label)
+        # --- Combinaisons : une ligne « action : champ de capture » ---
+        # Grisées (avec les deux cases ci-dessus) quand les raccourcis sont
+        # désactivés : elles n'auraient aucun effet.
+        self.shortcut_keys_box = QGroupBox("Combinaisons", self.raccourcis_page)
+        shortcut_grid = QGridLayout(self.shortcut_keys_box)
+        shortcut_grid.setColumnStretch(1, 1)
+        self.raccourcis_layout.addWidget(self.shortcut_keys_box)
 
-        self.validate_patient_shortcut_input = self.create_shortcut_input(
-            "Raccourci valider patient")
-        self.raccourcis_layout.addWidget(self.validate_patient_shortcut_input)
-        
-        self.pause_shortcut_label = QLabel("Raccourci - Pause:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.pause_shortcut_label)
-        
-        self.pause_shortcut_input = self.create_shortcut_input(
-            "Raccourci pause")
-        self.raccourcis_layout.addWidget(self.pause_shortcut_input)
-        
-        self.recall_label = QLabel("Raccourci - Rappel patient:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.recall_label)
-        
-        self.recall_shortcut_input = self.create_shortcut_input(
-            "Raccourci rappel patient")
-        self.raccourcis_layout.addWidget(self.recall_shortcut_input)
-        
-        self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
-        self.raccourcis_layout.addWidget(self.deconnect_label)
-        
-        self.deconnect_input = self.create_shortcut_input(
-            "Raccourci déconnexion")
-        self.raccourcis_layout.addWidget(self.deconnect_input)
-        
+        def shortcut_row(row, text, accessible_name):
+            label = QLabel(text, self.shortcut_keys_box)
+            edit = self.create_shortcut_input(accessible_name)
+            label.setBuddy(edit)
+            shortcut_grid.addWidget(label, row, 0)
+            shortcut_grid.addWidget(edit, row, 1)
+            return label, edit
+
+        self.next_patient_shortcut_label, self.next_patient_shortcut_input = \
+            shortcut_row(0, "Patient suivant :", "Raccourci patient suivant")
+        self.validate_patient_shortcut_label, self.validate_patient_shortcut_input = \
+            shortcut_row(1, "Valider le patient :", "Raccourci valider patient")
+        self.pause_shortcut_label, self.pause_shortcut_input = \
+            shortcut_row(2, "Pause :", "Raccourci pause")
+        self.recall_label, self.recall_shortcut_input = \
+            shortcut_row(3, "Rappeler le patient :", "Raccourci rappel patient")
+        self.deconnect_label, self.deconnect_input = \
+            shortcut_row(4, "Déconnexion :", "Raccourci déconnexion")
+        shortcut_hint = QLabel(
+            "Cliquez dans un champ puis tapez la combinaison ; Retour arrière "
+            "l'efface.", self.shortcut_keys_box)
+        shortcut_hint.setWordWrap(True)
+        shortcut_grid.addWidget(shortcut_hint, 5, 0, 1, 2)
+
         self.raccourcis_layout.addStretch()
-        
+
         self.stacked_widget.addWidget(self.raccourcis_page)
 
         self.notifications_page, self.notifications_layout = self._scrollable_page()
-        
+
+        # --- Catégories ---
         # Une ligne PAR CATÉGORIE de notification, avec deux réglages distincts :
         # « Afficher » et « Son ». Chaque catégorie est indépendante : décocher
         # l'une ne fait plus taire les autres (auparavant « activités
         # spécifiques » servait de filtre général à toutes les notifications).
-        self.notification_categories_label = QLabel(
-            "Notifications par catégorie :", self.notifications_page)
-        self.notifications_layout.addWidget(self.notification_categories_label)
-
-        self.notification_categories_grid = QGridLayout()
+        categories_box = QGroupBox("Notifications par catégorie", self.notifications_page)
+        self.notification_categories_grid = QGridLayout(categories_box)
+        self.notifications_layout.addWidget(categories_box)
         self.notification_categories_grid.setColumnStretch(0, 1)
         self.notification_categories_grid.addWidget(
-            QLabel("Afficher", self.notifications_page), 0, 1, Qt.AlignHCenter)
+            QLabel("Afficher", categories_box), 0, 1, Qt.AlignHCenter)
         self.notification_categories_grid.addWidget(
-            QLabel("Son", self.notifications_page), 0, 2, Qt.AlignHCenter)
+            QLabel("Son", categories_box), 0, 2, Qt.AlignHCenter)
         self.notification_categories_grid.addWidget(
-            QLabel("Écouter", self.notifications_page), 0, 3, Qt.AlignHCenter)
+            QLabel("Écouter", categories_box), 0, 3, Qt.AlignHCenter)
 
         # catégorie -> case à cocher (remplies/relues par load/save_preferences).
         self.notification_display_checkboxes = {}
@@ -451,7 +496,7 @@ class PreferencesDialog(QDialog):
         for row, category in enumerate(notification_rules.CATEGORIES, start=1):
             label_text = notification_rules.CATEGORY_LABELS[category]
             hint = notification_rules.CATEGORY_HINTS[category]
-            label = QLabel(label_text, self.notifications_page)
+            label = QLabel(label_text, categories_box)
             label.setWordWrap(True)
             label.setToolTip(hint)
             self.notification_categories_grid.addWidget(label, row, 0)
@@ -460,7 +505,7 @@ class PreferencesDialog(QDialog):
                      (self.notification_sound_checkboxes, "Jouer un son pour")), start=1):
                 # Case sans texte (le libellé est dans la colonne 0) : on lui donne
                 # un nom accessible explicite pour les lecteurs d'écran.
-                checkbox = QCheckBox(self.notifications_page)
+                checkbox = QCheckBox(categories_box)
                 checkbox.setAccessibleName(f"{action} : {label_text}")
                 checkbox.setToolTip(f"{action} — {hint}")
                 self.notification_categories_grid.addWidget(checkbox, row, column, Qt.AlignHCenter)
@@ -468,7 +513,7 @@ class PreferencesDialog(QDialog):
             # « Écouter » par ligne : joue le son représentatif de la catégorie,
             # au volume en cours d'édition — sans chercher le bon son dans le
             # sélecteur « Tester un son ».
-            listen = QPushButton("Jouer", self.notifications_page)
+            listen = QPushButton("Jouer", categories_box)
             listen.setAccessibleName(f"Écouter le son : {label_text}")
             listen.setToolTip(f"Joue le son de « {label_text} » — {hint}")
             listen.clicked.connect(
@@ -476,63 +521,50 @@ class PreferencesDialog(QDialog):
             self.notification_categories_grid.addWidget(
                 listen, row, 3, Qt.AlignHCenter)
             self.notification_listen_buttons[category] = listen
-        self.notifications_layout.addLayout(self.notification_categories_grid)
 
-        # Ajout de l'option pour le temps pour une notification après déconnexion
-        self.notification_after_deconnection_layout = QHBoxLayout()
-        self.notification_after_deconnection_label = QLabel("Temps (s) avant une notification si la connexion est perdue", self.notifications_page)
-        self.notification_after_deconnection_spinbox = QSpinBox(self.notifications_page)
-        self.notification_after_deconnection_spinbox.setRange(0, 99)
-        self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_label)
-        self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_spinbox)
-        self.notifications_layout.addLayout(self.notification_after_deconnection_layout)
+        # --- Délais ---
+        delays_box = QGroupBox("Délais", self.notifications_page)
+        delays_grid = QGridLayout(delays_box)
+        delays_grid.setColumnStretch(0, 1)
+        self.notifications_layout.addWidget(delays_box)
 
-        # Ajout de l'option pour le temps avant une notification pour valider un patient
-        self.notification_after_calling_layout = QHBoxLayout()
-        self.notification_after_calling_label = QLabel("Temps (s) avant une notification si le patient n'est pas validé", self.notifications_page)
-        self.notification_after_calling_spinbox = QSpinBox(self.notifications_page)
-        self.notification_after_calling_spinbox.setRange(10, 120)
-        self.notification_after_calling_layout.addWidget(self.notification_after_calling_label)
-        self.notification_after_calling_layout.addWidget(self.notification_after_calling_spinbox)
-        self.notifications_layout.addLayout(self.notification_after_calling_layout)
+        def spin_row(grid, row, text, low, high, suffix, tooltip=""):
+            label = QLabel(text, grid.parentWidget())
+            spin = QSpinBox(grid.parentWidget())
+            spin.setRange(low, high)
+            spin.setSuffix(suffix)
+            label.setBuddy(spin)
+            if tooltip:
+                label.setToolTip(tooltip)
+                spin.setToolTip(tooltip)
+            grid.addWidget(label, row, 0)
+            grid.addWidget(spin, row, 1)
+            return label, spin
 
-        # Ajout de l'option pour la durée d'affichage
-        self.notification_duration_layout = QHBoxLayout()
-        self.notification_duration_label = QLabel("Durée d'affichage (s):", self.notifications_page)
-        self.notification_duration_spinbox = QSpinBox(self.notifications_page)
-        self.notification_duration_spinbox.setRange(1, 60)
-        self.notification_duration_layout.addWidget(self.notification_duration_label)
-        self.notification_duration_layout.addWidget(self.notification_duration_spinbox)
-        self.notifications_layout.addLayout(self.notification_duration_layout)
-        
-        # Ajout de l'option pour la taille de la police
-        self.notification_font_size_layout = QHBoxLayout()
-        self.notification_font_size_label = QLabel("Taille de la police:", self.notifications_page)
-        self.notification_font_size_spinbox = QSpinBox(self.notifications_page)
-        self.notification_font_size_spinbox.setRange(8, 36)
-        self.notification_font_size_layout.addWidget(self.notification_font_size_label)
-        self.notification_font_size_layout.addWidget(self.notification_font_size_spinbox)
-        self.notifications_layout.addLayout(self.notification_font_size_layout)
+        self.notification_after_deconnection_label, self.notification_after_deconnection_spinbox = spin_row(
+            delays_grid, 0, "Alerte « connexion perdue » après :", 0, 99, " s",
+            "Délai avant de signaler une perte de connexion au serveur (les "
+            "coupures plus courtes passent inaperçues).")
+        # 0 = alerte dès la perte de connexion : on l'écrit en toutes lettres.
+        self.notification_after_deconnection_spinbox.setSpecialValueText("immédiatement")
+        self.notification_after_calling_label, self.notification_after_calling_spinbox = spin_row(
+            delays_grid, 1, "Rappel « pensez à valider » après :", 10, 120, " s",
+            "Délai, après l'appel d'un patient, avant de rappeler de le valider.")
 
-        # Ton des messages (point 28) : sobre (explicite, défaut) ou humoristique.
-        self.message_tone_layout = QHBoxLayout()
-        self.message_tone_label = QLabel("Ton des messages:", self.notifications_page)
-        self.message_tone_combo = QComboBox(self.notifications_page)
-        # (libellé affiché, valeur enregistrée)
-        self.message_tone_options = [
-            ("Sobre (explicite)", TONE_SOBER),
-            ("Humoristique", TONE_HUMOROUS),
-        ]
-        for label, value in self.message_tone_options:
-            self.message_tone_combo.addItem(label, value)
-        self.message_tone_layout.addWidget(self.message_tone_label)
-        self.message_tone_layout.addWidget(self.message_tone_combo)
-        self.notifications_layout.addLayout(self.message_tone_layout)
+        # --- Affichage ---
+        display_box = QGroupBox("Affichage", self.notifications_page)
+        display_grid = QGridLayout(display_box)
+        display_grid.setColumnStretch(0, 1)
+        self.notifications_layout.addWidget(display_box)
+
+        self.notification_duration_label, self.notification_duration_spinbox = spin_row(
+            display_grid, 0, "Durée d'affichage :", 1, 60, " s")
+        self.notification_font_size_label, self.notification_font_size_spinbox = spin_row(
+            display_grid, 1, "Taille du texte :", 8, 36, " pt")
 
         # Coin de l'écran où afficher les notifications (point 26).
-        self.notification_corner_layout = QHBoxLayout()
-        self.notification_corner_label = QLabel("Coin d'affichage des notifications:", self.notifications_page)
-        self.notification_corner_combo = QComboBox(self.notifications_page)
+        self.notification_corner_label = QLabel("Coin de l'écran :", display_box)
+        self.notification_corner_combo = QComboBox(display_box)
         # (libellé affiché, valeur enregistrée)
         self.notification_corner_options = [
             ("En bas à gauche", "bottom-left"),
@@ -542,78 +574,95 @@ class PreferencesDialog(QDialog):
         ]
         for label, value in self.notification_corner_options:
             self.notification_corner_combo.addItem(label, value)
-        self.notification_corner_layout.addWidget(self.notification_corner_label)
-        self.notification_corner_layout.addWidget(self.notification_corner_combo)
-        self.notifications_layout.addLayout(self.notification_corner_layout)
+        self.notification_corner_label.setBuddy(self.notification_corner_combo)
+        display_grid.addWidget(self.notification_corner_label, 2, 0)
+        display_grid.addWidget(self.notification_corner_combo, 2, 1)
+
+        # Ton des messages (point 28) : sobre (explicite, défaut) ou humoristique.
+        self.message_tone_label = QLabel("Ton des messages :", display_box)
+        self.message_tone_combo = QComboBox(display_box)
+        # (libellé affiché, valeur enregistrée)
+        self.message_tone_options = [
+            ("Sobre (explicite)", TONE_SOBER),
+            ("Humoristique", TONE_HUMOROUS),
+        ]
+        for label, value in self.message_tone_options:
+            self.message_tone_combo.addItem(label, value)
+        self.message_tone_label.setBuddy(self.message_tone_combo)
+        display_grid.addWidget(self.message_tone_label, 3, 0)
+        display_grid.addWidget(self.message_tone_combo, 3, 1)
+
+        # --- Son ---
+        sound_box = QGroupBox("Son", self.notifications_page)
+        sound_layout = QVBoxLayout(sound_box)
+        self.notifications_layout.addWidget(sound_box)
 
         # Mode muet : réglage DISTINCT du volume. Couper le son en descendant le
         # curseur à 0 faisait perdre le réglage préféré ; ici le volume reste
         # affiché (mais grisé) et sera retrouvé tel quel en rétablissant le son.
         self.mute_checkbox = QCheckBox(
-            "Couper tous les sons (le volume réglé est conservé)",
-            self.notifications_page)
+            "Couper tous les sons (le volume réglé est conservé)", sound_box)
         self.mute_checkbox.setToolTip(
             "Aucun son n'est joué tant que la case est cochée ; les "
             "notifications restent affichées.")
         self.mute_checkbox.toggled.connect(self.update_sound_controls_enabled)
-        self.notifications_layout.addWidget(self.mute_checkbox)
+        sound_layout.addWidget(self.mute_checkbox)
 
-        # Ajout du contrôle du volume avec affichage numérique
+        # Volume : curseur + valeur numérique synchronisés.
         self.volume_layout = QHBoxLayout()
-        self.volume_label = QLabel("Volume des notifications:", self.notifications_page)
-        
-        # Création du slider
-        self.volume_slider = QSlider(Qt.Horizontal, self.notifications_page)
+        self.volume_label = QLabel("Volume :", sound_box)
+        self.volume_slider = QSlider(Qt.Horizontal, sound_box)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setTickPosition(QSlider.TicksBelow)
         self.volume_slider.setTickInterval(10)
-        
-        # Création du spinbox
-        self.volume_spinbox = QSpinBox(self.notifications_page)
+        self.volume_slider.setAccessibleName("Volume des notifications")
+        self.volume_spinbox = QSpinBox(sound_box)
         self.volume_spinbox.setRange(0, 100)
-        self.volume_spinbox.setSuffix("%")
-        
-        # Connexion des signaux pour la synchronisation
+        self.volume_spinbox.setSuffix(" %")
         self.volume_slider.valueChanged.connect(self.volume_spinbox.setValue)
         self.volume_spinbox.valueChanged.connect(self.volume_slider.setValue)
-        
-        # Ajout des widgets au layout
+        self.volume_label.setBuddy(self.volume_slider)
         self.volume_layout.addWidget(self.volume_label)
         self.volume_layout.addWidget(self.volume_slider)
         self.volume_layout.addWidget(self.volume_spinbox)
-        self.notifications_layout.addLayout(self.volume_layout)
+        sound_layout.addLayout(self.volume_layout)
 
         # Test direct d'un son (indépendant du gestionnaire de notifications :
         # chaque clic rejoue le son, sans déduplication). Sert au réglage du
         # volume — l'utilisateur peut écouter chacun des trois sons.
         self.sound_test_layout = QHBoxLayout()
-        self.sound_test_label = QLabel("Tester un son:", self.notifications_page)
-        self.sound_test_combo = QComboBox(self.notifications_page)
+        self.sound_test_label = QLabel("Tester un son :", sound_box)
+        self.sound_test_combo = QComboBox(sound_box)
         for name in SOUNDS:
             self.sound_test_combo.addItem(SOUND_LABELS.get(name, name), name)
-        self.sound_test_button = QPushButton("Jouer", self.notifications_page)
+        self.sound_test_label.setBuddy(self.sound_test_combo)
+        self.sound_test_button = QPushButton("Jouer", sound_box)
         self.sound_test_button.clicked.connect(self.test_sound)
         self.sound_test_layout.addWidget(self.sound_test_label)
-        self.sound_test_layout.addWidget(self.sound_test_combo)
+        self.sound_test_layout.addWidget(self.sound_test_combo, 1)
         self.sound_test_layout.addWidget(self.sound_test_button)
-        self.notifications_layout.addLayout(self.sound_test_layout)
+        sound_layout.addLayout(self.sound_test_layout)
 
         # Diagnostic : jusqu'ici un échec audio (périphérique absent, codec
         # manquant, fichier son introuvable…) n'allait QUE dans le journal —
         # l'utilisateur ne voyait qu'un silence. Le lecteur signale désormais son
         # dernier problème, affiché ici et rafraîchi en direct.
-        self.audio_error_label = QLabel("", self.notifications_page)
+        self.audio_error_label = QLabel("", sound_box)
         self.audio_error_label.setWordWrap(True)
         self.audio_error_label.setStyleSheet("color: #b00020;")
         self.audio_error_label.setAccessibleName("Problème audio")
         self.audio_error_label.setVisible(False)
-        self.notifications_layout.addWidget(self.audio_error_label)
+        sound_layout.addWidget(self.audio_error_label)
 
-        # Bouton de test des notifications
-        self.test_notification_button = QPushButton("Tester la notification", self.notifications_page)
+        # Aperçu complet (affichage + son) avec les réglages en cours d'édition.
+        self.test_notification_button = QPushButton(
+            "Tester une notification", self.notifications_page)
+        self.test_notification_button.setToolTip(
+            "Affiche une notification d'essai avec la durée, la taille, le coin "
+            "et le volume en cours de réglage.")
         self.test_notification_button.clicked.connect(self.test_notification)
         self.notifications_layout.addWidget(self.test_notification_button)
-        
+
         self.notifications_layout.addStretch()
         
         self.stacked_widget.addWidget(self.notifications_page)
@@ -717,6 +766,23 @@ class PreferencesDialog(QDialog):
         self.load_preferences()
         self.skin_combo.currentIndexChanged.connect(self._on_skin_selected)
 
+        # Réglages qui dépendent d'un autre : grisés (ou masqués) quand ils
+        # n'auraient aucun effet.
+        for checkbox in (self.compact_mode_checkbox, self.horizontal_mode_checkbox,
+                         self.display_patient_list):
+            checkbox.toggled.connect(self._update_dependent_controls)
+        self.shortcut_mode_combo.currentIndexChanged.connect(
+            self._update_dependent_controls)
+        self._update_dependent_controls()
+
+        # Modifications non enregistrées : référence = état chargé (puis état
+        # enregistré par « Appliquer »). « Appliquer » n'est actif que s'il y a
+        # quelque chose à appliquer, et fermer sans enregistrer demande
+        # confirmation (reject).
+        self._baseline = self._form_settings()
+        self._watch_form_changes()
+        self._update_dirty_state()
+
         # setCurrentItem coche l'entrée de la liste ; change_page rejoue le clic.
         self.navigation_list.setCurrentItem(self.general_item)
         self.change_page(self.general_item)
@@ -761,6 +827,90 @@ class PreferencesDialog(QDialog):
             if item == page_item:
                 self.stacked_widget.setCurrentIndex(index)
                 return
+
+    # --- Réglages dépendants et modifications non enregistrées ---------------
+
+    def _update_dependent_controls(self, *_args):
+        """Grise (ou masque) les réglages sans effet dans la configuration en
+        cours d'édition :
+        - l'épaisseur du panneau n'agit qu'en mode compact ;
+        - une seule position de liste est affichée, celle de l'orientation
+          choisie (une position est mémorisée par orientation) ;
+        - position et taille du texte de la liste n'ont de sens que si la
+          liste est affichée ;
+        - raccourcis désactivés : combinaisons et options grisées."""
+        compact = self.compact_mode_checkbox.isChecked()
+        self.panel_thickness_label.setEnabled(compact)
+        self.panel_thickness_spinbox.setEnabled(compact)
+
+        horizontal = self.horizontal_mode_checkbox.isChecked()
+        self.patient_list_position_vertical.setVisible(not horizontal)
+        self.patient_list_position_horizontal.setVisible(horizontal)
+        show_list = self.display_patient_list.isChecked()
+        for widget in (self.patient_list_position_label,
+                       self.patient_list_position_vertical,
+                       self.patient_list_position_horizontal,
+                       self.patient_list_font_size_label,
+                       self.patient_list_font_size_spinbox):
+            widget.setEnabled(show_list)
+
+        shortcuts_on = self._shortcuts_enabled()
+        self.shortcut_keys_box.setEnabled(shortcuts_on)
+        self.confirm_sensitive_checkbox.setEnabled(shortcuts_on)
+        self.shortcut_feedback_checkbox.setEnabled(shortcuts_on)
+
+    def _shortcuts_enabled(self):
+        """Mode de raccourcis en cours d'édition différent de « Désactivés »."""
+        return self.shortcut_mode_combo.currentData() != MODE_DISABLED
+
+    def _watch_form_changes(self):
+        """Branche le suivi des modifications sur tous les champs du formulaire.
+        La comparaison porte sur les VALEURS (_form_settings) : un champ qui ne
+        porte aucun réglage (ex. sélecteur « Tester un son ») ne rend jamais le
+        formulaire « modifié »."""
+        for checkbox in self.findChildren(QCheckBox):
+            checkbox.toggled.connect(self._update_dirty_state)
+        for combo in self.findChildren(QComboBox):
+            combo.currentIndexChanged.connect(self._update_dirty_state)
+        for spin in self.findChildren(QSpinBox):
+            spin.valueChanged.connect(self._update_dirty_state)
+        for slider in self.findChildren(QSlider):
+            slider.valueChanged.connect(self._update_dirty_state)
+        for edit in self.findChildren(ShortcutEdit):
+            edit.shortcutChanged.connect(self._update_dirty_state)
+
+    def _has_unsaved_changes(self):
+        """Le formulaire diffère-t-il des valeurs enregistrées ?"""
+        baseline = getattr(self, "_baseline", None)
+        return baseline is not None and self._form_settings() != baseline
+
+    def _update_dirty_state(self, *_args):
+        dirty = self._has_unsaved_changes()
+        self.apply_button.setEnabled(dirty)
+        if dirty:
+            self.save_status_label.setText("Modifications non enregistrées.")
+        elif self.save_status_label.text() == "Modifications non enregistrées.":
+            self.save_status_label.setText("")
+
+    def _confirm_discard(self):
+        """Fermeture avec des modifications non enregistrées : « save »,
+        « discard » ou « cancel » (continuer à modifier)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Modifications non enregistrées")
+        box.setText("Des préférences ont été modifiées sans être enregistrées.")
+        box.setInformativeText("Voulez-vous les enregistrer avant de fermer ?")
+        save = box.addButton("Enregistrer", QMessageBox.AcceptRole)
+        discard = box.addButton("Ne pas enregistrer", QMessageBox.DestructiveRole)
+        box.addButton("Continuer à modifier", QMessageBox.RejectRole)
+        box.setDefaultButton(save)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save:
+            return "save"
+        if clicked is discard:
+            return "discard"
+        return "cancel"
 
     # --- Page « Poste » ------------------------------------------------------
 
@@ -1083,7 +1233,10 @@ class PreferencesDialog(QDialog):
         # réelle reconnue (ni champ vide, ni modificateur seul, ni touche inconnue).
         # Sans ce contrôle, un « Ctrl » seul ou une touche invalide était accepté
         # puis silencieusement ignoré à l'installation (action inopérante).
-        invalid = find_invalid_shortcuts(shortcut_map)
+        # Raccourcis désactivés : les champs sont grisés (donc non corrigeables)
+        # et sans effet — pas de contrôle ; il aura lieu à la réactivation.
+        shortcuts_on = self._shortcuts_enabled()
+        invalid = find_invalid_shortcuts(shortcut_map) if shortcuts_on else {}
         if invalid:
             reasons = {
                 INVALID_EMPTY: "aucune touche définie",
@@ -1106,7 +1259,7 @@ class PreferencesDialog(QDialog):
         # Détection des doublons de raccourcis (point 27) : deux actions ne peuvent
         # pas utiliser la même combinaison (comparaison indépendante de l'ordre et
         # de la casse des modificateurs). On refuse d'enregistrer si conflit.
-        duplicates = find_duplicate_shortcuts(shortcut_map)
+        duplicates = find_duplicate_shortcuts(shortcut_map) if shortcuts_on else {}
         if duplicates:
             conflicts = "\n".join(
                 "• " + " / ".join(ACTION_LABELS.get(a, a) for a in actions)
@@ -1238,6 +1391,8 @@ class PreferencesDialog(QDialog):
         self.current_skin = values["selected_skin"]
         self._volume_previewed = False
         self._skin_previewed = False
+        # Le formulaire correspond désormais aux valeurs enregistrées.
+        self._baseline = self._form_settings()
 
         # Un SEUL mécanisme d'application (point 7) :
         #  - « Appliquer » : le dialogue reste ouvert, le signal ``applied``
@@ -1249,6 +1404,7 @@ class PreferencesDialog(QDialog):
         if close:
             self.accept()
         else:
+            self.apply_button.setEnabled(False)
             self.save_status_label.setText("Préférences enregistrées et appliquées.")
             self.applied.emit()
 
@@ -1303,7 +1459,7 @@ class PreferencesDialog(QDialog):
         """
         # Donnée de chaque entrée = valeur enregistrée (NO_SKIN pour « aucun ») :
         # le libellé affiché n'est plus jamais persisté.
-        self.skin_combo.addItem(resources.LEGACY_NO_SKIN_LABEL, resources.NO_SKIN)
+        self.skin_combo.addItem(NO_SKIN_LABEL, resources.NO_SKIN)
         skins = resources.available_skins()
         if not skins:
             logger.warning("Aucun skin trouvé dans %s", resources.skins_dir())
@@ -1342,6 +1498,17 @@ class PreferencesDialog(QDialog):
         self._skin_previewed = False
 
     def reject(self):
+        # Annuler, Échap ou la croix : si des modifications n'ont pas été
+        # enregistrées, on le signale au lieu de les jeter en silence.
+        if self._has_unsaved_changes():
+            choice = self._confirm_discard()
+            if choice == "cancel":
+                return
+            if choice == "save":
+                # Ferme (Accepted) si la validation passe ; sinon le dialogue
+                # reste ouvert sur le champ fautif.
+                self.save_preferences(close_dialog=True)
+                return
         # Réapplique le skin ET le volume enregistrés si l'utilisateur ferme sans
         # sauvegarder : le test de notification est un APERÇU, il ne doit rien
         # laisser derrière lui.

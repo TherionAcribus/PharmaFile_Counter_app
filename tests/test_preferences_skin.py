@@ -46,6 +46,14 @@ def isolated_settings(_shared_qapplication):
     QCoreApplication.setApplicationName(application)
 
 
+@pytest.fixture(autouse=True)
+def _discard_on_close(monkeypatch):
+    """Choisir un skin modifie le formulaire : « Annuler » demanderait alors
+    confirmation. Ces tests portent sur l'aperçu, pas sur cette question."""
+    monkeypatch.setattr(preferences.PreferencesDialog, "_confirm_discard",
+                        lambda self: "discard")
+
+
 def _dialog():
     parent = QWidget()
     dialog = preferences.PreferencesDialog(parent)
