@@ -192,6 +192,36 @@ def test_enregistrer_persiste_et_ferme_sans_emit_applied(isolated_settings):
     assert applied == []
 
 
+def test_ouvrir_dossier_journaux(isolated_settings, monkeypatch, tmp_path):
+    """Le bouton Journal ouvre l'explorateur sur le dossier des logs réel
+    (créé au besoin) via QDesktopServices — pas un chemin en dur."""
+    log_dir = tmp_path / "logs_dir"   # volontairement absent : doit être créé
+    monkeypatch.setattr(preferences, "default_log_dir", lambda: log_dir)
+    opened = []
+    monkeypatch.setattr(preferences.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url) or True)
+    dialog = _dialog()
+    dialog.open_logs_button.click()
+    assert log_dir.is_dir()
+    assert len(opened) == 1
+    from pathlib import Path
+    assert Path(opened[0].toLocalFile()) == log_dir
+
+
+def test_ouvrir_dossier_journaux_echec_signale(isolated_settings, monkeypatch, tmp_path):
+    """Si l'explorateur refuse, l'échec est signalé — pas un clic muet."""
+    monkeypatch.setattr(preferences, "default_log_dir",
+                        lambda: tmp_path / "logs")
+    monkeypatch.setattr(preferences.QDesktopServices, "openUrl",
+                        lambda url: False)
+    warned = []
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a))
+    dialog = _dialog()
+    dialog.open_logs_button.click()
+    assert warned
+
+
 def test_pages_sont_scrollables(isolated_settings):
     """Les 4 pages sont des QScrollArea redimensionnables : le contenu reste
     accessible sur petit écran / grande police au lieu d'être tronqué."""

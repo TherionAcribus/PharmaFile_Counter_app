@@ -5,7 +5,8 @@ from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
-from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
+from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread, QUrl
+from PySide6.QtGui import QDesktopServices
 from connections import DEFAULT_TIMEOUT
 import endpoints
 import resources
@@ -37,6 +38,7 @@ from accessibility import (
     MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
 )
 from audio import SOUNDS
+from my_logger import default_log_dir
 
 #: Libellés affichés pour chaque son dans le sélecteur « Tester un son ».
 #: Les clés viennent de ``audio.SOUNDS`` : si un son est ajouté côté lecteur,
@@ -396,6 +398,11 @@ class PreferencesDialog(QDialog):
 
         self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", log_box)
         log_box_layout.addWidget(self.debug_window)
+        self.open_logs_button = QPushButton("Ouvrir le dossier des journaux", log_box)
+        self.open_logs_button.setToolTip(
+            "Ouvre l'explorateur sur les fichiers de log de l'application.")
+        self.open_logs_button.clicked.connect(self._open_log_folder)
+        log_box_layout.addWidget(self.open_logs_button)
 
         self.general_layout.addStretch()
 
@@ -1422,6 +1429,23 @@ class PreferencesDialog(QDialog):
         # Liste sous le panneau en mode vertical (onglets partagés avec la
         # messagerie en mode compact) plutôt qu'à droite, qui élargirait.
         self.patient_list_position_vertical.setCurrentText(BOTTOM_TEXT)
+
+    def _open_log_folder(self):
+        """Ouvre l'explorateur sur le dossier des journaux (créé au besoin).
+        Toute défaillance est signalée — jamais un clic sans effet visible."""
+        log_dir = default_log_dir()
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Journaux inaccessibles",
+                f"Impossible de préparer le dossier des journaux :\n{e}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir))):
+            QMessageBox.warning(
+                self, "Journaux inaccessibles",
+                "Impossible d'ouvrir le dossier des journaux :\n"
+                f"{log_dir}")
 
     def _reset_window_position(self):
         """Délègue à la fenêtre principale la réinitialisation de sa géométrie."""
