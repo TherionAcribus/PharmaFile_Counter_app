@@ -25,6 +25,8 @@ def _make_fake_dialog(code):
             # « Appliquer » émet ce signal : show_preferences_dialog s'y
             # connecte, comme sur le vrai dialogue.
             self.applied = types.SimpleNamespace(connect=lambda slot: None)
+            # Configuration du poste modifiée depuis la page « Poste ».
+            self.station_changed = types.SimpleNamespace(connect=lambda slot: None)
 
         def exec(self):
             return code

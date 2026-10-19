@@ -1,17 +1,10 @@
-import requests
-import os
 import logging
-from datetime import datetime
 
-logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
-from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread, QTimer, QUrl
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
+from PySide6.QtCore import Signal, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from connections import DEFAULT_TIMEOUT
-import endpoints
 import resources
-from secret_store import load_secret, save_secret
-from counter_id_utils import coerce_counter_id
+from secret_store import secret_storage
 from shortcut_defaults import (
     default_shortcut, join_shortcut, read_shortcut, split_shortcut,
 )
@@ -19,6 +12,7 @@ from shortcut_edit import ShortcutEdit
 import notification_rules
 import profile_sync
 import settings_schema
+from counter_id_utils import coerce_counter_id
 from panel_layout import (
     MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
 )
@@ -27,19 +21,14 @@ from shortcut_config import (
     ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
     INVALID_EMPTY, INVALID_LONE_MODIFIER, INVALID_UNKNOWN_KEY,
 )
-from url_validation import normalize_url, validate_server_url
-
-
-def dev_insecure_allowed():
-    """Mode développement explicite : autorise http:// vers un serveur distant.
-    Activé uniquement par la variable d'environnement APPCOMPTOIR_DEV_INSECURE
-    (pas d'option d'interface, pour éviter un déblocage accidentel en production)."""
-    return bool(os.environ.get("APPCOMPTOIR_DEV_INSECURE"))
+from station_dialog import StationDialog, secret_status_text, sync_and_verify
 from accessibility import (
     MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
 )
 from audio import SOUNDS
 from my_logger import default_log_dir
+
+logger = logging.getLogger("appcomptoir.preferences")
 
 #: Libellés affichés pour chaque son dans le sélecteur « Tester un son ».
 #: Les clés viennent de ``audio.SOUNDS`` : si un son est ajouté côté lecteur,
@@ -50,118 +39,6 @@ SOUND_LABELS = {
     "patient_taken": "Patient déjà pris",
     "please_validate": "Pensez à valider",
 }
-
-
-class TestConnectionWorker(QThread):
-    connection_tested = Signal(bool, str)
-
-    def __init__(self, url):
-        super().__init__()
-        self.url = url
-
-    def run(self):
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            response = requests.get(self.url, timeout=DEFAULT_TIMEOUT)
-            if response.status_code == 200:
-                self.connection_tested.emit(True, f"Connexion réussie à {current_time}")
-            else:
-                self.connection_tested.emit(False, f"Erreur de connexion: {response.status_code} à {current_time}")
-        except requests.exceptions.RequestException as e:
-            self.connection_tested.emit(False, f"Erreur: {e} à {current_time}")
-
-
-class CountersWorker(QThread):
-    """ Récupère la liste des comptoirs en arrière-plan pour ne pas geler la
-    boîte de dialogue Préférences pendant l'appel réseau.
-
-    /api/counters est protégée côté serveur (require_app_token_or_login) : on
-    récupère d'abord un token applicatif avec le secret saisi dans les
-    préférences avant d'appeler la route. """
-    result = Signal(bool, object)  # success, counters (list) ou message d'erreur (str)
-
-    def __init__(self, web_url, app_secret):
-        super().__init__()
-        self.web_url = web_url
-        self.app_secret = app_secret
-
-    def run(self):
-        try:
-            token_response = requests.post(endpoints.app_token(self.web_url),
-                                            data={'app_secret': self.app_secret},
-                                            timeout=DEFAULT_TIMEOUT)
-            if token_response.status_code != 200:
-                self.result.emit(False, "Secret applicatif invalide : impossible de récupérer la liste des comptoirs")
-                return
-            # Réponse JSON invalide ou jeton manquant : on émet un échec explicite
-            # au lieu de laisser une exception tuer silencieusement le thread (le
-            # signal ne serait jamais émis et l'interface resterait figée).
-            try:
-                token = token_response.json().get("token")
-            except ValueError:
-                token = None
-            if not token:
-                self.result.emit(False, "Réponse du serveur invalide (jeton manquant).")
-                return
-
-            response = requests.get(endpoints.counters(self.web_url),
-                                     headers={'X-App-Token': token}, timeout=DEFAULT_TIMEOUT)
-            if response.status_code != 200:
-                self.result.emit(False, f"Erreur de chargement des comptoirs: {response.status_code}")
-                return
-            try:
-                counters = response.json()
-            except ValueError:
-                self.result.emit(False, "Réponse du serveur invalide (liste des comptoirs illisible).")
-                return
-            if not isinstance(counters, list):
-                self.result.emit(False, "Réponse du serveur invalide (format de liste inattendu).")
-                return
-            self.result.emit(True, counters)
-        except requests.exceptions.RequestException as e:
-            self.result.emit(False, f"Erreur: {e}")
-
-
-class TokenCheckWorker(QThread):
-    """ Vérifie, en arrière-plan, qu'une URL + un secret permettent réellement
-    d'obtenir un jeton applicatif (connexion « exploitable »). Utilisé avant
-    d'enregistrer un changement de serveur/secret : on ne confirme l'enregistrement
-    que si la nouvelle connexion fonctionne (point 8). """
-    checked = Signal(bool, str)  # ok, message d'erreur (vide si ok)
-
-    def __init__(self, web_url, app_secret):
-        super().__init__()
-        self.web_url = web_url
-        self.app_secret = app_secret
-
-    def run(self):
-        try:
-            resp = requests.post(endpoints.app_token(self.web_url),
-                                 data={"app_secret": self.app_secret},
-                                 timeout=DEFAULT_TIMEOUT)
-        except requests.exceptions.RequestException as e:
-            self.checked.emit(False, f"Serveur injoignable : {e}")
-            return
-        if resp.status_code == 200:
-            try:
-                token = resp.json().get("token")
-            except ValueError:
-                token = None
-            if token:
-                self.checked.emit(True, "")
-            else:
-                self.checked.emit(False, "Réponse du serveur invalide (jeton manquant).")
-            return
-        if resp.status_code in (401, 403):
-            self.checked.emit(False, "Secret applicatif refusé par le serveur.")
-            return
-        self.checked.emit(False, f"Réponse inattendue du serveur (statut {resp.status_code}).")
-
-
-# Délai maximal (ms) d'attente d'un worker de test à la fermeture du dialogue
-# (point 9). Borné pour ne jamais figer l'interface : les appels réseau ont déjà
-# leur propre timeout (DEFAULT_TIMEOUT), ce délai n'est qu'un garde-fou.
-WORKER_SHUTDOWN_TIMEOUT_MS = 3000
 
 
 # Constants for UI texts and corresponding values
@@ -175,39 +52,19 @@ REVERSE_POSITION_MAPPING = {v: k for k, v in POSITION_MAPPING.items()}
 
 
 class PreferencesDialog(QDialog):
-    counters_loaded = Signal(list)
     # Émis après chaque persistance réussie déclenchée par « Appliquer » (le
     # dialogue reste ouvert). « Enregistrer » n'émet rien : son Accepted sert
     # déjà de déclencheur unique d'apply_preferences côté fenêtre.
     applied = Signal()
+    # Émis quand la configuration du poste (serveur, secret, comptoir) vient
+    # d'être enregistrée depuis la page « Poste » : la fenêtre l'applique tout
+    # de suite (reconnexion des services), indépendamment du formulaire des
+    # préférences, qui reste ouvert et non enregistré.
+    station_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Préférences")
-
-        # Registre des workers de test en cours (point 9), indexés par « kind »
-        # (une entrée par type de test). On conserve une référence forte tant
-        # que le thread tourne — sinon le ramasse-miettes peut détruire le
-        # QThread en cours d'exécution (« QThread: Destroyed while thread is
-        # still running »). Le kind sert aussi à interdire deux tests identiques
-        # simultanés. _closing coupe tout nouveau lancement pendant la fermeture.
-        self._workers = {}
-        self._closing = False
-
-        # Couple (URL, secret) dont provient la liste de comptoirs affichée
-        # (None tant qu'aucun chargement n'a abouti). Permet de ne recharger la
-        # liste à l'ouverture de la page « Connexion » que si nécessaire
-        # (_maybe_load_counters) et de détecter une liste périmée à
-        # l'enregistrement (save_preferences).
-        self._counters_loaded_for = None
-
-        # Instantané des valeurs à enregistrer : rempli par save_preferences
-        # APRÈS validation, lu par _finalize_save et les vérifications
-        # asynchrones. Les champs restent éditables pendant les workers réseau
-        # (le bouton Enregistrer est désactivé, pas les saisies) : sans ce
-        # snapshot, un texte modifié entre le clic et la fin de la vérification
-        # serait persisté sans avoir été vérifié.
-        self._pending_save = None
 
         # Volume enregistré (celui du lecteur principal à l'ouverture) et drapeau
         # « un aperçu a modifié le volume du lecteur ». Le bouton « Tester la
@@ -238,15 +95,22 @@ class PreferencesDialog(QDialog):
         # Tab changent aussi de page, pas seulement un clic souris.
         self.navigation_list.currentItemChanged.connect(self.change_page)
         
+        # « Session » : choix personnels liés à la connexion de l'équipier.
+        # « Poste » (en dernier, rarement utile) : configuration de la machine
+        # (serveur, secret, comptoir), en lecture seule ici — sa modification
+        # passe par une fenêtre dédiée, après avertissement.
         self.general_item = QListWidgetItem("Général")
-        self.connexion_item = QListWidgetItem("Connexion")
+        self.session_item = QListWidgetItem("Session")
         self.raccourcis_item = QListWidgetItem("Raccourcis")
         self.notifications_item = QListWidgetItem("Notifications")
-        self.navigation_list.addItem(self.general_item)
-        self.navigation_list.addItem(self.connexion_item)
-        self.navigation_list.addItem(self.raccourcis_item)
-        self.navigation_list.addItem(self.notifications_item)        
-        
+        self.station_item = QListWidgetItem("Poste")
+        # Ordre = index des pages dans le QStackedWidget (cf. change_page).
+        self._page_items = [self.general_item, self.session_item,
+                            self.raccourcis_item, self.notifications_item,
+                            self.station_item]
+        for item in self._page_items:
+            self.navigation_list.addItem(item)
+
         self.content_layout.addWidget(self.navigation_list)
         
         self.stacked_widget = QStackedWidget()
@@ -418,88 +282,21 @@ class PreferencesDialog(QDialog):
 
         self.content_layout.addWidget(self.stacked_widget)
 
-        self.connexion_page, self.connexion_layout = self._scrollable_page()
-
-        self.url_label = QLabel("Adresse du site web:", self.connexion_page)
-        self.connexion_layout.addWidget(self.url_label)
-        
-        self.url_input = QLineEdit(self.connexion_page)
-        # Aucune adresse par défaut n'est gravée dans le code : le texte indicatif
-        # guide la saisie de l'adresse propre à l'officine.
-        self.url_input.setPlaceholderText("https://mon-serveur.example.com")
-        self.connexion_layout.addWidget(self.url_input)
-
-        self.app_secret_label = QLabel("Secret applicatif (doit correspondre à APP_SECRET côté serveur):", self.connexion_page)
-        self.connexion_layout.addWidget(self.app_secret_label)
-
-        self.app_secret_input = QLineEdit()
-        self.app_secret_input.setEchoMode(QLineEdit.Password)
-
-        # Le secret est long : saisie masquée par défaut, mais une case
-        # « Afficher » permet de vérifier ce qu'on tape sans retaper à l'aveugle.
-        self.app_secret_row = QHBoxLayout()
-        self.app_secret_row.addWidget(self.app_secret_input)
-        self.show_secret_checkbox = QCheckBox("Afficher", self.connexion_page)
-        self.show_secret_checkbox.setToolTip(
-            "Affiche le secret en clair dans le champ pour vérifier la saisie.")
-        self.show_secret_checkbox.toggled.connect(
-            lambda checked: self.app_secret_input.setEchoMode(
-                QLineEdit.Normal if checked else QLineEdit.Password))
-        self.app_secret_row.addWidget(self.show_secret_checkbox)
-        self.connexion_layout.addLayout(self.app_secret_row)
-
-        # URL ou secret retouché : la liste de comptoirs affichée devient
-        # suspecte (elle vient peut-être de l'ancien couple) — on la marque
-        # périmée au lieu de laisser des comptoirs d'un autre serveur.
-        self.url_input.textChanged.connect(self._on_connection_fields_changed)
-        self.app_secret_input.textChanged.connect(self._on_connection_fields_changed)
-
-        # Le test exploite l'adresse ET le secret (chargement des comptoirs) :
-        # le bouton est placé sous les deux champs qu'il consomme.
-        self.test_button = QPushButton("Tester la connexion", self.connexion_page)
-        self.test_button.clicked.connect(self.test_url)
-        self.connexion_layout.addWidget(self.test_button)
-
-        self.status_label = QLabel(self.connexion_page)
-        # wordWrap plutôt qu'une largeur fixe : le texte long (message d'erreur)
-        # passe à la ligne et le dialogue reste redimensionnable.
-        self.status_label.setWordWrap(True)
-        # Texte sélectionnable : un message d'erreur reste copiable, comme
-        # avec l'ancien QTextEdit en lecture seule.
-        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.connexion_layout.addWidget(self.status_label)
-
-        # État temps réel ACTUEL de l'application (socket) : distinct du
-        # status_label ci-dessus, qui rend compte des TESTS lancés ici. On lit
-        # l'état mémorisé par la fenêtre (_rt_status) et on le rafraîchit tant
-        # que le dialogue est ouvert — l'utilisateur voit tout de suite si le
-        # poste est en ligne, sans tester.
-        self.live_status_label = QLabel("", self.connexion_page)
-        self.live_status_label.setWordWrap(True)
-        self.connexion_layout.addWidget(self.live_status_label)
-        self._refresh_live_connection_status()
-        self._live_status_timer = QTimer(self)
-        self._live_status_timer.setInterval(1500)
-        self._live_status_timer.timeout.connect(
-            self._refresh_live_connection_status)
-        self._live_status_timer.start()
-
-        self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
-        self.connexion_layout.addWidget(self.counter_label)
-        
-        self.counter_combobox = QComboBox(self.connexion_page)
-        self.connexion_layout.addWidget(self.counter_combobox)
+        # --- Session : choix personnels liés à la connexion de l'équipier ---
+        # (la configuration du POSTE — serveur, secret, comptoir — est dans la
+        # page « Poste », en lecture seule).
+        self.session_page, self.session_layout = self._scrollable_page()
 
         # Reconnexion automatique au démarrage : les postes sont le plus
         # souvent occupés par le même équipier, on évite la ressaisie du code.
         self.reconnect_last_user_checkbox = QCheckBox(
             "Au prochain démarrage, ouvrir la session avec le même utilisateur",
-            self.connexion_page)
+            self.session_page)
         self.reconnect_last_user_checkbox.setToolTip(
             "Mémorise les initiales du dernier équipier connecté et tente une "
             "connexion automatique au lancement de l'application.\n"
             "En cas d'échec, l'écran de connexion s'affiche normalement.")
-        self.connexion_layout.addWidget(self.reconnect_last_user_checkbox)
+        self.session_layout.addWidget(self.reconnect_last_user_checkbox)
 
         # --- Profil équipier sur le serveur ---
         # Les réglages personnels (raccourcis, notifications, disposition,
@@ -508,9 +305,9 @@ class PreferencesDialog(QDialog):
         # secret). La politique de récupération voyage DANS le profil : elle
         # suit la personne, pas la machine.
         self.profile_box = QGroupBox(
-            "Mon profil sur le serveur", self.connexion_page)
+            "Mon profil sur le serveur", self.session_page)
         profile_box_layout = QVBoxLayout(self.profile_box)
-        self.connexion_layout.addWidget(self.profile_box)
+        self.session_layout.addWidget(self.profile_box)
 
         self.profile_policy_label = QLabel(
             "Récupération de mes préférences :", self.profile_box)
@@ -553,17 +350,16 @@ class PreferencesDialog(QDialog):
         self.profile_buttons_layout.addWidget(self.profile_fetch_button)
         profile_box_layout.addLayout(self.profile_buttons_layout)
 
-        # Résultat des opérations profil (envoi/récupération), distinct du
-        # statut des tests de connexion au-dessus.
+        # Résultat des opérations profil (envoi/récupération).
         self.profile_status_label = QLabel("", self.profile_box)
         self.profile_status_label.setWordWrap(True)
         self.profile_status_label.setTextInteractionFlags(
             Qt.TextSelectableByMouse)
         profile_box_layout.addWidget(self.profile_status_label)
 
-        self.connexion_layout.addStretch()
+        self.session_layout.addStretch()
         
-        self.stacked_widget.addWidget(self.connexion_page)
+        self.stacked_widget.addWidget(self.session_page)
         
         self.raccourcis_page, self.raccourcis_layout = self._scrollable_page()
 
@@ -822,9 +618,69 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget.addWidget(self.notifications_page)
 
+        # --- Poste : configuration de la machine, en lecture seule ---
+        # Serveur, secret et comptoir sont fixés à l'installation (le PC ne
+        # quitte pas son comptoir) et les modifier reconnecte toute
+        # l'application : ils ne sont plus éditables ici, seulement résumés.
+        # La modification passe par une fenêtre dédiée, après avertissement.
+        self.station_page, self.station_layout = self._scrollable_page()
+
+        station_box = QGroupBox("Configuration du poste", self.station_page)
+        station_grid = QGridLayout(station_box)
+        station_grid.setColumnStretch(1, 1)
+        self.station_url_value = QLabel("", station_box)
+        self.station_counter_value = QLabel("", station_box)
+        self.station_secret_value = QLabel("", station_box)
+        for row, (caption, value) in enumerate((
+                ("Serveur :", self.station_url_value),
+                ("Comptoir :", self.station_counter_value),
+                ("Secret applicatif :", self.station_secret_value))):
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            station_grid.addWidget(QLabel(caption, station_box), row, 0,
+                                   Qt.AlignTop)
+            station_grid.addWidget(value, row, 1)
+        self.station_layout.addWidget(station_box)
+
+        # État temps réel ACTUEL de l'application (socket). On lit l'état
+        # mémorisé par la fenêtre (_rt_status) et on le rafraîchit tant que le
+        # dialogue est ouvert — on voit tout de suite si le poste est en ligne.
+        self.live_status_label = QLabel("", self.station_page)
+        self.live_status_label.setWordWrap(True)
+        self.station_layout.addWidget(self.live_status_label)
+
+        station_hint = QLabel(
+            "Ces réglages sont fixés à l'installation du poste. Les modifier "
+            "reconnecte l'application au serveur et libère le comptoir occupé.",
+            self.station_page)
+        station_hint.setWordWrap(True)
+        self.station_layout.addWidget(station_hint)
+
+        self.edit_station_button = QPushButton(
+            "Modifier la configuration du poste…", self.station_page)
+        self.edit_station_button.clicked.connect(self._edit_station)
+        self.station_layout.addWidget(self.edit_station_button)
+        self.station_layout.addStretch()
+
+        self.stacked_widget.addWidget(self.station_page)
+
+        self._refresh_station_summary()
+        self._refresh_live_connection_status()
+        self._live_status_timer = QTimer(self)
+        self._live_status_timer.setInterval(1500)
+        self._live_status_timer.timeout.connect(
+            self._refresh_live_connection_status)
+        self._live_status_timer.start()
+
+        # Résultat d'« Appliquer » (le dialogue reste ouvert) : sans ce retour,
+        # rien n'indiquait que l'enregistrement avait eu lieu.
+        self.save_status_label = QLabel("", self)
+        self.save_status_label.setWordWrap(True)
+        self.main_layout.addWidget(self.save_status_label)
+
         # Barre de boutons en bas : « Annuler » rend explicite la fermeture
         # sans enregistrer (auparavant il fallait deviner la croix). reject()
-        # restaure déjà l'aperçu skin/volume et arrête les workers (via done).
+        # restaure l'aperçu skin/volume.
         self.button_box = QDialogButtonBox(self)
         self.save_button = self.button_box.addButton(
             "Enregistrer", QDialogButtonBox.AcceptRole)
@@ -845,7 +701,8 @@ class PreferencesDialog(QDialog):
             "Valeurs par défaut", QDialogButtonBox.ResetRole)
         self.defaults_button.setToolTip(
             "Rétablit les valeurs par défaut.\n"
-            "L'adresse du serveur, le secret et le comptoir sont conservés.")
+            "La configuration du poste (serveur, secret, comptoir) n'est "
+            "jamais modifiée.")
         defaults_menu = QMenu(self.defaults_button)
         defaults_menu.addAction(
             "Rétablir cette page",
@@ -860,67 +717,9 @@ class PreferencesDialog(QDialog):
         self.load_preferences()
         self.skin_combo.currentIndexChanged.connect(self._on_skin_selected)
 
-        self.counters_loaded.connect(self.update_counters)
-
-        # Page d'ouverture : « Connexion » tant que la connexion n'est pas
-        # complètement renseignée (adresse ou comptoir manquant) — c'est le
-        # seul endroit où la compléter, et c'est l'écran que main ouvre au
-        # premier démarrage. « Général » sinon. setCurrentItem coche l'entrée
-        # de la liste et change_page rejoue le clic (index de la page +
-        # chargement des comptoirs si possible).
-        initial_item = (self.general_item
-                        if self.url_input.text() and self.counter_id is not None
-                        else self.connexion_item)
-        self.navigation_list.setCurrentItem(initial_item)
-        self.change_page(initial_item)
-        
-
-    def _start_worker(self, kind, worker):
-        """ Démarre un worker de test en le suivant dans le registre (point 9).
-
-        - Conserve une référence forte jusqu'à sa fin (empêche la destruction du
-          QThread pendant qu'il tourne).
-        - Empêche deux tests identiques simultanés : si un worker du même `kind`
-          est déjà en cours, refuse le nouveau et renvoie False.
-        - Refuse aussi tout lancement pendant la fermeture du dialogue.
-
-        Renvoie True si le worker a été démarré, False sinon. """
-        if self._closing:
-            return False
-        existing = self._workers.get(kind)
-        if existing is not None and existing.isRunning():
-            return False
-        # Remplace un éventuel worker précédent (déjà terminé) : la référence est
-        # gardée tant qu'il tourne, puis libérée au prochain lancement du même
-        # kind ou à la fermeture (_shutdown_workers).
-        self._workers[kind] = worker
-        worker.start()
-        return True
-
-    def _shutdown_workers(self):
-        """ Arrête proprement les workers de test encore actifs à la fermeture
-        du dialogue (point 9) : on demande l'interruption puis on attend leur fin
-        avec un délai borné. Sans cette attente, le QThread pourrait être détruit
-        alors qu'il tourne encore (crash) lorsque le dialogue est libéré. Le délai
-        est borné pour ne jamais figer l'interface indéfiniment. """
-        self._closing = True
-        for worker in list(self._workers.values()):
-            if worker is None or not worker.isRunning():
-                continue
-            worker.requestInterruption()
-            if not worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS):
-                logger.warning(
-                    "Un worker de test est toujours actif après %d ms à la "
-                    "fermeture des préférences ; il est abandonné.",
-                    WORKER_SHUTDOWN_TIMEOUT_MS)
-        self._workers.clear()
-
-    def done(self, result):
-        # Point de sortie unique du dialogue : accept() ET reject() (et donc la
-        # croix de fermeture, qui passe par reject) y aboutissent. On y arrête les
-        # workers de test avant que le dialogue ne soit refermé/libéré.
-        self._shutdown_workers()
-        super().done(result)
+        # setCurrentItem coche l'entrée de la liste ; change_page rejoue le clic.
+        self.navigation_list.setCurrentItem(self.general_item)
+        self.change_page(self.general_item)
 
     def _scrollable_page(self):
         """Page des préférences enveloppée dans une QScrollArea : le contenu
@@ -957,35 +756,63 @@ class PreferencesDialog(QDialog):
     def change_page(self, item, _previous=None):
         # currentItemChanged émet (courant, précédent) ; None si la liste est
         # vidée. L'appel initial (page d'ouverture) n'a qu'un argument.
-        if item is None:
+        # QListWidgetItem n'est pas hachable : recherche par égalité.
+        for index, page_item in enumerate(self._page_items):
+            if item == page_item:
+                self.stacked_widget.setCurrentIndex(index)
+                return
+
+    # --- Page « Poste » ------------------------------------------------------
+
+    def _refresh_station_summary(self):
+        """Résumé en lecture seule de la configuration du poste. Le secret
+        n'est jamais affiché : seulement s'il est enregistré, et où."""
+        settings = QSettings()
+        url = settings_schema.read(settings, "web_url")
+        self.station_url_value.setText(url or "non configuré")
+        counter_id = coerce_counter_id(settings.value("counter_id", None))
+        parent = self.parent()
+        counter_name = getattr(parent, "counter_name", None)
+        if counter_id is None:
+            counter_text = "non configuré"
+        elif counter_name and getattr(parent, "counter_id", None) == counter_id:
+            counter_text = f"{counter_name} (n° {counter_id})"
+        else:
+            counter_text = f"n° {counter_id}"
+        self.station_counter_value.setText(counter_text)
+        self.station_secret_value.setText(
+            secret_status_text(secret_storage(settings)))
+
+    def _edit_station(self):
+        """Ouvre la configuration du poste, après avertissement : ces réglages
+        se fixent à l'installation et leur modification reconnecte tout."""
+        answer = QMessageBox.question(
+            self, "Modifier la configuration du poste",
+            "L'adresse du serveur, le secret applicatif et le comptoir sont "
+            "réglés une fois à l'installation du poste.\n\n"
+            "Les modifier reconnecte l'application au serveur et libère le "
+            "comptoir actuellement occupé.\n\nContinuer ?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
             return
-        if item == self.general_item:
-            self.stacked_widget.setCurrentIndex(0)
-        elif item == self.connexion_item:
-            self.stacked_widget.setCurrentIndex(1)
-            self._maybe_load_counters()
-        elif item == self.raccourcis_item:
-            self.stacked_widget.setCurrentIndex(2)
-        elif item == self.notifications_item:
-            self.stacked_widget.setCurrentIndex(3)            
-        
+        dialog = StationDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            self._refresh_station_summary()
+            self.station_changed.emit()
+
     def load_preferences(self):
         # Toutes les valeurs sont lues via settings_schema (même source unique de
         # défauts/plages que main.py) : la fenêtre de préférences affiche donc
         # exactement les mêmes défauts que ceux appliqués au démarrage.
+        # La configuration du poste (serveur, secret, comptoir) n'est pas un
+        # réglage de ce formulaire : voir la page « Poste » / StationDialog.
         settings = QSettings()
         settings_schema.migrate_settings(settings)
-        # URL serveur : aucun défaut gravé (chaque officine renseigne la sienne) ;
-        # champ vide = non configuré. Un texte indicatif guide la saisie.
-        self.url_input.setText(settings_schema.read(settings, "web_url"))
-        self.app_secret_input.setText(load_secret(settings))
-        self.counter_id = coerce_counter_id(settings.value("counter_id", None))
-        label = f"{self.counter_id} - Chargement en cours..." if self.counter_id else "Sélectionnez un comptoir..."
-        self.counter_combobox.addItem(label, self.counter_id)
+
         def read(key):
             return settings_schema.read(settings, key)
 
-        self._apply_connexion_values(read)
+        self._apply_session_values(read)
         self._apply_raccourcis_values(
             read, lambda name: read_shortcut(settings, name, logger))
         self._apply_notifications_values(read)
@@ -997,12 +824,8 @@ class PreferencesDialog(QDialog):
         self.current_muted = read("notification_muted")
         self.current_skin = read("selected_skin")
 
-    def _apply_connexion_values(self, read):
-        """Affecte les réglages de la page Connexion lus via ``read``.
-
-        L'adresse du serveur, le secret et le comptoir choisi — configuration
-        propre à chaque officine, sans « valeur par défaut » — sont volontairement
-        exclus (chargement direct dans load_preferences, jamais remis à zéro)."""
+    def _apply_session_values(self, read):
+        """Affecte les réglages de la page Session lus via ``read``."""
         self.reconnect_last_user_checkbox.setChecked(read("reconnect_last_user"))
         self._set_policy_combo(read("profile_sync_policy"))
         self._update_profile_buttons_state()
@@ -1207,19 +1030,18 @@ class PreferencesDialog(QDialog):
 
         Simple édition du formulaire : rien n'est persisté tant que
         l'utilisateur n'enregistre pas, et « Annuler » laisse tout intact.
-        L'adresse du serveur, le secret et le comptoir choisi — configuration
-        propre à l'officine — ne sont jamais modifiés."""
+        La configuration du poste (page « Poste ») n'est pas concernée."""
         read = settings_schema.default
         targets = [self.navigation_list.currentItem()] if current_page_only \
-            else [self.general_item, self.connexion_item,
+            else [self.general_item, self.session_item,
                   self.raccourcis_item, self.notifications_item]
         # QListWidgetItem n'est pas hachable : comparaisons (comme change_page)
         # plutôt qu'un dict.
         for item in targets:
             if item == self.general_item:
                 self._apply_general_values(read)
-            elif item == self.connexion_item:
-                self._apply_connexion_values(read)
+            elif item == self.session_item:
+                self._apply_session_values(read)
             elif item == self.raccourcis_item:
                 self._apply_raccourcis_values(read, default_shortcut)
             elif item == self.notifications_item:
@@ -1232,35 +1054,14 @@ class PreferencesDialog(QDialog):
 
         ``close_dialog`` : « Enregistrer » (True, fermeture Accepted après
         succès) ou « Appliquer » (False, le dialogue reste ouvert et le signal
-        ``applied`` est émis à la place)."""
-        # Espaces de copier-coller en bordure de secret : retirés ici et partout
-        # où le champ est lu (_app_secret), puis réécrits normalisés après
-        # validation — comme l'URL.
-        app_secret = self._app_secret()
-        # counter_id normalisé en entier strictement positif (cohérent avec le
-        # serveur et avec les comparaisons de l'app).
-        counter_id = coerce_counter_id(self.counter_combobox.currentData())
+        ``applied`` est émis à la place). Aucun appel réseau : la configuration
+        du poste, seule à exiger une vérification serveur, a sa propre fenêtre
+        (StationDialog)."""
         next_patient_shortcut = self.next_patient_shortcut_input.shortcut()
         validate_patient_shortcut = self.validate_patient_shortcut_input.shortcut()
         recall_shortcut = self.recall_shortcut_input.shortcut()
         deconnect_shortcut = self.deconnect_input.shortcut()
         pause_shortcut = self.pause_shortcut_input.shortcut()
-
-        # Validation + normalisation de l'URL (point 8) : schéma http/https, hôte
-        # présent, et http interdit pour un serveur distant (sauf mode dev). On
-        # écrit la forme normalisée dans le champ (feedback + valeur enregistrée).
-        ok, url, error = validate_server_url(
-            self.url_input.text(), allow_insecure_remote=dev_insecure_allowed())
-        if not ok:
-            self._show_page(self.connexion_item, self.url_input)
-            QMessageBox.warning(self, "URL invalide", error)
-            return
-        self.url_input.setText(url)
-        self.app_secret_input.setText(app_secret)
-        if counter_id is None:
-            self._show_page(self.connexion_item, self.counter_combobox)
-            QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
-            return
 
         shortcut_map = {
             "next": next_patient_shortcut,
@@ -1320,44 +1121,13 @@ class PreferencesDialog(QDialog):
                 f"{conflicts}\n\nAttribuez une combinaison distincte à chacune.")
             return
 
-        # Ne pas confirmer l'enregistrement tant que la nouvelle connexion n'est
-        # pas exploitable (point 8) : si l'URL ou le secret changent, on vérifie
-        # d'abord qu'ils permettent d'obtenir un jeton. Sinon (seuls des réglages
-        # cosmétiques/comptoir ont changé), on enregistre directement.
-        settings = QSettings()
-        stored_url = settings_schema.read(settings, "web_url")
-        stored_secret = load_secret(settings)
-        connection_changed = (url != stored_url) or (app_secret != stored_secret)
-        # La liste affichée n'est fiable que si elle provient du couple courant :
-        # après un aller-retour sur les champs, elle peut montrer les comptoirs
-        # d'un autre serveur alors que la connexion enregistrée est inchangée.
-        list_is_stale = (self._counters_loaded_for is not None
-                         and self._counters_loaded_for != (url, app_secret))
-
-        # Instantané de TOUTES les valeurs validées. La suite est
-        # potentiellement asynchrone (vérifications réseau en arrière-plan) et
-        # les champs restent éditables entre-temps : _finalize_save écrira ce
-        # snapshot et jamais les widgets, pour ne pas persister un texte modifié
-        # après le clic — donc non vérifié.
-        pending_settings = self._form_settings()
-        pending_settings["web_url"] = url
-        pending_settings["counter_id"] = counter_id
-        self._pending_save = {"settings": pending_settings,
-                              "app_secret": app_secret,
-                              "close": close_dialog}
-
-        if connection_changed:
-            self._validate_connection_then_save()
-        elif list_is_stale:
-            self._validate_counter_then_save()
-        else:
-            self._finalize_save()
+        self._finalize_save(self._form_settings(), close=close_dialog)
 
     def _form_settings(self):
-        """Instantané des réglages PERSONNELS du formulaire — hors identité du
-        poste (URL, comptoir, secret, ajoutés par save_preferences seule).
+        """Instantané des réglages du formulaire — jamais l'identité du poste
+        (URL, comptoir, secret : StationDialog).
 
-        Sert à la fois à _pending_save (enregistrement local) et à
+        Sert à la fois à l'enregistrement local (save_preferences) et à
         _send_profile (envoi au serveur via build_payload) : un seul mapping
         widget -> clé, impossible de diverger."""
         pending_settings = {
@@ -1401,14 +1171,6 @@ class PreferencesDialog(QDialog):
             pending_settings[notification_rules.SOUND_KEYS[category]] = checkbox.isChecked()
         return pending_settings
 
-    def _pending_pair(self):
-        """Couple (URL, secret) du snapshot en attente d'enregistrement — ce qui
-        a été validé (et vérifié, le cas échéant), indépendamment du texte actuel
-        des champs, restés éditables pendant les workers réseau."""
-        pending = self._pending_save or {}
-        return (pending.get("settings", {}).get("web_url", ""),
-                pending.get("app_secret", ""))
-
     def _on_save_clicked(self):
         self.save_preferences(close_dialog=True)
 
@@ -1417,30 +1179,6 @@ class PreferencesDialog(QDialog):
         mais le dialogue reste ouvert et le signal ``applied`` demande à la
         fenêtre de recharger ses réglages immédiatement."""
         self.save_preferences(close_dialog=False)
-
-    def _app_secret(self):
-        """Secret saisi, débarrassé des espaces de copier-coller en bordure.
-
-        Toutes les lectures du champ passent ici : sans strip, un espace en fin
-        de collage faisait échouer le jeton avec un « secret refusé » trompeur."""
-        return self.app_secret_input.text().strip()
-
-    def _on_connection_fields_changed(self, *_args):
-        """URL ou secret retouché : si la liste affichée provient d'un couple
-        différent, on la remplace par une entrée d'attente plutôt que de laisser
-        les comptoirs d'un autre serveur. Le rechargement reste à la charge de
-        _maybe_load_counters / « Tester l'adresse » ; l'entrée conserve le
-        comptoir enregistré en donnée, comme à l'ouverture du dialogue."""
-        if self._counters_loaded_for is None:
-            return
-        pair = (normalize_url(self.url_input.text()), self._app_secret())
-        if pair == self._counters_loaded_for:
-            return
-        self._counters_loaded_for = None
-        self.counter_combobox.clear()
-        label = (f"{self.counter_id} - liste périmée, relancez le test"
-                 if self.counter_id else "Liste périmée — relancez le test")
-        self.counter_combobox.addItem(label, self.counter_id)
 
     def _refresh_live_connection_status(self):
         """Affiche l'état temps réel actuel de la fenêtre principale.
@@ -1475,162 +1213,20 @@ class PreferencesDialog(QDialog):
             self.live_status_label.setStyleSheet(
                 f"color: {color};" if color else "")
 
-    def _validate_connection_then_save(self):
-        """ Vérifie en arrière-plan que le couple (URL, secret) du snapshot
-        donne un jeton, PUIS enregistre seulement en cas de succès. Le bouton
-        Enregistrer est désactivé pendant la vérification pour éviter les
-        doubles soumissions. """
-        url, app_secret = self._pending_pair()
-        worker = TokenCheckWorker(url, app_secret)
-        worker.checked.connect(self._on_connection_checked)
-        # Suivi + anti-doublon via le registre (point 9) : si une vérification est
-        # déjà en cours, on ne relance rien (le bouton est déjà désactivé).
-        if not self._start_worker("token_check", worker):
-            return
-        self.save_button.setEnabled(False)
-        self.apply_button.setEnabled(False)
-        self.status_label.setText("Vérification de la connexion au serveur…")
-
-    @Slot(bool, str)
-    def _on_connection_checked(self, ok, message):
-        if not ok:
-            self.save_button.setEnabled(True)
-            self.apply_button.setEnabled(True)
-            # « Enregistré » n'est PAS affiché : le dialogue reste ouvert et rien
-            # n'est persisté tant que la connexion n'est pas exploitable.
-            self.status_label.setText("Non enregistré : " + message)
-            self._show_page(self.connexion_item, self.url_input)
-            QMessageBox.warning(
-                self, "Connexion impossible",
-                message + "\n\nLes préférences n'ont PAS été enregistrées. "
-                "Vérifiez l'adresse du serveur et le secret applicatif.")
-            return
-        # Le couple VÉRIFIÉ est celui du snapshot, pas celui des champs (qui ont
-        # pu être modifiés pendant le worker réseau).
-        pair = self._pending_pair()
-        if self._counters_loaded_for == pair:
-            # La liste affichée provient déjà de la nouvelle connexion : le
-            # comptoir choisi existe forcément sur ce serveur.
-            self.save_button.setEnabled(True)
-            self.apply_button.setEnabled(True)
-            self.status_label.setText("Connexion vérifiée — enregistrement…")
-            self._finalize_save()
-        else:
-            # Connexion OK mais liste possiblement périmée (celle de l'ancien
-            # serveur, ou simple entrée d'attente) : on vérifie que le comptoir
-            # choisi existe bien sur CE serveur avant d'enregistrer.
-            self._validate_counter_then_save()
-
-    def _validate_counter_then_save(self):
-        """ Vérifie en arrière-plan que le comptoir sélectionné existe sur le
-        serveur (URL, secret) courant, PUIS enregistre seulement dans ce cas.
-
-        Sans cette étape, un counter_id issu de la liste d'un ANCIEN serveur
-        (connexion modifiée sans retest, ou aller-retour sur les champs) était
-        persisté contre le nouveau serveur : le comptoir enregistré aurait pu
-        ne pas y exister. Le bouton Enregistrer est désactivé pendant la
-        vérification pour éviter les doubles soumissions. """
-        url, app_secret = self._pending_pair()
-        if not self._start_counters_worker(
-                "counters_save", url, app_secret, self._on_save_counters_result):
-            self.save_button.setEnabled(True)
-            self.apply_button.setEnabled(True)
-            return
-        self.save_button.setEnabled(False)
-        self.apply_button.setEnabled(False)
-        self.status_label.setText("Vérification du comptoir sur le serveur…")
-
-    def _on_save_counters_result(self, success, data, pair):
-        self.save_button.setEnabled(True)
-        self.apply_button.setEnabled(True)
-        if not success:
-            # La liste est illisible : impossible de garantir le comptoir
-            # choisi — on n'enregistre rien plutôt que de persister un id
-            # incertain.
-            self.status_label.setText("Non enregistré : " + data)
-            self._show_page(self.connexion_item)
-            QMessageBox.warning(
-                self, "Comptoirs introuvables",
-                data + "\n\nImpossible de vérifier le comptoir sélectionné : "
-                "les préférences n'ont PAS été enregistrées.")
-            return
-        # La liste récupérée devient la liste affichée (combo rechargé).
-        self._counters_loaded_for = pair
-        # Le comptoir à vérifier est celui du snapshot (choisi au clic
-        # « Enregistrer »), pas la sélection courante du combo — modifiable
-        # pendant le worker.
-        selected = (self._pending_save or {}).get("settings", {}).get("counter_id")
-        self.counters_loaded.emit(data)
-        ids = {coerce_counter_id(counter["id"]) for counter in data
-               if isinstance(counter, dict) and "id" in counter}
-        if selected is None or selected not in ids:
-            # Le comptoir choisi (liste périmée) n'existe pas sur ce serveur :
-            # l'utilisateur repart d'une liste à jour pour en choisir un valide.
-            self.status_label.setText(
-                "Non enregistré : le comptoir choisi n'existe pas sur ce serveur")
-            self._show_page(self.connexion_item, self.counter_combobox)
-            QMessageBox.warning(
-                self, "Comptoir introuvable",
-                "Le comptoir sélectionné n'existe pas sur ce serveur. La liste "
-                "des comptoirs a été rechargée : choisissez un comptoir, puis "
-                "enregistrez à nouveau.\n\nLes préférences n'ont PAS été "
-                "enregistrées.")
-            return
-        # update_counters a pu resélectionner le comptoir ENREGISTRÉ : on remet
-        # le choix de l'utilisateur (il existe sur ce serveur) et on enregistre.
-        index = self.counter_combobox.findData(selected)
-        if index != -1:
-            self.counter_combobox.setCurrentIndex(index)
-        self.status_label.setText("Connexion vérifiée — enregistrement…")
-        self._finalize_save()
-
     def _sync_and_verify(self, settings):
-        """ Force l'écriture QSettings (``sync``) et vérifie qu'elle a abouti
-        (``status``). Renvoie True si la persistance a réussi ; sinon affiche une
-        erreur et renvoie False (point 10 : ne jamais laisser croire à un
-        enregistrement réussi quand l'écriture a échoué). """
-        settings.sync()
-        if settings.status() != QSettings.NoError:
-            QMessageBox.critical(
-                self, "Échec d'enregistrement",
-                "Les préférences n'ont pas pu être enregistrées sur ce poste "
-                "(accès au stockage local refusé ou format invalide). Les "
-                "modifications ne sont PAS garanties.\n\nVérifiez les droits "
-                "d'accès à la configuration, puis réessayez.")
-            return False
-        return True
+        """Persistance forcée et vérifiée (point 10), cf. station_dialog."""
+        return sync_and_verify(self, settings)
 
-    def _finalize_save(self):
-        """ Persiste le snapshot de préférences validé par save_preferences
-        (URL normalisée et, si la connexion changeait, vérifiée) puis ferme le
-        dialogue avec Accepted.
+    def _finalize_save(self, values, close=True):
+        """ Persiste les réglages validés par save_preferences, puis ferme le
+        dialogue (Accepted, ``close``) ou le laisse ouvert en émettant
+        ``applied`` (« Appliquer »).
 
-        On n'écrit QUE le snapshot : les vérifications réseau sont asynchrones
-        et les champs sont restés éditables entre-temps — relire les widgets ici
-        persisterait des valeurs non vérifiées (course de saisie corrigée par le
-        snapshot _pending_save).
-
-        Ordre voulu (point 10) pour éviter une configuration à moitié enregistrée
-        entre QSettings et le magasin de secrets : on écrit d'abord TOUS les
-        réglages non secrets, on force et on vérifie leur persistance
-        (``sync``/``status``) ; seulement alors on enregistre le secret, puis on
-        re-synchronise et re-vérifie. Toute défaillance affiche une erreur et
-        laisse le dialogue ouvert (pas d'``accept``), donc rien n'est confirmé. """
-        pending = self._pending_save
-        if pending is None:
-            # Ne devrait pas arriver (appelé uniquement depuis save_preferences,
-            # qui pose le snapshot avant tout enchaînement asynchrone). On refuse
-            # de relire les champs : ce serait persister un état non validé.
-            logger.error("_finalize_save appelé sans snapshot de préférences.")
-            return
-        values = pending["settings"]
-        app_secret = pending["app_secret"]
+        Persistance forcée et VÉRIFIÉE (``sync``/``status``) : en cas d'échec,
+        une erreur est affichée et rien n'est confirmé (pas d'``accept``). """
         settings = QSettings()
         for key, value in values.items():
             settings.setValue(key, value)
-
-        # Persistance des réglages non secrets d'abord, VÉRIFIÉE avant de toucher
-        # au magasin de secrets (évite un état mixte QSettings/keyring).
         if not self._sync_and_verify(settings):
             return
 
@@ -1643,29 +1239,6 @@ class PreferencesDialog(QDialog):
         self._volume_previewed = False
         self._skin_previewed = False
 
-        # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
-        # dans QSettings. save_secret efface aussi toute copie en clair héritée.
-        # Si le magasin sécurisé est indisponible, save_secret retombe sur un
-        # stockage en clair (dans QSettings) mais le signale (renvoie False) : on
-        # ne l'accepte PAS silencieusement, on prévient explicitement plus bas.
-        fell_back_to_cleartext = bool(app_secret) and not save_secret(settings, app_secret)
-        # save_secret a pu écrire dans QSettings (repli en clair) ou en nettoyer
-        # une copie héritée (succès keyring) : on re-synchronise et re-vérifie.
-        if not self._sync_and_verify(settings):
-            return
-        if fell_back_to_cleartext:
-            QMessageBox.warning(
-                self, "Stockage non sécurisé du secret",
-                "Le gestionnaire de secrets du système est indisponible sur ce "
-                "poste. Le secret d'application a été enregistré en clair dans la "
-                "configuration locale.\n\nInstallez/activez un magasin de secrets "
-                "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
-                "pour un stockage sécurisé.")
-
-        # Le snapshot est consommé : un nouvel « Enregistrer » en reconstruira un.
-        close = pending.get("close", True)
-        self._pending_save = None
-
         # Un SEUL mécanisme d'application (point 7) :
         #  - « Appliquer » : le dialogue reste ouvert, le signal ``applied``
         #    déclenche l'UNIQUE apply_preferences côté fenêtre — qui recharge
@@ -1676,9 +1249,7 @@ class PreferencesDialog(QDialog):
         if close:
             self.accept()
         else:
-            self.save_button.setEnabled(True)
-            self.apply_button.setEnabled(True)
-            self.status_label.setText("Préférences enregistrées et appliquées.")
+            self.save_status_label.setText("Préférences enregistrées et appliquées.")
             self.applied.emit()
 
     def _apply_side_panel_preset(self):
@@ -1724,156 +1295,6 @@ class PreferencesDialog(QDialog):
                 "Réinitialisation de la position demandée, mais le parent (%r) "
                 "n'expose pas reset_window_position.", parent)
 
-    def test_url(self):
-        # Même validation qu'à l'enregistrement (point 8) : on ne lance pas de
-        # test sur une adresse que save_preferences refuserait (vide, espaces,
-        # slash final, schéma non http(s), http distant interdit). L'URL
-        # normalisée est réécrite dans le champ — comme au save — et c'est elle
-        # qui est testée.
-        ok, url, error = validate_server_url(
-            self.url_input.text(), allow_insecure_remote=dev_insecure_allowed())
-        if not ok:
-            QMessageBox.warning(self, "URL invalide", error)
-            self.status_label.setText(error)
-            return
-        self.url_input.setText(url)
-        if not self._app_secret():
-            QMessageBox.warning(self, "Erreur", "Le secret applicatif ne peut pas être vide")
-            self.status_label.setText("Le secret applicatif ne peut pas être vide")
-            return
-        self.app_secret_input.setText(self._app_secret())
-
-        worker = TestConnectionWorker(url)
-        worker.connection_tested.connect(self.on_connection_tested)
-        # Anti-doublon (point 9) : un seul test de connexion à la fois. On ne
-        # désactive le bouton et n'affiche « en cours » qu'après un démarrage
-        # effectif. Le bouton reste désactivé jusqu'à la fin du chargement des
-        # comptoirs qui suit un test réussi (réactivé dans _on_counters_result).
-        if not self._start_worker("test_connection", worker):
-            return
-        self.status_label.setText("Test de connexion en cours...")
-        self.test_button.setEnabled(False)
-
-    @Slot(bool, str)
-    def on_connection_tested(self, success, message):
-        self.status_label.setText(message)
-        if success:
-            self.load_counters()  # le bouton est réactivé à la fin du chargement
-        else:
-            self.test_button.setEnabled(True)
-
-    def _maybe_load_counters(self):
-        """ Charge la liste des comptoirs à l'ouverture de la page « Connexion ».
-
-        Jusqu'ici elle n'était chargée qu'après un clic sur « Tester
-        l'adresse » : l'entrée restait bloquée sur « Chargement en cours... »
-        et un utilisateur venu juste changer de comptoir ne voyait jamais la
-        liste.
-
-        - URL ou secret manquant : rien à charger, le libellé l'indique au
-          lieu de promettre un chargement qui ne viendra jamais.
-        - Liste déjà à jour pour ce couple (URL, secret) : pas d'appel réseau
-          supplémentaire à chaque visite de la page.
-        - Sinon (jamais chargé, échec précédent, champs modifiés depuis) :
-          chargement lancé (doublons déjà exclus par _start_worker). """
-        url = normalize_url(self.url_input.text())
-        secret = self._app_secret()
-        if not url or not secret:
-            self._set_counter_placeholder("complétez l'adresse et le secret")
-            return
-        if self._counters_loaded_for == (url, secret):
-            return
-        self.load_counters()
-
-    def _set_counter_placeholder(self, suffix):
-        """ Met à jour le libellé de l'entrée d'attente du combo « comptoir ».
-
-        N'agit que tant qu'aucune vraie liste n'a été chargée : le combo ne
-        contient alors que l'entrée initiale, dont la donnée (counter_id
-        enregistré) est préservée — seul le texte affiché change. """
-        if self._counters_loaded_for is not None:
-            return
-        label = f"{self.counter_id} - {suffix}" if self.counter_id else suffix
-        self.counter_combobox.setItemText(0, label)
-
-    def _start_counters_worker(self, kind, url, secret, handler):
-        """ Démarre un CountersWorker pour le couple (url, secret) donné.
-
-        Le couple de la REQUÊTE est rattaché au résultat via le lambda :
-        `handler` reçoit (success, data, pair) — le pair reste correct même si
-        les champs ont été modifiés pendant l'appel ou si un autre chargement
-        (d'un kind différent) tourne en parallèle.
-        Renvoie True si le worker a démarré. """
-        worker = CountersWorker(url, secret)
-        worker.result.connect(
-            lambda ok, data, pair=(url, secret): handler(ok, data, pair))
-        return self._start_worker(kind, worker)
-
-    def load_counters(self):
-        # Si un chargement des comptoirs est déjà en cours (ou fermeture), on
-        # réactive le bouton pour ne pas le laisser bloqué désactivé.
-        if not self._start_counters_worker(
-                "counters", normalize_url(self.url_input.text()),
-                self._app_secret(), self._on_counters_result):
-            self.test_button.setEnabled(True)
-
-    def _on_counters_result(self, success, data, pair):
-        self.test_button.setEnabled(True)
-        current = (normalize_url(self.url_input.text()), self._app_secret())
-        if pair != current:
-            # Réponse d'un chargement lancé avec d'anciennes valeurs : elle
-            # concerne un autre couple (URL, secret) — on l'ignore plutôt que
-            # d'afficher la liste d'un serveur périmé.
-            logger.info("Liste de comptoirs ignorée : chargée pour %s, "
-                        "champs désormais sur %s.", pair[0], current[0])
-            return
-        if success:
-            # La liste affichée provient désormais du couple de la requête.
-            self._counters_loaded_for = pair
-            self.counters_loaded.emit(data)
-        else:
-            self.status_label.setText(data)
-            self._set_counter_placeholder("échec du chargement")
-
-    @Slot(list)
-    def update_counters(self, counters):
-        # Comptoir à resélectionner : d'abord la sélection COURANTE du combo —
-        # l'utilisateur a pu choisir un autre comptoir sans encore enregistrer,
-        # un rechargement de la liste ne doit pas reprendre son choix. À défaut
-        # (entrée d'attente sans donnée), le comptoir enregistré.
-        wanted = coerce_counter_id(self.counter_combobox.currentData())
-        if wanted is None:
-            wanted = self.counter_id
-        self.counter_combobox.clear()
-        for counter in counters:
-            # Champs manquants ou identifiant invalide : on ignore l'entrée
-            # plutôt que d'interrompre la mise à jour de la liste. Les ids sont
-            # normalisés en entier (coerce_counter_id) pour que findData compare
-            # des types identiques — un id « 3 » (chaîne) ne correspondrait
-            # jamais à int(3).
-            try:
-                name, cid = counter['name'], coerce_counter_id(counter['id'])
-            except (KeyError, TypeError):
-                logger.warning("Comptoir ignoré (champ manquant) : %r", counter)
-                continue
-            if cid is None:
-                logger.warning("Comptoir ignoré (identifiant invalide) : %r", counter)
-                continue
-            self.counter_combobox.addItem(name, cid)
-
-        index = self.counter_combobox.findData(wanted) if wanted else -1
-        if index != -1:
-            self.counter_combobox.setCurrentIndex(index)
-        else:
-            # Le comptoir voulu n'existe pas (ou plus) sur ce serveur : entrée
-            # d'attente SANS donnée plutôt que présélectionner le premier
-            # comptoir — sinon un simple « Enregistrer » changerait de comptoir
-            # silencieusement. L'enregistrement exigera un choix explicite.
-            label = (f"{wanted} - comptoir introuvable sur ce serveur"
-                     if wanted else "Sélectionnez un comptoir...")
-            self.counter_combobox.insertItem(0, label, None)
-            self.counter_combobox.setCurrentIndex(0)
-    
     def load_skins(self):
         """Remplit la liste des skins depuis les ressources embarquées.
 

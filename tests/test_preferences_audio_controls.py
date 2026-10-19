@@ -113,19 +113,12 @@ def test_mode_muet_enregistre_est_relu_au_chargement(isolated_settings):
 
 def test_mode_muet_est_enregistre(isolated_settings, monkeypatch):
     """Le mode muet suit le même chemin d'enregistrement que le volume."""
-    isolated_settings.setValue("web_url", "https://exemple.test")
     dialog = _dialog(isolated_settings)
-    dialog.counter_combobox.addItem("1", 1)
-    dialog.counter_combobox.setCurrentIndex(dialog.counter_combobox.count() - 1)
     dialog.mute_checkbox.setChecked(True)
     dialog.volume_slider.setValue(65)
-    # Aucun dialogue modal ne doit s'ouvrir (il bloquerait le test), et on
-    # s'arrête juste après l'écriture des réglages non secrets : le reste de
-    # save_preferences (magasin de secrets, fermeture) ne concerne pas ce test.
+    # Aucun dialogue modal ne doit s'ouvrir (il bloquerait le test).
     monkeypatch.setattr(preferences.QMessageBox, "warning",
                         lambda *a, **k: pytest.fail(f"dialogue modal inattendu : {a[1:3]}"))
-    monkeypatch.setattr(preferences.PreferencesDialog, "_sync_and_verify",
-                        lambda self, settings: bool(settings.sync()))
 
     dialog.save_preferences()
 

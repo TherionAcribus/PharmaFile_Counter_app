@@ -7,6 +7,7 @@ from PySide6.QtGui import QIcon, QAction
 
 from websocket_client import WebSocketClient
 from preferences import PreferencesDialog
+from station_dialog import StationDialog
 from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
 from button_state import (
     CALLING, MALFORMED, NO_CURRENT_PATIENT, NO_PATIENT, ONGOING,
@@ -306,14 +307,15 @@ class MainWindow(QMainWindow):
             self.loading_screen.close()
 
     def _require_valid_counter_id(self):
-        """ Ouvre l'écran de configuration tant qu'aucun comptoir valide n'est
-        défini. Une fois un counter_id entier valide enregistré, on relance la
-        séquence de démarrage ; si l'utilisateur annule, on ne peut pas démarrer
-        le mode comptoir et on quitte proprement. """
+        """ Ouvre la configuration du poste (serveur, secret, comptoir) tant
+        qu'elle n'est pas complète. Une fois un counter_id entier valide
+        enregistré, on relance la séquence de démarrage ; si l'utilisateur
+        annule, on ne peut pas démarrer le mode comptoir et on quitte
+        proprement. """
         if self.loading_screen:
             self.loading_screen.close()
         try:
-            dialog = PreferencesDialog(self)
+            dialog = StationDialog(self)
             accepted = dialog.exec()
         except Exception as e:
             self.logger.error("Écran de configuration indisponible : %s", e)
@@ -1660,9 +1662,20 @@ class MainWindow(QMainWindow):
         # concurrent, plus de rechargement après exec() : un seul propriétaire.
         # « Appliquer » enregistre SANS fermer : le signal applied emprunte le
         # même chemin unique — une persistance, une application.
+        # La configuration du poste, modifiée depuis la page « Poste », est
+        # déjà enregistrée par sa propre fenêtre : même chemin unique.
         dialog = PreferencesDialog(self)
         dialog.applied.connect(self.apply_preferences)
+        dialog.station_changed.connect(self.apply_preferences)
         if dialog.exec() == QDialog.Accepted:
+            self.apply_preferences()
+
+    def show_station_dialog(self):
+        """ Ouvre directement la configuration du poste (serveur, secret,
+        comptoir) — après un échec de reconnexion, c'est elle qu'il faut
+        corriger. Accepted = configuration vérifiée et enregistrée : on
+        l'applique par le chemin unique (reconnexion des services). """
+        if StationDialog(self).exec() == QDialog.Accepted:
             self.apply_preferences()
 
     # --- profil de préférences équipier (serveur) -----------------------------
@@ -1985,13 +1998,13 @@ class MainWindow(QMainWindow):
         box.setText(
             "Les nouveaux paramètres ont été enregistrés mais la connexion au "
             "serveur a échoué (serveur injoignable ou secret refusé).\n\n"
-            "Vérifiez l'adresse et le secret dans les préférences, puis redémarrez "
-            "l'application.")
-        open_prefs = box.addButton("Ouvrir les préférences", QMessageBox.AcceptRole)
+            "Vérifiez l'adresse et le secret dans la configuration du poste, "
+            "puis redémarrez l'application.")
+        open_station = box.addButton("Configuration du poste", QMessageBox.AcceptRole)
         box.addButton("Fermer", QMessageBox.RejectRole)
         box.exec()
-        if box.clickedButton() is open_prefs:
-            self.show_preferences_dialog()
+        if box.clickedButton() is open_station:
+            self.show_station_dialog()
 
     def init_audio(self):
         """ Prépare les sons de l'application, rejoués ensuite par leur nom

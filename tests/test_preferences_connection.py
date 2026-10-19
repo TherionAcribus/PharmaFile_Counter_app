@@ -1,4 +1,4 @@
-"""Vérification de connexion avant enregistrement (point 8) côté préférences.
+"""Vérification de connexion avant enregistrement (point 8), configuration du poste.
 
 - _on_connection_checked : n'enregistre (finalize) QUE si la connexion est OK ;
   en cas d'échec, avertit et ne persiste rien (« enregistré » non affiché).
@@ -11,7 +11,7 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
+import station_dialog  # noqa: E402
 
 
 # --- _on_connection_checked -------------------------------------------------
@@ -27,18 +27,17 @@ def _dialog(loaded_for=("http://serveur", "secret"),
     w._pending_save = {"settings": {"web_url": pending_url},
                        "app_secret": pending_secret}
     w._pending_pair = types.MethodType(
-        preferences.PreferencesDialog._pending_pair, w)
+        station_dialog.StationDialog._pending_pair, w)
     w._counters_loaded_for = loaded_for
-    # Attributs référencés par les chemins d'erreur (_show_page) : la valeur
-    # importe peu, l'objet est simplement passé au stub.
-    w.connexion_item = object()
+    # Attribut référencé par le chemin d'erreur (_focus) : la valeur importe
+    # peu, l'objet est simplement passé au stub.
     w.url_input = object()
-    w._show_page = lambda *a, **k: None
+    w._focus = lambda *a, **k: None
     w._finalize_save = lambda: w.calls.__setitem__("finalize", w.calls["finalize"] + 1)
     w._validate_counter_then_save = (
         lambda: w.calls.__setitem__("counter_check", w.calls["counter_check"] + 1))
     w._on_connection_checked = types.MethodType(
-        preferences.PreferencesDialog._on_connection_checked, w)
+        station_dialog.StationDialog._on_connection_checked, w)
     return w
 
 
@@ -78,7 +77,7 @@ def test_decision_uses_pending_snapshot_not_current_fields():
 
 def test_failure_does_not_finalize_and_warns(monkeypatch):
     warned = {"n": 0}
-    monkeypatch.setattr(preferences.QMessageBox, "warning",
+    monkeypatch.setattr(station_dialog.QMessageBox, "warning",
                         lambda *a, **k: warned.__setitem__("n", warned["n"] + 1))
     w = _dialog()
     w._on_connection_checked(False, "Serveur injoignable")
@@ -91,7 +90,7 @@ def test_failure_does_not_finalize_and_warns(monkeypatch):
 def _resp(status, payload=None, raises=False):
     def _post(*a, **k):
         if raises:
-            raise preferences.requests.exceptions.RequestException("boom")
+            raise station_dialog.requests.exceptions.RequestException("boom")
         return types.SimpleNamespace(
             status_code=status,
             json=lambda: (payload if payload is not None else {}),
@@ -100,8 +99,8 @@ def _resp(status, payload=None, raises=False):
 
 
 def _run_check(monkeypatch, post):
-    monkeypatch.setattr(preferences.requests, "post", post)
-    worker = preferences.TokenCheckWorker("http://serveur", "secret")
+    monkeypatch.setattr(station_dialog.requests, "post", post)
+    worker = station_dialog.TokenCheckWorker("http://serveur", "secret")
     captured = {}
     worker.checked.connect(lambda ok, msg: captured.update(ok=ok, msg=msg))
     worker.run()

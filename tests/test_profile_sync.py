@@ -191,8 +191,9 @@ def test_groupe_profil_suit_la_connexion_en_direct(isolated_settings):
 
 
 def test_envoi_du_payload_filtre_au_bon_equipier(isolated_settings):
+    isolated_settings.setValue("web_url", "https://serveur.example")
+    isolated_settings.setValue("counter_id", 3)
     dialog = _dialog(isolated_settings, staff_id=7)
-    dialog.url_input.setText("https://serveur.example")
     dialog._send_profile()
     api = dialog.parent().api
     assert len(api.uploads) == 1

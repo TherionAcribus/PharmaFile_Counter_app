@@ -34,12 +34,12 @@ _LEGACY_QSETTINGS_KEY = "app_secret"
 
 try:  # keyring est optionnel : l'app doit fonctionner même sans lui.
     import keyring
-    from keyring.errors import KeyringError, NoKeyringError
+    from keyring.errors import KeyringError
     # Un backend "null"/"fail" peut être présent sans réellement stocker :
     # on vérifiera à l'usage via les exceptions.
     _KEYRING_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - dépend de l'environnement
-    # Les noms ``keyring``/``KeyringError``/``NoKeyringError`` restent alors
+    # Les noms ``keyring``/``KeyringError`` restent alors
     # indéfinis : tous les usages sont protégés par ``_KEYRING_AVAILABLE``.
     _KEYRING_AVAILABLE = False
     logger.warning("keyring indisponible (%s) : repli sur QSettings pour le secret.", exc)
@@ -88,6 +88,23 @@ def load_secret(settings) -> str:
         return legacy
 
     return ""
+
+
+#: Emplacement du secret enregistré (cf. ``secret_storage``).
+STORAGE_NONE = ""
+STORAGE_KEYRING = "keyring"
+STORAGE_SETTINGS = "settings"
+
+
+def secret_storage(settings) -> str:
+    """Où le secret est-il enregistré sur ce poste ? ``STORAGE_KEYRING``
+    (magasin sécurisé), ``STORAGE_SETTINGS`` (repli en clair dans QSettings) ou
+    ``STORAGE_NONE``. Sert à AFFICHER l'état sans jamais montrer la valeur."""
+    if _keyring_get():
+        return STORAGE_KEYRING
+    if settings.value(_LEGACY_QSETTINGS_KEY, "") or "":
+        return STORAGE_SETTINGS
+    return STORAGE_NONE
 
 
 def save_secret(settings, value) -> bool:

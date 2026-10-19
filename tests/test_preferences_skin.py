@@ -132,12 +132,7 @@ def test_enregistrer_consomme_l_apercu(isolated_settings):
     annulation ultérieure (« Appliquer » puis « Annuler ») ne le défait pas."""
     dialog, _parent = _dialog()
     _select(dialog, "Darkeum")
-    dialog._pending_save = {
-        "settings": {"notification_volume": 50, "notification_muted": False,
-                     "selected_skin": "Darkeum", "web_url": "https://exemple.test"},
-        "app_secret": "",
-        "close": False,
-    }
-    dialog._finalize_save()
+    dialog._finalize_save({"notification_volume": 50, "notification_muted": False,
+                           "selected_skin": "Darkeum"}, close=False)
     dialog.reject()
     assert QApplication.instance().styleSheet() == resources.read_skin("Darkeum")

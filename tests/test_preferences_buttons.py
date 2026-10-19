@@ -12,8 +12,7 @@ import sys
 import pytest
 from PySide6.QtCore import QCoreApplication, QSettings, Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QLabel, QLineEdit, QScrollArea,
-    QVBoxLayout, QWidget)
+    QDialog, QDialogButtonBox, QLabel, QScrollArea, QVBoxLayout, QWidget)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -101,13 +100,13 @@ def test_valeurs_par_defaut_page_courante(isolated_settings):
 
 
 def test_valeurs_par_defaut_toutes_les_pages(isolated_settings):
-    """« Rétablir toutes les pages » remet schéma + raccourcis par défaut, tout
-    en conservant la connexion propre à l'officine (URL, secret, comptoir)."""
+    """« Rétablir toutes les pages » remet schéma + raccourcis par défaut, sans
+    toucher à la configuration du poste (URL, comptoir)."""
     import settings_schema
     import shortcut_defaults
+    isolated_settings.setValue("web_url", "https://officine.example")
+    isolated_settings.setValue("counter_id", 3)
     dialog = _dialog()
-    dialog.url_input.setText("https://officine.example")
-    dialog.app_secret_input.setText("secret-officine")
     dialog.notification_duration_spinbox.setValue(42)
     dialog.next_patient_shortcut_input.setShortcut("Ctrl+F9")
     dialog.reconnect_last_user_checkbox.setChecked(
@@ -121,9 +120,10 @@ def test_valeurs_par_defaut_toutes_les_pages(isolated_settings):
         == shortcut_defaults.default_shortcut("next_patient_shortcut")
     assert dialog.reconnect_last_user_checkbox.isChecked() \
         == settings_schema.default("reconnect_last_user")
-    # Connexion propre à l'officine conservée.
-    assert dialog.url_input.text() == "https://officine.example"
-    assert dialog.app_secret_input.text() == "secret-officine"
+    # Configuration du poste intacte (et rien n'a été persisté).
+    assert isolated_settings.value("web_url") == "https://officine.example"
+    assert int(isolated_settings.value("counter_id")) == 3
+    assert "officine.example" in dialog.station_url_value.text()
 
 
 def test_bouton_valeurs_par_defaut_propose_les_deux_portees(isolated_settings):
@@ -150,42 +150,47 @@ def test_bouton_appliquer_sauvegarde_sans_fermer(isolated_settings, monkeypatch)
 
 
 def test_appliquer_persiste_emet_et_laisse_ouvert(isolated_settings):
-    """_finalize_save avec « close: False » écrit QSettings, émet ``applied``
+    """_finalize_save avec ``close=False`` écrit QSettings, émet ``applied``
     et laisse le dialogue ouvert — exactement le comportement « Appliquer »."""
     dialog = _dialog()
     applied = []
     dialog.applied.connect(lambda: applied.append(True))
-    dialog._pending_save = {
-        "settings": {"notification_volume": 33, "notification_muted": True,
-                     "selected_skin": "", "web_url": "https://exemple.test"},
-        "app_secret": "",
-        "close": False,
-    }
 
-    dialog._finalize_save()
+    dialog._finalize_save({"notification_volume": 33, "notification_muted": True,
+                           "selected_skin": ""}, close=False)
 
     assert isolated_settings.value("notification_volume", type=int) == 33
     assert isolated_settings.value("notification_muted", type=bool) is True
     assert applied == [True]            # la fenêtre a été prévenue
     assert dialog.result() == 0         # dialogue toujours ouvert
-    assert dialog._pending_save is None
-    assert dialog.save_button.isEnabled() and dialog.apply_button.isEnabled()
+    assert "enregistrées" in dialog.save_status_label.text()
+
+
+def test_enregistrer_ne_fait_aucun_appel_reseau(isolated_settings, monkeypatch):
+    """« Enregistrer » est synchrone : plus de vérification serveur (elle ne
+    concernait que la configuration du poste, désormais à part)."""
+    import station_dialog
+    monkeypatch.setattr(station_dialog.requests, "post",
+                        lambda *a, **k: pytest.fail("appel réseau inattendu"))
+    monkeypatch.setattr(station_dialog.requests, "get",
+                        lambda *a, **k: pytest.fail("appel réseau inattendu"))
+    dialog = _dialog()
+    dialog.notification_duration_spinbox.setValue(17)
+    dialog.save_preferences()
+    assert dialog.result() == QDialog.Accepted
+    assert isolated_settings.value("notification_duration", type=int) == 17
+    assert isolated_settings.value("web_url") is None   # poste non touché
 
 
 def test_enregistrer_persiste_et_ferme_sans_emit_applied(isolated_settings):
-    """« Enregistrer » (close: True) : même persistance, puis Accepted — pas
+    """« Enregistrer » (close=True) : même persistance, puis Accepted — pas
     d'émission ``applied`` (Accepted est déjà le déclencheur unique)."""
     dialog = _dialog()
     applied = []
     dialog.applied.connect(lambda: applied.append(True))
-    dialog._pending_save = {
-        "settings": {"notification_volume": 40, "notification_muted": False,
-                     "selected_skin": "", "web_url": "https://exemple.test"},
-        "app_secret": "",
-        "close": True,
-    }
 
-    dialog._finalize_save()
+    dialog._finalize_save({"notification_volume": 40, "notification_muted": False,
+                           "selected_skin": ""}, close=True)
 
     assert isolated_settings.value("notification_volume", type=int) == 40
     assert dialog.result() == QDialog.Accepted
@@ -251,31 +256,18 @@ def test_etat_connexion_inconnu_sans_etat_parent(isolated_settings):
 
 
 def test_pages_sont_scrollables(isolated_settings):
-    """Les 4 pages sont des QScrollArea redimensionnables : le contenu reste
+    """Les 5 pages sont des QScrollArea redimensionnables : le contenu reste
     accessible sur petit écran / grande police au lieu d'être tronqué."""
     dialog = _dialog()
-    for page in (dialog.general_page, dialog.connexion_page,
-                 dialog.raccourcis_page, dialog.notifications_page):
+    for page in (dialog.general_page, dialog.session_page,
+                 dialog.raccourcis_page, dialog.notifications_page,
+                 dialog.station_page):
         assert isinstance(page, QScrollArea)
         assert page.widgetResizable() is True
 
 
-def test_url_invalide_bascule_sur_la_page_connexion(isolated_settings, monkeypatch):
-    """Une erreur de validation renvoie sur la page fautive au lieu de laisser
-    l'utilisateur chercher où corriger."""
-    dialog = _dialog()
-    dialog.url_input.setText("ftp://serveur")   # schéma non http(s)
-    monkeypatch.setattr(preferences.QMessageBox, "warning",
-                        lambda *a, **k: None)
-    dialog.save_preferences()
-    assert dialog.stacked_widget.currentIndex() == 1   # page « Connexion »
-
-
 def test_raccourci_invalide_bascule_sur_la_page_raccourcis(isolated_settings, monkeypatch):
-    isolated_settings.setValue("web_url", "https://exemple.test")
     dialog = _dialog()
-    dialog.counter_combobox.addItem("1", 1)
-    dialog.counter_combobox.setCurrentIndex(dialog.counter_combobox.count() - 1)
     # « Ctrl » seul = modificateur sans touche : raccourci invalide.
     dialog.next_patient_shortcut_input.setShortcut("Ctrl")
     monkeypatch.setattr(preferences.QMessageBox, "warning",
@@ -284,11 +276,17 @@ def test_raccourci_invalide_bascule_sur_la_page_raccourcis(isolated_settings, mo
     assert dialog.stacked_widget.currentIndex() == 2   # page « Raccourcis »
 
 
-def test_status_label_est_un_label_enroule(isolated_settings):
-    """Le statut de connexion est un QLabel à retour à la ligne (plus de
-    QTextEdit à largeur fixe qui bloquait le redimensionnement), et le texte
-    reste sélectionnable pour copier un message d'erreur."""
-    dialog = _dialog()
+def test_status_label_est_un_label_enroule(isolated_settings, monkeypatch):
+    """Le statut de connexion (configuration du poste) est un QLabel à retour
+    à la ligne (plus de QTextEdit à largeur fixe qui bloquait le
+    redimensionnement), et le texte reste sélectionnable pour copier un
+    message d'erreur."""
+    import station_dialog
+    monkeypatch.setattr(station_dialog, "load_secret", lambda s: "")
+    monkeypatch.setattr(station_dialog, "secret_storage", lambda s: "")
+    parent = QWidget()
+    dialog = station_dialog.StationDialog(parent)
+    dialog._test_parent = parent
     assert isinstance(dialog.status_label, QLabel)
     assert dialog.status_label.wordWrap() is True
     assert dialog.status_label.maximumWidth() == 16777215  # pas de largeur figée
