@@ -163,18 +163,31 @@ def _dialog(isolated_settings, staff_id=None):
     return dialog
 
 
-def test_boutons_profil_grises_sans_equipier(isolated_settings):
+def test_groupe_profil_masque_sans_equipier(isolated_settings):
+    """Sans équipier connecté, le profil serveur n'a pas de sens : tout le
+    groupe est caché, pas seulement des boutons grisés."""
     dialog = _dialog(isolated_settings, staff_id=None)
-    assert not dialog.profile_send_button.isEnabled()
-    assert not dialog.profile_fetch_button.isEnabled()
-    assert "initiales" in dialog.profile_hint_label.text()
+    assert dialog.profile_box.isHidden()
 
 
-def test_boutons_profil_actifs_avec_equipier(isolated_settings):
+def test_groupe_profil_visible_avec_equipier(isolated_settings):
     dialog = _dialog(isolated_settings, staff_id=7)
+    assert not dialog.profile_box.isHidden()
     assert dialog.profile_send_button.isEnabled()
     assert dialog.profile_fetch_button.isEnabled()
-    assert dialog.profile_hint_label.text() == ""
+
+
+def test_groupe_profil_suit_la_connexion_en_direct(isolated_settings):
+    """La visibilité du groupe suit l'équipier connecté (rafraîchissement
+    périodique de la page Connexion)."""
+    dialog = _dialog(isolated_settings, staff_id=None)
+    assert dialog.profile_box.isHidden()
+    dialog.parent().staff_id = 7
+    dialog._update_profile_buttons_state()
+    assert not dialog.profile_box.isHidden()
+    dialog.parent().staff_id = None
+    dialog._update_profile_buttons_state()
+    assert dialog.profile_box.isHidden()
 
 
 def test_envoi_du_payload_filtre_au_bon_equipier(isolated_settings):

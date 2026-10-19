@@ -546,11 +546,6 @@ class PreferencesDialog(QDialog):
         self.profile_buttons_layout.addWidget(self.profile_fetch_button)
         profile_box_layout.addLayout(self.profile_buttons_layout)
 
-        # Indice d'usage : les deux boutons exigent un équipier connecté.
-        self.profile_hint_label = QLabel("", self.profile_box)
-        self.profile_hint_label.setWordWrap(True)
-        profile_box_layout.addWidget(self.profile_hint_label)
-
         # Résultat des opérations profil (envoi/récupération), distinct du
         # statut des tests de connexion au-dessus.
         self.profile_status_label = QLabel("", self.profile_box)
@@ -1020,19 +1015,18 @@ class PreferencesDialog(QDialog):
         return staff_id if isinstance(staff_id, int) and staff_id else None
 
     def _update_profile_buttons_state(self):
-        """Active les boutons de profil seulement si un équipier est connecté
-        (le profil est personnel : sans identité, rien à envoyer/récupérer).
-        Appelée aussi pendant __init__ via _refresh_live_connection_status,
-        avant la création des widgets : sans effet dans ce cas."""
+        """N'affiche le groupe « Mon profil sur le serveur » que si un équipier
+        est connecté : le profil est personnel — sans identité, montrer ces
+        réglages n'a pas de sens. Rafraîchie toutes les 1,5 s via
+        _refresh_live_connection_status, donc elle suit une connexion ou une
+        déconnexion pendant que le dialogue est ouvert. Appelée aussi pendant
+        __init__ avant la création des widgets : sans effet dans ce cas."""
         if not hasattr(self, "profile_send_button"):
             return
         enabled = self._staff_id() is not None
+        self.profile_box.setVisible(enabled)
         self.profile_send_button.setEnabled(enabled)
         self.profile_fetch_button.setEnabled(enabled)
-        self.profile_hint_label.setText(
-            "" if enabled else
-            "Connectez-vous avec vos initiales pour utiliser le profil "
-            "serveur.")
 
     def _send_profile(self):
         """Pousse les réglages personnels du formulaire vers le profil serveur
