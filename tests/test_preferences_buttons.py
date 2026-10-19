@@ -12,8 +12,8 @@ import sys
 import pytest
 from PySide6.QtCore import QCoreApplication, QSettings, Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBoxLayout,
-    QWidget)
+    QCheckBox, QDialog, QDialogButtonBox, QLabel, QLineEdit, QScrollArea,
+    QVBoxLayout, QWidget)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -78,6 +78,16 @@ def test_navigation_par_selection_change_de_page(isolated_settings):
     dialog.navigation_list.setCurrentItem(dialog.general_item)
     assert dialog.stacked_widget.currentIndex() == 0
     dialog.change_page(None)   # sélection vidée : tolérée sans erreur
+
+
+def test_pages_sont_scrollables(isolated_settings):
+    """Les 4 pages sont des QScrollArea redimensionnables : le contenu reste
+    accessible sur petit écran / grande police au lieu d'être tronqué."""
+    dialog = _dialog()
+    for page in (dialog.general_page, dialog.connexion_page,
+                 dialog.raccourcis_page, dialog.notifications_page):
+        assert isinstance(page, QScrollArea)
+        assert page.widgetResizable() is True
 
 
 def test_status_label_est_un_label_enroule(isolated_settings):

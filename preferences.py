@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -239,44 +239,57 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget = QStackedWidget()
 
-        self.general_page = QWidget()
-        self.general_layout = QVBoxLayout()
-        self.general_page.setLayout(self.general_layout)
-        
-        self.always_on_top_checkbox = QCheckBox("Toujours au premier plan", self.general_page)
-        self.general_layout.addWidget(self.always_on_top_checkbox)
+        self.general_page, self.general_layout = self._scrollable_page()
+
+        # --- Fenêtre ---
+        window_box = QGroupBox("Fenêtre", self.general_page)
+        window_box_layout = QVBoxLayout(window_box)
+        self.general_layout.addWidget(window_box)
+
+        self.always_on_top_checkbox = QCheckBox("Toujours au premier plan", window_box)
+        window_box_layout.addWidget(self.always_on_top_checkbox)
 
         # « vertical_mode » est une clé QSettings historique : elle porte en
         # réalité le mode HORIZONTAL de l'app (QHBoxLayout = barre large).
         # La case dit donc « horizontale » — l'ancien libellé « verticale »
         # produisait l'effet inverse de ce qu'il annonçait.
-        self.horizontal_mode_checkbox = QCheckBox("Orientation horizontale", self.general_page)
-        self.general_layout.addWidget(self.horizontal_mode_checkbox)
+        self.horizontal_mode_checkbox = QCheckBox("Orientation horizontale", window_box)
+        window_box_layout.addWidget(self.horizontal_mode_checkbox)
 
-        # --- Mode panneau compact (point 25) ---
+        # Réinitialise taille/position de la fenêtre (utile si elle est perdue
+        # hors écran après un changement de moniteur). Voir point 24.
+        self.reset_position_button = QPushButton("Réinitialiser la position de la fenêtre", window_box)
+        self.reset_position_button.clicked.connect(self._reset_window_position)
+        window_box_layout.addWidget(self.reset_position_button)
+
+        # --- Panneau compact (point 25) ---
+        panel_box = QGroupBox("Panneau compact", self.general_page)
+        panel_box_layout = QVBoxLayout(panel_box)
+        self.general_layout.addWidget(panel_box)
+
         # Panneau étroit docké sur un bord (colonne verticale ou barre
         # horizontale) plutôt qu'une fenêtre générique.
-        self.compact_mode_checkbox = QCheckBox("Mode panneau compact (docké sur un bord)", self.general_page)
-        self.general_layout.addWidget(self.compact_mode_checkbox)
+        self.compact_mode_checkbox = QCheckBox("Mode panneau compact (docké sur un bord)", panel_box)
+        panel_box_layout.addWidget(self.compact_mode_checkbox)
 
-        self.panel_snap_checkbox = QCheckBox("Magnétisme aux bords de l'écran", self.general_page)
-        self.general_layout.addWidget(self.panel_snap_checkbox)
+        self.panel_snap_checkbox = QCheckBox("Magnétisme aux bords de l'écran", panel_box)
+        panel_box_layout.addWidget(self.panel_snap_checkbox)
 
         self.panel_thickness_layout = QHBoxLayout()
-        self.panel_thickness_label = QLabel("Épaisseur du panneau (px):", self.general_page)
-        self.panel_thickness_spinbox = QSpinBox(self.general_page)
+        self.panel_thickness_label = QLabel("Épaisseur du panneau (px):", panel_box)
+        self.panel_thickness_spinbox = QSpinBox(panel_box)
         self.panel_thickness_spinbox.setRange(MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS)
         self.panel_thickness_spinbox.setSingleStep(10)
         self.panel_thickness_layout.addWidget(self.panel_thickness_label)
         self.panel_thickness_layout.addWidget(self.panel_thickness_spinbox)
-        self.general_layout.addLayout(self.panel_thickness_layout)
+        panel_box_layout.addLayout(self.panel_thickness_layout)
 
         # Préréglage « Panneau latéral » : pré-remplit les réglages
         # recommandés pour un usage à côté du logiciel métier. Simple
         # pré-remplissage des cases — rien n'est écrit sans « Enregistrer ».
         self.side_panel_preset_button = QPushButton(
             "Préréglage « Panneau latéral » (étroit, docké, toujours visible)",
-            self.general_page)
+            panel_box)
         self.side_panel_preset_button.setToolTip(
             "Coche : mode panneau compact, magnétisme, épaisseur "
             f"{DEFAULT_PANEL_THICKNESS} px, toujours au premier plan, "
@@ -284,97 +297,108 @@ class PreferencesDialog(QDialog):
         self.side_panel_preset_button.setAccessibleName(
             "Appliquer le préréglage panneau latéral")
         self.side_panel_preset_button.clicked.connect(self._apply_side_panel_preset)
-        self.general_layout.addWidget(self.side_panel_preset_button)
+        panel_box_layout.addWidget(self.side_panel_preset_button)
+
+        # --- Icônes ---
+        icons_box = QGroupBox("Icônes", self.general_page)
+        icons_box_layout = QVBoxLayout(icons_box)
+        self.general_layout.addWidget(icons_box)
 
         # Une seule icône regroupée dans la zone de notification au lieu des
         # trois icônes d'action — moins d'encombrement pour un panneau latéral
         # déjà discret (les actions restent accessibles par clic droit).
         self.tray_single_icon_checkbox = QCheckBox(
-            "Une seule icône dans la zone de notification", self.general_page)
+            "Une seule icône dans la zone de notification", icons_box)
         self.tray_single_icon_checkbox.setToolTip(
             "Regroupe Pause / Prochain patient / Valider sous une seule icône "
             "avec menu contextuel (clic gauche = afficher le panneau).")
-        self.general_layout.addWidget(self.tray_single_icon_checkbox)
+        icons_box_layout.addWidget(self.tray_single_icon_checkbox)
 
         # Bouton-icône « appel automatique » : masqué par défaut pour gagner de
         # la place — l'action reste dans le menu « Menu », et le bouton
         # réapparaît de lui-même tant que l'appel automatique est actif.
         self.show_auto_call_button_checkbox = QCheckBox(
-            "Afficher le bouton d'appel automatique", self.general_page)
+            "Afficher le bouton d'appel automatique", icons_box)
         self.show_auto_call_button_checkbox.setToolTip(
             "Épingle l'icône d'appel automatique dans le panneau. Décoché : "
             "l'action reste dans le menu « Menu » et l'icône n'apparaît que "
             "tant que l'appel automatique est actif.")
-        self.general_layout.addWidget(self.show_auto_call_button_checkbox)
+        icons_box_layout.addWidget(self.show_auto_call_button_checkbox)
 
-        self.display_patient_list = QCheckBox("Liste des patients", self.general_page)
-        self.general_layout.addWidget(self.display_patient_list)
+        # --- Liste des patients et messagerie ---
+        lists_box = QGroupBox("Liste des patients et messagerie", self.general_page)
+        lists_box_layout = QVBoxLayout(lists_box)
+        self.general_layout.addWidget(lists_box)
 
-        self.patient_list_position_vertical_label = QLabel("Position de la liste des patients en mode verticale:", self.general_page)
-        self.general_layout.addWidget(self.patient_list_position_vertical_label)
+        self.display_patient_list = QCheckBox("Liste des patients", lists_box)
+        lists_box_layout.addWidget(self.display_patient_list)
 
-        self.patient_list_position_vertical = QComboBox(self.general_page)
+        self.patient_list_position_vertical_label = QLabel("Position de la liste des patients en mode verticale:", lists_box)
+        lists_box_layout.addWidget(self.patient_list_position_vertical_label)
+
+        self.patient_list_position_vertical = QComboBox(lists_box)
         self.patient_list_position_vertical.addItems([BOTTOM_TEXT, RIGHT_TEXT])
-        self.general_layout.addWidget(self.patient_list_position_vertical)
+        lists_box_layout.addWidget(self.patient_list_position_vertical)
 
-        self.patient_list_position_horizontal_label = QLabel("Position de la liste des patients en mode horizontal:", self.general_page)
-        self.general_layout.addWidget(self.patient_list_position_horizontal_label)
+        self.patient_list_position_horizontal_label = QLabel("Position de la liste des patients en mode horizontal:", lists_box)
+        lists_box_layout.addWidget(self.patient_list_position_horizontal_label)
 
-        self.patient_list_position_horizontal = QComboBox(self.general_page)
+        self.patient_list_position_horizontal = QComboBox(lists_box)
         self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
-        self.general_layout.addWidget(self.patient_list_position_horizontal)
+        lists_box_layout.addWidget(self.patient_list_position_horizontal)
 
         # Position de la messagerie : même mécanisme que la liste des patients.
         # Du même côté que la file, les deux panneaux suivent la disposition
         # choisie dans « Menu › Disposition des panneaux » (empilés ou en
         # onglets) ; choisir un autre côté la détache.
         self.messaging_position_label = QLabel(
-            "Position de la messagerie :", self.general_page)
-        self.general_layout.addWidget(self.messaging_position_label)
-        self.messaging_position = QComboBox(self.general_page)
+            "Position de la messagerie :", lists_box)
+        lists_box_layout.addWidget(self.messaging_position_label)
+        self.messaging_position = QComboBox(lists_box)
         self.messaging_position.addItems([BOTTOM_TEXT, RIGHT_TEXT])
         self.messaging_position.setToolTip(
             "Du même côté que la liste des patients, les deux panneaux sont "
             "empilés ou regroupés en onglets (Menu › Disposition des panneaux) ; "
             "de l'autre côté, la messagerie a sa propre zone.")
-        self.general_layout.addWidget(self.messaging_position)
+        lists_box_layout.addWidget(self.messaging_position)
 
         # Taille de police de la file des patients (point 28) : configurable, avec
         # un plancher de lisibilité (l'ancienne valeur figée de 8 pt était petite).
         self.patient_list_font_size_layout = QHBoxLayout()
-        self.patient_list_font_size_label = QLabel("Taille de police de la liste:", self.general_page)
-        self.patient_list_font_size_spinbox = QSpinBox(self.general_page)
+        self.patient_list_font_size_label = QLabel("Taille de police de la liste:", lists_box)
+        self.patient_list_font_size_spinbox = QSpinBox(lists_box)
         self.patient_list_font_size_spinbox.setRange(MIN_FONT_POINT_SIZE, 24)
         self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_label)
         self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_spinbox)
-        self.general_layout.addLayout(self.patient_list_font_size_layout)
+        lists_box_layout.addLayout(self.patient_list_font_size_layout)
 
-        self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", self.general_page)
-        self.general_layout.addWidget(self.debug_window)
+        # --- Apparence ---
+        appearance_box = QGroupBox("Apparence", self.general_page)
+        appearance_box_layout = QVBoxLayout(appearance_box)
+        self.general_layout.addWidget(appearance_box)
 
-        # Réinitialise taille/position de la fenêtre (utile si elle est perdue
-        # hors écran après un changement de moniteur). Voir point 24.
-        self.reset_position_button = QPushButton("Réinitialiser la position de la fenêtre", self.general_page)
-        self.reset_position_button.clicked.connect(self._reset_window_position)
-        self.general_layout.addWidget(self.reset_position_button)
+        self.skin_label = QLabel("Sélectionner un skin:", appearance_box)
+        appearance_box_layout.addWidget(self.skin_label)
 
-        # Ajout de la sélection de skins
-        self.skin_label = QLabel("Sélectionner un skin:", self.general_page)
-        self.general_layout.addWidget(self.skin_label)
-        
-        self.skin_combo = QComboBox(self.general_page)
+        self.skin_combo = QComboBox(appearance_box)
         self.skin_combo.currentTextChanged.connect(self.preview_skin)
-        self.general_layout.addWidget(self.skin_combo)
-        
+        appearance_box_layout.addWidget(self.skin_combo)
+
+        # --- Journal ---
+        log_box = QGroupBox("Journal", self.general_page)
+        log_box_layout = QVBoxLayout(log_box)
+        self.general_layout.addWidget(log_box)
+
+        self.debug_window = QCheckBox("Garder ouverte la fenêtre de log après le démarrage", log_box)
+        log_box_layout.addWidget(self.debug_window)
+
         self.general_layout.addStretch()
-        
+
         self.stacked_widget.addWidget(self.general_page)
 
         self.content_layout.addWidget(self.stacked_widget)
 
-        self.connexion_page = QWidget()
-        self.connexion_layout = QVBoxLayout()
-        self.connexion_page.setLayout(self.connexion_layout)
+        self.connexion_page, self.connexion_layout = self._scrollable_page()
 
         self.url_label = QLabel("Adresse du site web:", self.connexion_page)
         self.connexion_layout.addWidget(self.url_label)
@@ -446,9 +470,7 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget.addWidget(self.connexion_page)
         
-        self.raccourcis_page = QWidget()
-        self.raccourcis_layout = QVBoxLayout()
-        self.raccourcis_page.setLayout(self.raccourcis_layout)
+        self.raccourcis_page, self.raccourcis_layout = self._scrollable_page()
 
         # --- Mode des raccourcis (point 27) ---
         self.shortcut_mode_label = QLabel("Mode des raccourcis:", self.raccourcis_page)
@@ -507,9 +529,7 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget.addWidget(self.raccourcis_page)
 
-        self.notifications_page = QWidget()
-        self.notifications_layout = QVBoxLayout()
-        self.notifications_page.setLayout(self.notifications_layout)
+        self.notifications_page, self.notifications_layout = self._scrollable_page()
         
         # Une ligne PAR CATÉGORIE de notification, avec deux réglages distincts :
         # « Afficher » et « Son ». Chaque catégorie est indépendante : décocher
@@ -763,6 +783,20 @@ class PreferencesDialog(QDialog):
         # workers de test avant que le dialogue ne soit refermé/libéré.
         self._shutdown_workers()
         super().done(result)
+
+    def _scrollable_page(self):
+        """Page des préférences enveloppée dans une QScrollArea : le contenu
+        reste accessible sur petit écran ou grande police au lieu d'être
+        tronqué en bas (la page « Général » est longue).
+
+        Renvoie ``(zone, layout)`` : la zone de défilement à empiler dans le
+        QStackedWidget, et le QVBoxLayout du contenu à remplir."""
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        return scroll, QVBoxLayout(inner)
 
     def create_shortcut_input(self):
         """ Groupe « modificateurs + touche » d'un raccourci.
