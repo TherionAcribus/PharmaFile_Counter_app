@@ -32,9 +32,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
 from accessibility import (
-    DEFAULT_LIST_FONT_SIZE, DEFAULT_TONE, clamp_font_size, normalize_tone,
+    DEFAULT_LIST_FONT_SIZE, DEFAULT_TONE, MIN_FONT_POINT_SIZE, clamp_font_size,
+    normalize_tone,
 )
-from panel_layout import DEFAULT_PANEL_THICKNESS, clamp_thickness
+from panel_layout import (
+    DEFAULT_PANEL_THICKNESS, MAX_PANEL_THICKNESS, MIN_PANEL_THICKNESS,
+    clamp_thickness,
+)
 from resources import NO_SKIN, normalize_skin_name
 from shortcut_config import DEFAULT_MODE, normalize_mode
 
@@ -46,9 +50,12 @@ class Setting:
     - ``default`` : valeur par défaut (absente de QSettings).
     - ``kind``    : type demandé à QSettings (``bool``/``int``/``str``) ; ``None``
       pour lire la valeur brute (utile quand ``coerce`` fait la conversion).
-    - ``bounds``  : (min, max) inclusifs appliqués aux valeurs numériques.
-    - ``coerce``  : normalisateur final (prioritaire sur ``bounds``), p. ex.
-      ``normalize_mode`` ou un clamp spécialisé. Reçoit la valeur déjà typée.
+    - ``bounds``  : (min, max) inclusifs appliqués aux valeurs numériques —
+      AUSSI les bornes des champs de saisie des préférences (``bounds()``) :
+      une seule source, l'interface ne peut plus proposer une plage différente.
+    - ``coerce``  : normalisateur (conversion, valeur de repli), p. ex.
+      ``normalize_mode`` ou un clamp spécialisé. Reçoit la valeur déjà typée ;
+      ``bounds`` s'applique ensuite à son résultat.
     """
 
     default: Any
@@ -60,6 +67,9 @@ class Setting:
 # La lecture réelle est fournie par read() au niveau module (plus bas), ce qui
 # évite de porter la clé QSettings dans chaque objet Setting.
 
+
+#: Taille maximale (pt) du texte de la liste des patients.
+MAX_LIST_FONT_SIZE = 24
 
 SCHEMA_VERSION = 1
 SCHEMA_VERSION_KEY = "config_schema_version"
@@ -148,8 +158,13 @@ SETTINGS = {
 
     # --- Ton / accessibilité -------------------------------------------------
     "message_tone": Setting(default=DEFAULT_TONE, kind=str, coerce=normalize_tone),
+    # Plafond 24 pt : celui que la fenêtre de préférences a toujours proposé
+    # (le plafond générique de clamp_font_size, 72 pt, laissait un profil ou une
+    # config éditée à la main imposer une taille que l'interface ne peut pas
+    # afficher — elle la ramenait silencieusement à 24 au premier enregistrement).
     "patient_list_font_size": Setting(
-        default=DEFAULT_LIST_FONT_SIZE, kind=int, coerce=clamp_font_size),
+        default=DEFAULT_LIST_FONT_SIZE, kind=int, coerce=clamp_font_size,
+        bounds=(MIN_FONT_POINT_SIZE, MAX_LIST_FONT_SIZE)),
 
     # --- Fenêtre / panneau ---------------------------------------------------
     "always_on_top": Setting(default=True, kind=bool),
@@ -157,7 +172,9 @@ SETTINGS = {
     "vertical_mode": Setting(default=False, kind=bool),
     "compact_mode": Setting(default=False, kind=bool),
     "panel_snap": Setting(default=True, kind=bool),
-    "panel_thickness": Setting(default=DEFAULT_PANEL_THICKNESS, coerce=clamp_thickness),
+    "panel_thickness": Setting(
+        default=DEFAULT_PANEL_THICKNESS, coerce=clamp_thickness,
+        bounds=(MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS)),
     # Bouton-icône « appel automatique » affiché en permanence : off par défaut
     # (l'action reste dans le menu « Menu » et le bouton réapparaît tant que
     # l'appel automatique est actif, pour pouvoir le couper d'un clic).
@@ -204,11 +221,20 @@ def read(settings, key: str) -> Any:
     else:
         value = settings.value(key, spec.default, type=spec.kind)
     if spec.coerce is not None:
-        return spec.coerce(value)
+        value = spec.coerce(value)
     if spec.bounds is not None:
         low, high = spec.bounds
         return max(low, min(high, value))
     return value
+
+
+def bounds(key: str) -> Tuple[int, int]:
+    """Plage (min, max) d'une clé numérique — celle des champs de saisie des
+    préférences. KeyError/ValueError si la clé est inconnue ou sans plage."""
+    spec_bounds = SETTINGS[key].bounds
+    if spec_bounds is None:
+        raise ValueError(f"Réglage sans plage : {key}")
+    return spec_bounds
 
 
 # ---------------------------------------------------------------------------

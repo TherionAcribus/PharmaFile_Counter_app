@@ -4,6 +4,8 @@ Vérifie notamment que les défauts historiquement divergents entre main.py et
 preferences.py sont désormais uniques et canoniques (point 6).
 """
 
+import pytest
+
 import settings_schema as ss
 from shortcut_config import normalize_mode
 from accessibility import normalize_tone, clamp_font_size
@@ -87,6 +89,29 @@ def test_coerce_delegates_to_specialized_normalizers():
     assert ss.read(s, "message_tone") == normalize_tone("pas-un-ton")
     assert ss.read(s, "patient_list_font_size") == clamp_font_size(1)
     assert ss.read(s, "panel_thickness") == clamp_thickness(10)
+
+
+def test_bounds_also_apply_after_coerce():
+    """Une clé normalisée ET bornée : le profil ou la config éditée à la main
+    ne peuvent plus imposer une valeur que l'interface ne sait pas afficher
+    (taille de liste à 30 pt alors que le champ s'arrête à 24)."""
+    s = FakeSettings({"patient_list_font_size": 30, "panel_thickness": 9999})
+    assert ss.read(s, "patient_list_font_size") == ss.MAX_LIST_FONT_SIZE
+    assert ss.read(s, "panel_thickness") == ss.bounds("panel_thickness")[1]
+
+
+def test_every_int_setting_declares_its_bounds():
+    """Toute clé numérique porte sa plage : c'est elle que les champs des
+    préférences utilisent (plus de plages recopiées dans l'interface)."""
+    for key, spec in ss.SETTINGS.items():
+        if isinstance(spec.default, int) and not isinstance(spec.default, bool):
+            low, high = ss.bounds(key)
+            assert low <= spec.default <= high, key
+
+
+def test_bounds_refuses_key_without_range():
+    with pytest.raises(ValueError):
+        ss.bounds("web_url")
 
 
 def test_stored_value_is_read_back():

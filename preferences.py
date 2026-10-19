@@ -6,25 +6,22 @@ from PySide6.QtGui import QDesktopServices
 import resources
 from secret_store import secret_storage
 from shortcut_defaults import (
-    default_shortcut, join_shortcut, read_shortcut, split_shortcut,
+    SHORTCUT_DEFAULTS, default_shortcut, join_shortcut, read_shortcut,
+    split_shortcut,
 )
 from shortcut_edit import ShortcutEdit
 import notification_rules
 import profile_sync
 import settings_schema
 from counter_id_utils import coerce_counter_id
-from panel_layout import (
-    MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
-)
+from panel_layout import DEFAULT_PANEL_THICKNESS
 from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
     ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
     INVALID_EMPTY, INVALID_LONE_MODIFIER, INVALID_UNKNOWN_KEY,
 )
 from station_dialog import StationDialog, secret_status_text, sync_and_verify
-from accessibility import (
-    MIN_FONT_POINT_SIZE, TONE_HUMOROUS, TONE_SOBER,
-)
+from accessibility import TONE_HUMOROUS, TONE_SOBER
 from audio import SOUNDS
 from my_logger import default_log_dir
 
@@ -45,14 +42,10 @@ SOUND_LABELS = {
 }
 
 
-# Constants for UI texts and corresponding values
-BOTTOM_TEXT = "Bas"
-RIGHT_TEXT = "Droite"
-POSITION_MAPPING = {
-    BOTTOM_TEXT: "bottom",
-    RIGHT_TEXT: "right"
-}
-REVERSE_POSITION_MAPPING = {v: k for k, v in POSITION_MAPPING.items()}
+#: Positions d'un panneau (liste des patients, messagerie) : (libellé affiché,
+#: valeur enregistrée). La valeur est portée par la donnée de l'entrée : le
+#: libellé n'est jamais persisté.
+POSITION_OPTIONS = (("Bas", "bottom"), ("Droite", "right"))
 
 
 class PreferencesDialog(QDialog):
@@ -116,9 +109,51 @@ class PreferencesDialog(QDialog):
             self.navigation_list.addItem(item)
 
         self.content_layout.addWidget(self.navigation_list)
-        
-        self.stacked_widget = QStackedWidget()
 
+        # Une méthode de construction par page, dans l'ordre de _page_items.
+        self.stacked_widget = QStackedWidget()
+        self.content_layout.addWidget(self.stacked_widget)
+        self._build_general_page()
+        self._build_session_page()
+        self._build_shortcuts_page()
+        self._build_notifications_page()
+        self._build_station_page()
+        self._build_button_bar()
+
+        # Table UNIQUE réglage -> champ : chargement, valeurs par défaut,
+        # récupération du profil et enregistrement en dérivent (cf. _bindings).
+        self._bindings = self._build_bindings()
+
+        self.load_skins()
+        self.load_preferences()
+        self.skin_combo.currentIndexChanged.connect(self._on_skin_selected)
+        # Suivi en direct des problèmes audio (branché UNE fois : auparavant à
+        # chaque chargement / remise aux défauts / récupération de profil).
+        self.watch_audio_errors()
+
+        # Réglages qui dépendent d'un autre : grisés (ou masqués) quand ils
+        # n'auraient aucun effet.
+        for checkbox in (self.compact_mode_checkbox, self.horizontal_mode_checkbox,
+                         self.display_patient_list):
+            checkbox.toggled.connect(self._update_dependent_controls)
+        self.shortcut_mode_combo.currentIndexChanged.connect(
+            self._update_dependent_controls)
+        self._update_dependent_controls()
+
+        # Modifications non enregistrées : référence = état chargé (puis état
+        # enregistré par « Appliquer »). « Appliquer » n'est actif que s'il y a
+        # quelque chose à appliquer, et fermer sans enregistrer demande
+        # confirmation (reject).
+        self._baseline = self._form_settings()
+        self._watch_form_changes()
+        self._update_dirty_state()
+
+        # setCurrentItem coche l'entrée de la liste ; change_page rejoue le clic.
+        self.navigation_list.setCurrentItem(self.general_item)
+        self.change_page(self.general_item)
+
+    def _build_general_page(self):
+        """Page « Général » : fenêtre, panneau compact, icônes, liste, thème, journal."""
         self.general_page, self.general_layout = self._scrollable_page()
 
         # --- Fenêtre ---
@@ -167,7 +202,7 @@ class PreferencesDialog(QDialog):
         self.panel_thickness_layout = QHBoxLayout()
         self.panel_thickness_label = QLabel("Épaisseur du panneau :", panel_box)
         self.panel_thickness_spinbox = QSpinBox(panel_box)
-        self.panel_thickness_spinbox.setRange(MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS)
+        self.panel_thickness_spinbox.setRange(*settings_schema.bounds("panel_thickness"))
         self.panel_thickness_spinbox.setSingleStep(10)
         self.panel_thickness_spinbox.setSuffix(" px")
         self.panel_thickness_label.setBuddy(self.panel_thickness_spinbox)
@@ -231,12 +266,10 @@ class PreferencesDialog(QDialog):
         self.patient_list_position_row = QHBoxLayout()
         self.patient_list_position_label = QLabel(
             "Position de la liste des patients :", lists_box)
-        self.patient_list_position_vertical = QComboBox(lists_box)
-        self.patient_list_position_vertical.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.patient_list_position_vertical = self._position_combo(lists_box)
         self.patient_list_position_vertical.setAccessibleName(
             "Position de la liste des patients (orientation verticale)")
-        self.patient_list_position_horizontal = QComboBox(lists_box)
-        self.patient_list_position_horizontal.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.patient_list_position_horizontal = self._position_combo(lists_box)
         self.patient_list_position_horizontal.setAccessibleName(
             "Position de la liste des patients (orientation horizontale)")
         self.patient_list_position_row.addWidget(self.patient_list_position_label)
@@ -253,7 +286,8 @@ class PreferencesDialog(QDialog):
         self.patient_list_font_size_layout = QHBoxLayout()
         self.patient_list_font_size_label = QLabel("Taille du texte de la liste :", lists_box)
         self.patient_list_font_size_spinbox = QSpinBox(lists_box)
-        self.patient_list_font_size_spinbox.setRange(MIN_FONT_POINT_SIZE, 24)
+        self.patient_list_font_size_spinbox.setRange(
+            *settings_schema.bounds("patient_list_font_size"))
         self.patient_list_font_size_spinbox.setSuffix(" pt")
         self.patient_list_font_size_label.setBuddy(self.patient_list_font_size_spinbox)
         self.patient_list_font_size_layout.addWidget(self.patient_list_font_size_label)
@@ -268,8 +302,7 @@ class PreferencesDialog(QDialog):
         self.messaging_position_row = QHBoxLayout()
         self.messaging_position_label = QLabel(
             "Position de la messagerie :", lists_box)
-        self.messaging_position = QComboBox(lists_box)
-        self.messaging_position.addItems([BOTTOM_TEXT, RIGHT_TEXT])
+        self.messaging_position = self._position_combo(lists_box)
         self.messaging_position.setToolTip(
             "Du même côté que la liste des patients, les deux panneaux sont "
             "empilés ou regroupés en onglets (Menu › Disposition des panneaux) ; "
@@ -321,8 +354,8 @@ class PreferencesDialog(QDialog):
 
         self.stacked_widget.addWidget(self.general_page)
 
-        self.content_layout.addWidget(self.stacked_widget)
-
+    def _build_session_page(self):
+        """Page « Session » : choix personnels liés à la connexion de l'équipier."""
         # --- Session : choix personnels liés à la connexion de l'équipier ---
         # (la configuration du POSTE — serveur, secret, comptoir — est dans la
         # page « Poste », en lecture seule).
@@ -401,7 +434,9 @@ class PreferencesDialog(QDialog):
         self.session_layout.addStretch()
         
         self.stacked_widget.addWidget(self.session_page)
-        
+
+    def _build_shortcuts_page(self):
+        """Page « Raccourcis » : comportement et combinaisons."""
         self.raccourcis_page, self.raccourcis_layout = self._scrollable_page()
 
         # --- Comportement des raccourcis (point 27) ---
@@ -471,6 +506,8 @@ class PreferencesDialog(QDialog):
 
         self.stacked_widget.addWidget(self.raccourcis_page)
 
+    def _build_notifications_page(self):
+        """Page « Notifications » : catégories, délais, affichage, son."""
         self.notifications_page, self.notifications_layout = self._scrollable_page()
 
         # --- Catégories ---
@@ -528,10 +565,12 @@ class PreferencesDialog(QDialog):
         delays_grid.setColumnStretch(0, 1)
         self.notifications_layout.addWidget(delays_box)
 
-        def spin_row(grid, row, text, low, high, suffix, tooltip=""):
+        def spin_row(grid, row, text, key, suffix, tooltip=""):
+            # Plage = celle du schéma (settings_schema.bounds) : plus de bornes
+            # recopiées ici, susceptibles de diverger de celles de la lecture.
             label = QLabel(text, grid.parentWidget())
             spin = QSpinBox(grid.parentWidget())
-            spin.setRange(low, high)
+            spin.setRange(*settings_schema.bounds(key))
             spin.setSuffix(suffix)
             label.setBuddy(spin)
             if tooltip:
@@ -542,13 +581,13 @@ class PreferencesDialog(QDialog):
             return label, spin
 
         self.notification_after_deconnection_label, self.notification_after_deconnection_spinbox = spin_row(
-            delays_grid, 0, "Alerte « connexion perdue » après :", 0, 99, " s",
+            delays_grid, 0, "Alerte « connexion perdue » après :", "notification_after_deconnection", " s",
             "Délai avant de signaler une perte de connexion au serveur (les "
             "coupures plus courtes passent inaperçues).")
         # 0 = alerte dès la perte de connexion : on l'écrit en toutes lettres.
         self.notification_after_deconnection_spinbox.setSpecialValueText("immédiatement")
         self.notification_after_calling_label, self.notification_after_calling_spinbox = spin_row(
-            delays_grid, 1, "Rappel « pensez à valider » après :", 10, 120, " s",
+            delays_grid, 1, "Rappel « pensez à valider » après :", "notification_after_calling", " s",
             "Délai, après l'appel d'un patient, avant de rappeler de le valider.")
 
         # --- Affichage ---
@@ -558,9 +597,9 @@ class PreferencesDialog(QDialog):
         self.notifications_layout.addWidget(display_box)
 
         self.notification_duration_label, self.notification_duration_spinbox = spin_row(
-            display_grid, 0, "Durée d'affichage :", 1, 60, " s")
+            display_grid, 0, "Durée d'affichage :", "notification_duration", " s")
         self.notification_font_size_label, self.notification_font_size_spinbox = spin_row(
-            display_grid, 1, "Taille du texte :", 8, 36, " pt")
+            display_grid, 1, "Taille du texte :", "notification_font_size", " pt")
 
         # Coin de l'écran où afficher les notifications (point 26).
         self.notification_corner_label = QLabel("Coin de l'écran :", display_box)
@@ -612,12 +651,12 @@ class PreferencesDialog(QDialog):
         self.volume_layout = QHBoxLayout()
         self.volume_label = QLabel("Volume :", sound_box)
         self.volume_slider = QSlider(Qt.Horizontal, sound_box)
-        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setRange(*settings_schema.bounds("notification_volume"))
         self.volume_slider.setTickPosition(QSlider.TicksBelow)
         self.volume_slider.setTickInterval(10)
         self.volume_slider.setAccessibleName("Volume des notifications")
         self.volume_spinbox = QSpinBox(sound_box)
-        self.volume_spinbox.setRange(0, 100)
+        self.volume_spinbox.setRange(*settings_schema.bounds("notification_volume"))
         self.volume_spinbox.setSuffix(" %")
         self.volume_slider.valueChanged.connect(self.volume_spinbox.setValue)
         self.volume_spinbox.valueChanged.connect(self.volume_slider.setValue)
@@ -667,6 +706,8 @@ class PreferencesDialog(QDialog):
         
         self.stacked_widget.addWidget(self.notifications_page)
 
+    def _build_station_page(self):
+        """Page « Poste » : résumé en lecture seule de la configuration du poste."""
         # --- Poste : configuration de la machine, en lecture seule ---
         # Serveur, secret et comptoir sont fixés à l'installation (le PC ne
         # quitte pas son comptoir) et les modifier reconnecte toute
@@ -721,6 +762,8 @@ class PreferencesDialog(QDialog):
             self._refresh_live_connection_status)
         self._live_status_timer.start()
 
+    def _build_button_bar(self):
+        """Barre du bas : état d'enregistrement et boutons."""
         # Résultat d'« Appliquer » (le dialogue reste ouvert) : sans ce retour,
         # rien n'indiquait que l'enregistrement avait eu lieu.
         self.save_status_label = QLabel("", self)
@@ -762,31 +805,6 @@ class PreferencesDialog(QDialog):
         self.defaults_button.setMenu(defaults_menu)
         self.main_layout.addWidget(self.button_box)
 
-        self.load_skins()
-        self.load_preferences()
-        self.skin_combo.currentIndexChanged.connect(self._on_skin_selected)
-
-        # Réglages qui dépendent d'un autre : grisés (ou masqués) quand ils
-        # n'auraient aucun effet.
-        for checkbox in (self.compact_mode_checkbox, self.horizontal_mode_checkbox,
-                         self.display_patient_list):
-            checkbox.toggled.connect(self._update_dependent_controls)
-        self.shortcut_mode_combo.currentIndexChanged.connect(
-            self._update_dependent_controls)
-        self._update_dependent_controls()
-
-        # Modifications non enregistrées : référence = état chargé (puis état
-        # enregistré par « Appliquer »). « Appliquer » n'est actif que s'il y a
-        # quelque chose à appliquer, et fermer sans enregistrer demande
-        # confirmation (reject).
-        self._baseline = self._form_settings()
-        self._watch_form_changes()
-        self._update_dirty_state()
-
-        # setCurrentItem coche l'entrée de la liste ; change_page rejoue le clic.
-        self.navigation_list.setCurrentItem(self.general_item)
-        self.change_page(self.general_item)
-
     def _scrollable_page(self):
         """Page des préférences enveloppée dans une QScrollArea : le contenu
         reste accessible sur petit écran ou grande police au lieu d'être
@@ -808,6 +826,14 @@ class PreferencesDialog(QDialog):
         self.navigation_list.setCurrentItem(item)   # déclenche change_page
         if focus_widget is not None:
             focus_widget.setFocus()
+
+    @staticmethod
+    def _position_combo(parent):
+        """Liste « Bas / Droite » dont chaque entrée porte la valeur enregistrée."""
+        combo = QComboBox(parent)
+        for label, value in POSITION_OPTIONS:
+            combo.addItem(label, value)
+        return combo
 
     def create_shortcut_input(self, accessible_name=""):
         """Champ de capture de frappe d'un raccourci (point 12).
@@ -962,11 +988,9 @@ class PreferencesDialog(QDialog):
         def read(key):
             return settings_schema.read(settings, key)
 
-        self._apply_session_values(read)
-        self._apply_raccourcis_values(
-            read, lambda name: read_shortcut(settings, name, logger))
-        self._apply_notifications_values(read)
-        self._apply_general_values(read)
+        # Raccourcis : read_shortcut (défaut + migration + persistance de la
+        # correction), partagé avec main.py.
+        self._apply_values(read, lambda name: read_shortcut(settings, name, logger))
 
         # Valeurs ENREGISTRÉES (servent à restaurer l'aperçu skin/volume si
         # l'utilisateur ferme sans enregistrer).
@@ -974,19 +998,119 @@ class PreferencesDialog(QDialog):
         self.current_muted = read("notification_muted")
         self.current_skin = read("selected_skin")
 
-    def _apply_session_values(self, read):
-        """Affecte les réglages de la page Session lus via ``read``."""
-        self.reconnect_last_user_checkbox.setChecked(read("reconnect_last_user"))
-        self._set_policy_combo(read("profile_sync_policy"))
-        self._update_profile_buttons_state()
+    # --- Table réglage -> champ ----------------------------------------------
 
-    def _set_policy_combo(self, value):
-        """Positionne le combo de politique de récupération sur ``value``
-        (« never »/« ask »/« auto », rabattu sur « ask » si inconnu)."""
-        index = self.profile_policy_combo.findData(value)
-        if index < 0:
-            index = self.profile_policy_combo.findData("ask")
-        self.profile_policy_combo.setCurrentIndex(index if index >= 0 else 0)
+    def _build_bindings(self):
+        """Table UNIQUE des réglages du formulaire : (clé, champ, page).
+
+        Chargement, valeurs par défaut (par page), récupération du profil et
+        enregistrement (_form_settings) en dérivent tous. Auparavant chaque
+        réglage figurait dans trois listes tenues à la main (création, lecture,
+        collecte) : en oublier une cassait l'enregistrement ou l'envoi du profil
+        sans erreur visible. Un test vérifie que la table couvre exactement le
+        schéma (hors adresse du serveur) et les raccourcis.
+
+        Le type du champ décide de la lecture/écriture (_field_value,
+        _set_field_value) ; les listes déroulantes portent la valeur enregistrée
+        en donnée de chaque entrée."""
+        general, session = self.general_item, self.session_item
+        shortcuts, notifications = self.raccourcis_item, self.notifications_item
+        bindings = [
+            # --- Général ---
+            ("always_on_top", self.always_on_top_checkbox, general),
+            # Clé historique « vertical_mode » = mode HORIZONTAL de l'app.
+            ("vertical_mode", self.horizontal_mode_checkbox, general),
+            ("panel_snap", self.panel_snap_checkbox, general),
+            ("compact_mode", self.compact_mode_checkbox, general),
+            ("panel_thickness", self.panel_thickness_spinbox, general),
+            ("tray_single_icon", self.tray_single_icon_checkbox, general),
+            ("show_auto_call_button", self.show_auto_call_button_checkbox, general),
+            ("display_patient_list", self.display_patient_list, general),
+            ("patient_list_vertical_position", self.patient_list_position_vertical, general),
+            ("patient_list_horizontal_position", self.patient_list_position_horizontal, general),
+            ("patient_list_font_size", self.patient_list_font_size_spinbox, general),
+            ("messaging_dock_area", self.messaging_position, general),
+            ("selected_skin", self.skin_combo, general),
+            ("debug_window", self.debug_window, general),
+            # --- Session ---
+            ("reconnect_last_user", self.reconnect_last_user_checkbox, session),
+            ("profile_sync_policy", self.profile_policy_combo, session),
+            # --- Raccourcis ---
+            ("shortcut_mode", self.shortcut_mode_combo, shortcuts),
+            ("confirm_sensitive_shortcuts", self.confirm_sensitive_checkbox, shortcuts),
+            ("shortcut_feedback", self.shortcut_feedback_checkbox, shortcuts),
+            ("next_patient_shortcut", self.next_patient_shortcut_input, shortcuts),
+            ("validate_patient_shortcut", self.validate_patient_shortcut_input, shortcuts),
+            ("pause_shortcut", self.pause_shortcut_input, shortcuts),
+            ("recall_shortcut", self.recall_shortcut_input, shortcuts),
+            ("deconnect_shortcut", self.deconnect_input, shortcuts),
+        ]
+        # --- Notifications ---
+        for category in notification_rules.CATEGORIES:
+            bindings.append((notification_rules.DISPLAY_KEYS[category],
+                             self.notification_display_checkboxes[category],
+                             notifications))
+            bindings.append((notification_rules.SOUND_KEYS[category],
+                             self.notification_sound_checkboxes[category],
+                             notifications))
+        bindings += [
+            ("notification_after_deconnection",
+             self.notification_after_deconnection_spinbox, notifications),
+            ("notification_after_calling", self.notification_after_calling_spinbox, notifications),
+            ("notification_duration", self.notification_duration_spinbox, notifications),
+            ("notification_font_size", self.notification_font_size_spinbox, notifications),
+            ("notification_corner", self.notification_corner_combo, notifications),
+            ("message_tone", self.message_tone_combo, notifications),
+            ("notification_volume", self.volume_slider, notifications),
+            ("notification_muted", self.mute_checkbox, notifications),
+        ]
+        return bindings
+
+    @staticmethod
+    def _field_value(widget):
+        """Valeur à enregistrer lue dans un champ du formulaire."""
+        if isinstance(widget, ShortcutEdit):
+            return widget.shortcut()
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, (QSpinBox, QSlider)):
+            return widget.value()
+        if isinstance(widget, QComboBox):
+            return widget.currentData()
+        raise TypeError(f"Champ non pris en charge : {type(widget).__name__}")
+
+    @staticmethod
+    def _set_field_value(key, widget, value):
+        """Affiche ``value`` (déjà normalisée par le schéma) dans un champ.
+
+        Liste déroulante sans entrée pour cette valeur (version future, édition
+        manuelle) : on retombe sur la valeur par défaut du schéma."""
+        if isinstance(widget, ShortcutEdit):
+            modifiers, name = split_shortcut(value)
+            widget.setShortcut(join_shortcut(modifiers, name))
+        elif isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+        elif isinstance(widget, (QSpinBox, QSlider)):
+            widget.setValue(value)
+        elif isinstance(widget, QComboBox):
+            index = widget.findData(value)
+            if index < 0:
+                index = widget.findData(settings_schema.default(key))
+            widget.setCurrentIndex(max(index, 0))
+        else:
+            raise TypeError(f"Champ non pris en charge : {type(widget).__name__}")
+
+    def _apply_values(self, read, read_shortcut_text, keep=None):
+        """Verse dans le formulaire les réglages lus via ``read`` (schéma) et
+        ``read_shortcut_text`` (raccourcis), pour les liaisons retenues par
+        ``keep(clé, page)`` (toutes par défaut). Ne persiste rien."""
+        for key, widget, page in self._bindings:
+            if keep is not None and not keep(key, page):
+                continue
+            value = (read_shortcut_text(key) if key in SHORTCUT_DEFAULTS
+                     else read(key))
+            self._set_field_value(key, widget, value)
+        self.update_sound_controls_enabled()
 
     def _staff_id(self):
         """Identifiant de l'équipier actuellement connecté (fenêtre parente),
@@ -1087,93 +1211,14 @@ class PreferencesDialog(QDialog):
         Chaque valeur repasse par la normalisation du schéma via DictSettings
         (un profil hors-plage est rabattu proprement). La politique transportée
         par le profil — personnelle — remplace le choix local du combo.
-        L'identité du poste (URL, secret, comptoir, reconnexion du dernier
-        équipier) n'est pas touchée : elle n'est pas dans le profil."""
+        Les clés propres au poste (profile_sync.PROFILE_LOCAL_KEYS, dont la
+        reconnexion du dernier équipier) ne sont pas touchées : elles ne sont
+        pas dans le profil."""
         shim = profile_sync.DictSettings(payload)
-
-        def read(key):
-            return settings_schema.read(shim, key)
-
-        self._apply_general_values(read)
-        self._apply_raccourcis_values(
-            read, lambda name: read_shortcut(shim, name, logger))
-        self._apply_notifications_values(read)
-        self._set_policy_combo(read("profile_sync_policy"))
-
-    def _apply_raccourcis_values(self, read, read_shortcut_text):
-        """Affecte les réglages de la page Raccourcis.
-
-        ``read_shortcut_text`` fournit le texte canonique d'un raccourci :
-        ``read_shortcut`` au chargement (défaut + migration + persistance de la
-        correction, partagé avec main.py), ``default_shortcut`` à la remise à
-        zéro."""
-        for name, widget in (
-            ("next_patient_shortcut", self.next_patient_shortcut_input),
-            ("validate_patient_shortcut", self.validate_patient_shortcut_input),
-            ("pause_shortcut", self.pause_shortcut_input),
-            ("recall_shortcut", self.recall_shortcut_input),
-            ("deconnect_shortcut", self.deconnect_input),
-        ):
-            self._set_shortcut_value(widget, read_shortcut_text(name))
-        mode_index = self.shortcut_mode_combo.findData(read("shortcut_mode"))
-        self.shortcut_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
-        self.confirm_sensitive_checkbox.setChecked(read("confirm_sensitive_shortcuts"))
-        self.shortcut_feedback_checkbox.setChecked(read("shortcut_feedback"))
-
-    def _set_shortcut_value(self, widget, text):
-        """Affiche un raccourci canonique (« Alt+Maj+P ») dans un ShortcutEdit."""
-        modifiers, key = split_shortcut(text)
-        widget.setShortcut(join_shortcut(modifiers, key))
-
-    def _apply_notifications_values(self, read):
-        """Affecte les réglages de la page Notifications lus via ``read``."""
-        for category, checkbox in self.notification_display_checkboxes.items():
-            checkbox.setChecked(read(notification_rules.DISPLAY_KEYS[category]))
-        for category, checkbox in self.notification_sound_checkboxes.items():
-            checkbox.setChecked(read(notification_rules.SOUND_KEYS[category]))
-        self.notification_after_deconnection_spinbox.setValue(
-            read("notification_after_deconnection"))
-        self.notification_after_calling_spinbox.setValue(
-            read("notification_after_calling"))
-        self.notification_duration_spinbox.setValue(
-            read("notification_duration"))
-        self.notification_font_size_spinbox.setValue(
-            read("notification_font_size"))
-        tone_index = self.message_tone_combo.findData(read("message_tone"))
-        self.message_tone_combo.setCurrentIndex(tone_index if tone_index >= 0 else 0)
-        corner_index = self.notification_corner_combo.findData(read("notification_corner"))
-        self.notification_corner_combo.setCurrentIndex(
-            corner_index if corner_index >= 0 else 0)
-        self.volume_slider.setValue(read("notification_volume"))
-        self.mute_checkbox.setChecked(read("notification_muted"))
-        self.update_sound_controls_enabled()
-        self.watch_audio_errors()
-
-    def _apply_general_values(self, read):
-        """Affecte les réglages de la page Général lus via ``read``."""
-        self.always_on_top_checkbox.setChecked(read("always_on_top"))
-        self.horizontal_mode_checkbox.setChecked(read("vertical_mode"))
-        self.compact_mode_checkbox.setChecked(read("compact_mode"))
-        self.panel_snap_checkbox.setChecked(read("panel_snap"))
-        self.panel_thickness_spinbox.setValue(read("panel_thickness"))
-        self.tray_single_icon_checkbox.setChecked(read("tray_single_icon"))
-        self.show_auto_call_button_checkbox.setChecked(
-            read("show_auto_call_button"))
-        self.display_patient_list.setChecked(read("display_patient_list"))
-        self.patient_list_font_size_spinbox.setValue(
-            read("patient_list_font_size"))
-        self.patient_list_position_vertical.setCurrentText(
-            REVERSE_POSITION_MAPPING.get(
-                read("patient_list_vertical_position"), BOTTOM_TEXT))
-        self.patient_list_position_horizontal.setCurrentText(
-            REVERSE_POSITION_MAPPING.get(
-                read("patient_list_horizontal_position"), RIGHT_TEXT))
-        self.messaging_position.setCurrentText(REVERSE_POSITION_MAPPING.get(
-            read("messaging_dock_area"), BOTTOM_TEXT))
-        self.debug_window.setChecked(read("debug_window"))
-        index = self.skin_combo.findData(read("selected_skin"))
-        if index >= 0:
-            self.skin_combo.setCurrentIndex(index)
+        self._apply_values(
+            lambda key: settings_schema.read(shim, key),
+            lambda name: read_shortcut(shim, name, logger),
+            keep=lambda key, _page: key not in profile_sync.PROFILE_LOCAL_KEYS)
 
     def _reset_to_defaults(self, current_page_only):
         """Rétablit les valeurs par défaut du schéma dans les champs du dialogue.
@@ -1181,21 +1226,11 @@ class PreferencesDialog(QDialog):
         Simple édition du formulaire : rien n'est persisté tant que
         l'utilisateur n'enregistre pas, et « Annuler » laisse tout intact.
         La configuration du poste (page « Poste ») n'est pas concernée."""
-        read = settings_schema.default
-        targets = [self.navigation_list.currentItem()] if current_page_only \
-            else [self.general_item, self.session_item,
-                  self.raccourcis_item, self.notifications_item]
-        # QListWidgetItem n'est pas hachable : comparaisons (comme change_page)
-        # plutôt qu'un dict.
-        for item in targets:
-            if item == self.general_item:
-                self._apply_general_values(read)
-            elif item == self.session_item:
-                self._apply_session_values(read)
-            elif item == self.raccourcis_item:
-                self._apply_raccourcis_values(read, default_shortcut)
-            elif item == self.notifications_item:
-                self._apply_notifications_values(read)
+        current = self.navigation_list.currentItem()
+        # QListWidgetItem n'est pas hachable : comparaison par égalité.
+        self._apply_values(
+            settings_schema.default, default_shortcut,
+            keep=lambda _key, page: not current_page_only or page == current)
         logger.info("Valeurs par défaut rétablies (%s).",
                     "page courante" if current_page_only else "toutes les pages")
 
@@ -1280,49 +1315,11 @@ class PreferencesDialog(QDialog):
         """Instantané des réglages du formulaire — jamais l'identité du poste
         (URL, comptoir, secret : StationDialog).
 
-        Sert à la fois à l'enregistrement local (save_preferences) et à
-        _send_profile (envoi au serveur via build_payload) : un seul mapping
-        widget -> clé, impossible de diverger."""
-        pending_settings = {
-            "profile_sync_policy": self.profile_policy_combo.currentData(),
-            "reconnect_last_user": self.reconnect_last_user_checkbox.isChecked(),
-            "next_patient_shortcut": self.next_patient_shortcut_input.shortcut(),
-            "validate_patient_shortcut": self.validate_patient_shortcut_input.shortcut(),
-            "pause_shortcut": self.pause_shortcut_input.shortcut(),
-            "recall_shortcut": self.recall_shortcut_input.shortcut(),
-            "deconnect_shortcut": self.deconnect_input.shortcut(),
-            "shortcut_mode": self.shortcut_mode_combo.currentData(),
-            "confirm_sensitive_shortcuts": self.confirm_sensitive_checkbox.isChecked(),
-            "shortcut_feedback": self.shortcut_feedback_checkbox.isChecked(),
-            "notification_after_deconnection": self.notification_after_deconnection_spinbox.value(),
-            "notification_duration": self.notification_duration_spinbox.value(),
-            "notification_after_calling": self.notification_after_calling_spinbox.value(),
-            "notification_font_size": self.notification_font_size_spinbox.value(),
-            "message_tone": self.message_tone_combo.currentData(),
-            "notification_corner": self.notification_corner_combo.currentData(),
-            "notification_volume": self.volume_slider.value(),
-            "notification_muted": self.mute_checkbox.isChecked(),
-            "always_on_top": self.always_on_top_checkbox.isChecked(),
-            "vertical_mode": self.horizontal_mode_checkbox.isChecked(),
-            "compact_mode": self.compact_mode_checkbox.isChecked(),
-            "panel_snap": self.panel_snap_checkbox.isChecked(),
-            "panel_thickness": self.panel_thickness_spinbox.value(),
-            "tray_single_icon": self.tray_single_icon_checkbox.isChecked(),
-            "show_auto_call_button": self.show_auto_call_button_checkbox.isChecked(),
-            "display_patient_list": self.display_patient_list.isChecked(),
-            "patient_list_font_size": self.patient_list_font_size_spinbox.value(),
-            "patient_list_vertical_position": POSITION_MAPPING[self.patient_list_position_vertical.currentText()],
-            "patient_list_horizontal_position": POSITION_MAPPING[self.patient_list_position_horizontal.currentText()],
-            "messaging_dock_area": POSITION_MAPPING[self.messaging_position.currentText()],
-            "debug_window": self.debug_window.isChecked(),
-            "selected_skin": resources.normalize_skin_name(
-                self.skin_combo.currentData()),
-        }
-        for category, checkbox in self.notification_display_checkboxes.items():
-            pending_settings[notification_rules.DISPLAY_KEYS[category]] = checkbox.isChecked()
-        for category, checkbox in self.notification_sound_checkboxes.items():
-            pending_settings[notification_rules.SOUND_KEYS[category]] = checkbox.isChecked()
-        return pending_settings
+        Dérivé de la table _bindings : sert à l'enregistrement local
+        (save_preferences), à l'envoi du profil (build_payload) et au suivi des
+        modifications non enregistrées."""
+        return {key: self._field_value(widget)
+                for key, widget, _page in self._bindings}
 
     def _on_save_clicked(self):
         self.save_preferences(close_dialog=True)
@@ -1421,7 +1418,8 @@ class PreferencesDialog(QDialog):
         self.panel_thickness_spinbox.setValue(DEFAULT_PANEL_THICKNESS)
         # Liste sous le panneau en mode vertical (onglets partagés avec la
         # messagerie en mode compact) plutôt qu'à droite, qui élargirait.
-        self.patient_list_position_vertical.setCurrentText(BOTTOM_TEXT)
+        self.patient_list_position_vertical.setCurrentIndex(
+            self.patient_list_position_vertical.findData("bottom"))
 
     def _open_log_folder(self):
         """Ouvre l'explorateur sur le dossier des journaux (créé au besoin).
