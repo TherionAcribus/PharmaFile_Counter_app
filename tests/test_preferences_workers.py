@@ -635,6 +635,8 @@ def _save_check_dialog(selected=3):
         preferences.PreferencesDialog._pending_pair, w)
     w.counter_combobox.findData = lambda d: 0
     w.counter_combobox.setCurrentIndex = lambda i: None
+    w.connexion_item = object()
+    w._show_page = lambda *a, **k: None
     w._on_save_counters_result = types.MethodType(
         preferences.PreferencesDialog._on_save_counters_result, w)
     return w

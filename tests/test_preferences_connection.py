@@ -28,6 +28,11 @@ def _dialog(loaded_for=("http://serveur", "secret"),
     w._pending_pair = types.MethodType(
         preferences.PreferencesDialog._pending_pair, w)
     w._counters_loaded_for = loaded_for
+    # Attributs référencés par les chemins d'erreur (_show_page) : la valeur
+    # importe peu, l'objet est simplement passé au stub.
+    w.connexion_item = object()
+    w.url_input = object()
+    w._show_page = lambda *a, **k: None
     w._finalize_save = lambda: w.calls.__setitem__("finalize", w.calls["finalize"] + 1)
     w._validate_counter_then_save = (
         lambda: w.calls.__setitem__("counter_check", w.calls["counter_check"] + 1))

@@ -90,6 +90,32 @@ def test_pages_sont_scrollables(isolated_settings):
         assert page.widgetResizable() is True
 
 
+def test_url_invalide_bascule_sur_la_page_connexion(isolated_settings, monkeypatch):
+    """Une erreur de validation renvoie sur la page fautive au lieu de laisser
+    l'utilisateur chercher où corriger."""
+    dialog = _dialog()
+    dialog.url_input.setText("ftp://serveur")   # schéma non http(s)
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: None)
+    dialog.save_preferences()
+    assert dialog.stacked_widget.currentIndex() == 1   # page « Connexion »
+
+
+def test_raccourci_invalide_bascule_sur_la_page_raccourcis(isolated_settings, monkeypatch):
+    isolated_settings.setValue("web_url", "https://exemple.test")
+    dialog = _dialog()
+    dialog.counter_combobox.addItem("1", 1)
+    dialog.counter_combobox.setCurrentIndex(dialog.counter_combobox.count() - 1)
+    # « Ctrl » seul = modificateur sans touche : raccourci invalide.
+    group = dialog.next_patient_shortcut_input
+    group.findChild(QCheckBox, "Ctrl").setChecked(True)
+    group.findChild(QLineEdit).setText("")
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: None)
+    dialog.save_preferences()
+    assert dialog.stacked_widget.currentIndex() == 2   # page « Raccourcis »
+
+
 def test_status_label_est_un_label_enroule(isolated_settings):
     """Le statut de connexion est un QLabel à retour à la ligne (plus de
     QTextEdit à largeur fixe qui bloquait le redimensionnement), et le texte

@@ -798,6 +798,14 @@ class PreferencesDialog(QDialog):
         scroll.setWidget(inner)
         return scroll, QVBoxLayout(inner)
 
+    def _show_page(self, item, focus_widget=None):
+        """Bascule sur la page `item` puis focalise le champ fautif : un message
+        d'erreur renvoie l'utilisateur là où il doit corriger, au lieu de le
+        laisser chercher la page concernée."""
+        self.navigation_list.setCurrentItem(item)   # déclenche change_page
+        if focus_widget is not None:
+            focus_widget.setFocus()
+
     def create_shortcut_input(self):
         """ Groupe « modificateurs + touche » d'un raccourci.
 
@@ -954,11 +962,13 @@ class PreferencesDialog(QDialog):
         ok, url, error = validate_server_url(
             self.url_input.text(), allow_insecure_remote=dev_insecure_allowed())
         if not ok:
+            self._show_page(self.connexion_item, self.url_input)
             QMessageBox.warning(self, "URL invalide", error)
             return
         self.url_input.setText(url)
         self.app_secret_input.setText(app_secret)
         if counter_id is None:
+            self._show_page(self.connexion_item, self.counter_combobox)
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
 
@@ -968,6 +978,15 @@ class PreferencesDialog(QDialog):
             "pause": pause_shortcut,
             "recall": recall_shortcut,
             "deconnect": deconnect_shortcut,
+        }
+        # Action -> groupe de saisie : permet de focaliser le raccourci fautif
+        # quand la validation échoue.
+        shortcut_widgets = {
+            "next": self.next_patient_shortcut_input,
+            "validate": self.validate_patient_shortcut_input,
+            "pause": self.pause_shortcut_input,
+            "recall": self.recall_shortcut_input,
+            "deconnect": self.deconnect_input,
         }
         # Validation des raccourcis (point 7) : chaque action doit avoir une touche
         # réelle reconnue (ni champ vide, ni modificateur seul, ni touche inconnue).
@@ -983,6 +1002,10 @@ class PreferencesDialog(QDialog):
             lines = "\n".join(
                 f"• {ACTION_LABELS.get(a, a)} : {reasons[code]}"
                 for a, code in invalid.items())
+            first = next(iter(invalid))
+            self._show_page(
+                self.raccourcis_item,
+                shortcut_widgets[first].findChild(QLineEdit))
             QMessageBox.warning(
                 self, "Raccourcis invalides",
                 "Certains raccourcis ne sont pas valides :\n\n"
@@ -997,6 +1020,10 @@ class PreferencesDialog(QDialog):
             conflicts = "\n".join(
                 "• " + " / ".join(ACTION_LABELS.get(a, a) for a in actions)
                 for actions in duplicates.values())
+            first_actions = next(iter(duplicates.values()))
+            self._show_page(
+                self.raccourcis_item,
+                shortcut_widgets[first_actions[0]].findChild(QLineEdit))
             QMessageBox.warning(
                 self, "Raccourcis en conflit",
                 "Plusieurs actions utilisent la même combinaison :\n\n"
@@ -1124,6 +1151,7 @@ class PreferencesDialog(QDialog):
             # « Enregistré » n'est PAS affiché : le dialogue reste ouvert et rien
             # n'est persisté tant que la connexion n'est pas exploitable.
             self.status_label.setText("Non enregistré : " + message)
+            self._show_page(self.connexion_item, self.url_input)
             QMessageBox.warning(
                 self, "Connexion impossible",
                 message + "\n\nLes préférences n'ont PAS été enregistrées. "
@@ -1168,6 +1196,7 @@ class PreferencesDialog(QDialog):
             # choisi — on n'enregistre rien plutôt que de persister un id
             # incertain.
             self.status_label.setText("Non enregistré : " + data)
+            self._show_page(self.connexion_item)
             QMessageBox.warning(
                 self, "Comptoirs introuvables",
                 data + "\n\nImpossible de vérifier le comptoir sélectionné : "
@@ -1187,6 +1216,7 @@ class PreferencesDialog(QDialog):
             # l'utilisateur repart d'une liste à jour pour en choisir un valide.
             self.status_label.setText(
                 "Non enregistré : le comptoir choisi n'existe pas sur ce serveur")
+            self._show_page(self.connexion_item, self.counter_combobox)
             QMessageBox.warning(
                 self, "Comptoir introuvable",
                 "Le comptoir sélectionné n'existe pas sur ce serveur. La liste "
