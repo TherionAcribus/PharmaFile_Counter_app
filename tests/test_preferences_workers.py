@@ -303,7 +303,12 @@ def _button_dialog():
     w.url_input = types.SimpleNamespace(
         text=lambda: w._url_text,
         setText=lambda t: setattr(w, "_url_text", t))
-    w.app_secret_input = types.SimpleNamespace(text=lambda: "secret")
+    w._secret_text = "secret"
+    w.app_secret_input = types.SimpleNamespace(
+        text=lambda: w._secret_text,
+        setText=lambda t: setattr(w, "_secret_text", t))
+    # Vraie méthode : le secret lu partout débarrassé des espaces de bordure.
+    w._app_secret = types.MethodType(preferences.PreferencesDialog._app_secret, w)
     # État « liste des comptoirs » : l'entrée d'attente initiale (libellé +
     # counter_id enregistré) et les couples (URL, secret) suivis par le vrai
     # dialogue.
@@ -441,6 +446,98 @@ def test_load_counters_passes_request_pair_to_handler(monkeypatch):
     w.load_counters()
     captured["emit_to"](True, [{"id": 1}])  # le worker émet son résultat
     assert captured["got"] == (True, [{"id": 1}], ("http://serveur", "secret"))
+
+
+def test_load_counters_uses_normalized_pair(monkeypatch):
+    """Le couple des requêtes est celui qui sera enregistré : URL normalisée et
+    secret débarrassé des espaces de copier-coller en bordure."""
+    captured = {}
+    monkeypatch.setattr(
+        preferences, "CountersWorker",
+        lambda url, secret: (captured.__setitem__("pair", (url, secret)),
+                             types.SimpleNamespace(
+                                 result=types.SimpleNamespace(
+                                     connect=lambda f: None)))[1])
+    w = _button_dialog()
+    w._url_text = "  http://serveur/  "
+    w._secret_text = "  secret  "
+    w._start_worker = lambda kind, worker: True
+    w.load_counters = types.MethodType(preferences.PreferencesDialog.load_counters, w)
+    w.load_counters()
+    assert captured["pair"] == ("http://serveur", "secret")
+
+
+def test_on_counters_result_ignores_stale_response():
+    """Réponse d'un chargement lancé avec d'anciennes valeurs : ignorée plutôt
+    que d'afficher la liste d'un serveur périmé."""
+    w = _button_dialog()
+    emitted = []
+    w.counters_loaded = types.SimpleNamespace(emit=lambda d: emitted.append(d))
+    w._on_counters_result = types.MethodType(
+        preferences.PreferencesDialog._on_counters_result, w)
+    w._url_text = "http://autre"   # champs modifiés pendant le worker
+    w._on_counters_result(
+        True, [{"id": 1, "name": "c"}], ("http://serveur", "secret"))
+    assert emitted == []
+    assert w._counters_loaded_for is None   # pas marqué « à jour » pour autant
+
+
+def test_test_url_strips_secret_field(monkeypatch):
+    """Le secret collé avec espaces est nettoyé : la forme propre est réécrite
+    dans le champ, comme pour l'URL."""
+    monkeypatch.setattr(
+        preferences, "TestConnectionWorker",
+        lambda url: types.SimpleNamespace(
+            connection_tested=types.SimpleNamespace(connect=lambda f: None)))
+    w = _button_dialog()
+    w._secret_text = "  secret  "
+    w._start_worker = lambda kind, worker: True
+    w.test_url = types.MethodType(preferences.PreferencesDialog.test_url, w)
+    w.test_url()
+    assert w._secret_text == "secret"
+
+
+# --- Retouche des champs connexion : liste périmée --------------------------
+
+def _stale_dialog():
+    """Dialogue avec une liste de comptoirs déjà chargée, dont on suit le
+    contenu pour vérifier qu'elle est marquée périmée à l'édition."""
+    w = _button_dialog()
+    w._counters_loaded_for = ("http://serveur", "secret")
+    w.counter_items = [("Comptoir A", 3), ("Comptoir B", 4)]
+    w.counter_combobox = types.SimpleNamespace(
+        clear=lambda: w.counter_items.clear(),
+        addItem=lambda label, data: w.counter_items.append((label, data)))
+    w._on_connection_fields_changed = types.MethodType(
+        preferences.PreferencesDialog._on_connection_fields_changed, w)
+    return w
+
+
+def test_editing_url_marks_loaded_list_stale():
+    w = _stale_dialog()
+    w._url_text = "http://autre"
+    w._on_connection_fields_changed()
+    assert w._counters_loaded_for is None
+    # Entrée d'attente avec le comptoir enregistré, pas de liste trompeuse.
+    assert w.counter_items == [("3 - liste périmée, relancez le test", 3)]
+
+
+def test_equivalent_edit_keeps_loaded_list():
+    """Retaper la même URL normalisée (espaces, slash final) ne vide pas une
+    liste pourtant valable pour le même couple."""
+    w = _stale_dialog()
+    w._url_text = "  http://serveur/ "
+    w._on_connection_fields_changed()
+    assert w._counters_loaded_for == ("http://serveur", "secret")
+    assert w.counter_items == [("Comptoir A", 3), ("Comptoir B", 4)]
+
+
+def test_editing_secret_marks_loaded_list_stale():
+    w = _stale_dialog()
+    w._secret_text = "nouveau-secret"
+    w._on_connection_fields_changed()
+    assert w._counters_loaded_for is None
+    assert w.counter_items[0][1] == 3   # comptoir enregistré conservé en donnée
 
 
 # --- Chargement à l'ouverture de la page « Connexion » ----------------------

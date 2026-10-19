@@ -64,6 +64,14 @@ SCHEMA_VERSION = 1
 SCHEMA_VERSION_KEY = "config_schema_version"
 
 
+def normalize_dock_area(value: Any) -> str:
+    """Zone de dock mémorisée : « bottom »/« right », « bottom » sinon.
+
+    Une valeur inattendue (maintenance manuelle, version future) retombe sur
+    « bottom » — la même zone que le glisser-déposer ne sait pas décrire."""
+    return value if value in ("bottom", "right") else "bottom"
+
+
 SETTINGS = {
     # --- Connexion -----------------------------------------------------------
     # URL du serveur : PAS de défaut « en dur » (ni Render ni localhost). Chaque
@@ -146,6 +154,12 @@ SETTINGS = {
     "display_patient_list": Setting(default=True, kind=bool),
     "patient_list_vertical_position": Setting(default="bottom", kind=str),
     "patient_list_horizontal_position": Setting(default="right", kind=str),
+
+    # --- Messagerie ----------------------------------------------------------
+    # Zone du panneau de messagerie (« bottom »/« right », même vocabulaire que
+    # dock_arrangement.area_name). Écrite aussi par glisser-déposer.
+    "messaging_dock_area": Setting(
+        default="bottom", kind=str, coerce=normalize_dock_area),
 
     # --- Zone de notification ------------------------------------------------
     # Une seule icône regroupée (clic gauche = afficher le panneau, clic droit

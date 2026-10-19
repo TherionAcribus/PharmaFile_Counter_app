@@ -24,7 +24,7 @@ from shortcut_config import (
     ACTION_LABELS, find_duplicate_shortcuts, find_invalid_shortcuts,
     INVALID_EMPTY, INVALID_LONE_MODIFIER, INVALID_UNKNOWN_KEY,
 )
-from url_validation import validate_server_url
+from url_validation import normalize_url, validate_server_url
 
 
 def dev_insecure_allowed():
@@ -398,6 +398,12 @@ class PreferencesDialog(QDialog):
         self.app_secret_row.addWidget(self.show_secret_checkbox)
         self.connexion_layout.addLayout(self.app_secret_row)
 
+        # URL ou secret retouché : la liste de comptoirs affichée devient
+        # suspecte (elle vient peut-être de l'ancien couple) — on la marque
+        # périmée au lieu de laisser des comptoirs d'un autre serveur.
+        self.url_input.textChanged.connect(self._on_connection_fields_changed)
+        self.app_secret_input.textChanged.connect(self._on_connection_fields_changed)
+
         # Le test exploite l'adresse ET le secret (chargement des comptoirs) :
         # le bouton est placé sous les deux champs qu'il consomme.
         self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
@@ -540,6 +546,7 @@ class PreferencesDialog(QDialog):
         self.notification_after_deconnection_layout = QHBoxLayout()
         self.notification_after_deconnection_label = QLabel("Temps (s) avant une notification si la connexion est perdue", self.notifications_page)
         self.notification_after_deconnection_spinbox = QSpinBox(self.notifications_page)
+        self.notification_after_deconnection_spinbox.setRange(0, 99)
         self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_label)
         self.notification_after_deconnection_layout.addWidget(self.notification_after_deconnection_spinbox)
         self.notifications_layout.addLayout(self.notification_after_deconnection_layout)
@@ -861,7 +868,7 @@ class PreferencesDialog(QDialog):
         self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
         self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
         self.messaging_position.setCurrentText(REVERSE_POSITION_MAPPING.get(
-            settings.value("messaging_dock_area", "bottom", type=str), BOTTOM_TEXT))
+            settings_schema.read(settings, "messaging_dock_area"), BOTTOM_TEXT))
         self.debug_window.setChecked(settings_schema.read(settings, "debug_window"))
 
         # pour les skins
@@ -884,7 +891,10 @@ class PreferencesDialog(QDialog):
         widget.findChild(QLineEdit).setText(key)
 
     def save_preferences(self):
-        app_secret = self.app_secret_input.text()
+        # Espaces de copier-coller en bordure de secret : retirés ici et partout
+        # où le champ est lu (_app_secret), puis réécrits normalisés après
+        # validation — comme l'URL.
+        app_secret = self._app_secret()
         # counter_id normalisé en entier strictement positif (cohérent avec le
         # serveur et avec les comparaisons de l'app).
         counter_id = coerce_counter_id(self.counter_combobox.currentData())
@@ -903,6 +913,7 @@ class PreferencesDialog(QDialog):
             QMessageBox.warning(self, "URL invalide", error)
             return
         self.url_input.setText(url)
+        self.app_secret_input.setText(app_secret)
         if counter_id is None:
             QMessageBox.warning(self, "Erreur", "Vous devez sélectionner un comptoir valide")
             return
@@ -1022,6 +1033,30 @@ class PreferencesDialog(QDialog):
         pending = self._pending_save or {}
         return (pending.get("settings", {}).get("web_url", ""),
                 pending.get("app_secret", ""))
+
+    def _app_secret(self):
+        """Secret saisi, débarrassé des espaces de copier-coller en bordure.
+
+        Toutes les lectures du champ passent ici : sans strip, un espace en fin
+        de collage faisait échouer le jeton avec un « secret refusé » trompeur."""
+        return self.app_secret_input.text().strip()
+
+    def _on_connection_fields_changed(self, *_args):
+        """URL ou secret retouché : si la liste affichée provient d'un couple
+        différent, on la remplace par une entrée d'attente plutôt que de laisser
+        les comptoirs d'un autre serveur. Le rechargement reste à la charge de
+        _maybe_load_counters / « Tester l'adresse » ; l'entrée conserve le
+        comptoir enregistré en donnée, comme à l'ouverture du dialogue."""
+        if self._counters_loaded_for is None:
+            return
+        pair = (normalize_url(self.url_input.text()), self._app_secret())
+        if pair == self._counters_loaded_for:
+            return
+        self._counters_loaded_for = None
+        self.counter_combobox.clear()
+        label = (f"{self.counter_id} - liste périmée, relancez le test"
+                 if self.counter_id else "Liste périmée — relancez le test")
+        self.counter_combobox.addItem(label, self.counter_id)
 
     def _validate_connection_then_save(self):
         """ Vérifie en arrière-plan que le couple (URL, secret) du snapshot
@@ -1256,10 +1291,11 @@ class PreferencesDialog(QDialog):
             self.status_label.setText(error)
             return
         self.url_input.setText(url)
-        if not self.app_secret_input.text():
+        if not self._app_secret():
             QMessageBox.warning(self, "Erreur", "Le secret applicatif ne peut pas être vide")
             self.status_label.setText("Le secret applicatif ne peut pas être vide")
             return
+        self.app_secret_input.setText(self._app_secret())
 
         worker = TestConnectionWorker(url)
         worker.connection_tested.connect(self.on_connection_tested)
@@ -1294,9 +1330,9 @@ class PreferencesDialog(QDialog):
           supplémentaire à chaque visite de la page.
         - Sinon (jamais chargé, échec précédent, champs modifiés depuis) :
           chargement lancé (doublons déjà exclus par _start_worker). """
-        url = self.url_input.text()
-        secret = self.app_secret_input.text()
-        if not url.strip() or not secret:
+        url = normalize_url(self.url_input.text())
+        secret = self._app_secret()
+        if not url or not secret:
             self._set_counter_placeholder("complétez l'adresse et le secret")
             return
         if self._counters_loaded_for == (url, secret):
@@ -1331,12 +1367,20 @@ class PreferencesDialog(QDialog):
         # Si un chargement des comptoirs est déjà en cours (ou fermeture), on
         # réactive le bouton pour ne pas le laisser bloqué désactivé.
         if not self._start_counters_worker(
-                "counters", self.url_input.text(), self.app_secret_input.text(),
-                self._on_counters_result):
+                "counters", normalize_url(self.url_input.text()),
+                self._app_secret(), self._on_counters_result):
             self.test_button.setEnabled(True)
 
     def _on_counters_result(self, success, data, pair):
         self.test_button.setEnabled(True)
+        current = (normalize_url(self.url_input.text()), self._app_secret())
+        if pair != current:
+            # Réponse d'un chargement lancé avec d'anciennes valeurs : elle
+            # concerne un autre couple (URL, secret) — on l'ignore plutôt que
+            # d'afficher la liste d'un serveur périmé.
+            logger.info("Liste de comptoirs ignorée : chargée pour %s, "
+                        "champs désormais sur %s.", pair[0], current[0])
+            return
         if success:
             # La liste affichée provient désormais du couple de la requête.
             self._counters_loaded_for = pair

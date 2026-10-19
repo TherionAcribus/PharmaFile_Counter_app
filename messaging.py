@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import settings_schema
 from dock_arrangement import DockArranger, dock_in_front, toggle_dock
 
 
@@ -322,7 +323,7 @@ class MessagingController:
         # Comme la liste des patients, la messagerie s'ouvre naturellement sous
         # la partie principale. L'utilisateur peut toujours la déplacer à
         # droite ; ce choix est ensuite conservé dans QSettings.
-        area_name = settings.value("messaging_dock_area", "bottom", type=str)
+        area_name = settings_schema.read(settings, "messaging_dock_area")
         area = Qt.BottomDockWidgetArea if area_name == "bottom" else Qt.RightDockWidgetArea
         self._arranging = True
         try:
@@ -402,8 +403,8 @@ class MessagingController:
         panneaux sont indépendants. """
         if self.dock is None:
             return
-        area_name = self._settings_factory().value(
-            "messaging_dock_area", "bottom", type=str)
+        area_name = settings_schema.read(
+            self._settings_factory(), "messaging_dock_area")
         area = (Qt.BottomDockWidgetArea if area_name == "bottom"
                 else Qt.RightDockWidgetArea)
         self._arranging = True
