@@ -134,6 +134,64 @@ def test_bouton_valeurs_par_defaut_propose_les_deux_portees(isolated_settings):
     assert len(actions) == 2
 
 
+def test_bouton_appliquer_sauvegarde_sans_fermer(isolated_settings, monkeypatch):
+    """« Appliquer » lance la même validation/persistance qu'« Enregistrer »
+    mais sans fermeture (close_dialog=False) ; « Enregistrer » garde True —
+    le paramètre booléen de clicked() ne doit pas fuiter dans l'appel."""
+    dialog = _dialog()
+    seen = []
+    monkeypatch.setattr(dialog, "save_preferences",
+                        lambda close_dialog=True: seen.append(close_dialog))
+    assert dialog.button_box.buttonRole(dialog.apply_button) \
+        == QDialogButtonBox.ApplyRole
+    dialog.apply_button.click()
+    dialog.save_button.click()
+    assert seen == [False, True]
+
+
+def test_appliquer_persiste_emet_et_laisse_ouvert(isolated_settings):
+    """_finalize_save avec « close: False » écrit QSettings, émet ``applied``
+    et laisse le dialogue ouvert — exactement le comportement « Appliquer »."""
+    dialog = _dialog()
+    applied = []
+    dialog.applied.connect(lambda: applied.append(True))
+    dialog._pending_save = {
+        "settings": {"notification_volume": 33, "notification_muted": True,
+                     "selected_skin": "", "web_url": "https://exemple.test"},
+        "app_secret": "",
+        "close": False,
+    }
+
+    dialog._finalize_save()
+
+    assert isolated_settings.value("notification_volume", type=int) == 33
+    assert isolated_settings.value("notification_muted", type=bool) is True
+    assert applied == [True]            # la fenêtre a été prévenue
+    assert dialog.result() == 0         # dialogue toujours ouvert
+    assert dialog._pending_save is None
+    assert dialog.save_button.isEnabled() and dialog.apply_button.isEnabled()
+
+
+def test_enregistrer_persiste_et_ferme_sans_emit_applied(isolated_settings):
+    """« Enregistrer » (close: True) : même persistance, puis Accepted — pas
+    d'émission ``applied`` (Accepted est déjà le déclencheur unique)."""
+    dialog = _dialog()
+    applied = []
+    dialog.applied.connect(lambda: applied.append(True))
+    dialog._pending_save = {
+        "settings": {"notification_volume": 40, "notification_muted": False,
+                     "selected_skin": "", "web_url": "https://exemple.test"},
+        "app_secret": "",
+        "close": True,
+    }
+
+    dialog._finalize_save()
+
+    assert isolated_settings.value("notification_volume", type=int) == 40
+    assert dialog.result() == QDialog.Accepted
+    assert applied == []
+
+
 def test_pages_sont_scrollables(isolated_settings):
     """Les 4 pages sont des QScrollArea redimensionnables : le contenu reste
     accessible sur petit écran / grande police au lieu d'être tronqué."""

@@ -22,6 +22,9 @@ def _make_fake_dialog(code):
     class FakeDialog:
         def __init__(self, parent):
             self.parent = parent
+            # « Appliquer » émet ce signal : show_preferences_dialog s'y
+            # connecte, comme sur le vrai dialogue.
+            self.applied = types.SimpleNamespace(connect=lambda slot: None)
 
         def exec(self):
             return code

@@ -1645,7 +1645,10 @@ class MainWindow(QMainWindow):
         # et seulement ici, qu'on déclenche l'UNIQUE apply_preferences (recharge +
         # cosmétique + reconnexion éventuelle). Plus de signal preferences_updated
         # concurrent, plus de rechargement après exec() : un seul propriétaire.
+        # « Appliquer » enregistre SANS fermer : le signal applied emprunte le
+        # même chemin unique — une persistance, une application.
         dialog = PreferencesDialog(self)
+        dialog.applied.connect(self.apply_preferences)
         if dialog.exec() == QDialog.Accepted:
             self.apply_preferences()
 

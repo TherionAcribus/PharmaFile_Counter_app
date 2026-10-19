@@ -622,6 +622,8 @@ def _save_check_dialog(selected=3):
     w = _button_dialog()
     w.save_button = types.SimpleNamespace(_e=True)
     w.save_button.setEnabled = lambda v: setattr(w.save_button, "_e", v)
+    w.apply_button = types.SimpleNamespace(_e=True)
+    w.apply_button.setEnabled = lambda v: setattr(w.apply_button, "_e", v)
     w._finalized = []
     w._finalize_save = lambda: w._finalized.append(True)
     w._loaded = []

@@ -21,6 +21,7 @@ def _dialog(loaded_for=("http://serveur", "secret"),
     w = types.SimpleNamespace(calls={"finalize": 0, "counter_check": 0})
     w.status_label = types.SimpleNamespace(setText=lambda t: None)
     w.save_button = types.SimpleNamespace(setEnabled=lambda v: None)
+    w.apply_button = types.SimpleNamespace(setEnabled=lambda v: None)
     # Le couple vérifié vient du snapshot (_pending_save), pas des champs —
     # restés éditables pendant le worker réseau (point 1).
     w._pending_save = {"settings": {"web_url": pending_url},

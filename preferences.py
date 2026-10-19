@@ -173,6 +173,10 @@ REVERSE_POSITION_MAPPING = {v: k for k, v in POSITION_MAPPING.items()}
 
 class PreferencesDialog(QDialog):
     counters_loaded = Signal(list)
+    # Émis après chaque persistance réussie déclenchée par « Appliquer » (le
+    # dialogue reste ouvert). « Enregistrer » n'émet rien : son Accepted sert
+    # déjà de déclencheur unique d'apply_preferences côté fenêtre.
+    applied = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -721,7 +725,14 @@ class PreferencesDialog(QDialog):
         self.save_button = self.button_box.addButton(
             "Enregistrer", QDialogButtonBox.AcceptRole)
         self.button_box.addButton("Annuler", QDialogButtonBox.RejectRole)
-        self.save_button.clicked.connect(self.save_preferences)
+        # clicked(bool checked) transmettrait « False » à save_preferences :
+        # handlers dédiés plutôt que la connexion directe.
+        self.save_button.clicked.connect(self._on_save_clicked)
+        self.apply_button = self.button_box.addButton(
+            "Appliquer", QDialogButtonBox.ApplyRole)
+        self.apply_button.setToolTip(
+            "Enregistre et applique les préférences sans fermer la fenêtre.")
+        self.apply_button.clicked.connect(self._on_apply_clicked)
         self.button_box.rejected.connect(self.reject)
         # « Valeurs par défaut » : remet les champs aux défauts du schéma sans
         # rien persister (l'utilisateur valide ensuite par « Enregistrer » ou
@@ -989,7 +1000,12 @@ class PreferencesDialog(QDialog):
         logger.info("Valeurs par défaut rétablies (%s).",
                     "page courante" if current_page_only else "toutes les pages")
 
-    def save_preferences(self):
+    def save_preferences(self, close_dialog=True):
+        """Valide puis enregistre les préférences.
+
+        ``close_dialog`` : « Enregistrer » (True, fermeture Accepted après
+        succès) ou « Appliquer » (False, le dialogue reste ouvert et le signal
+        ``applied`` est émis à la place)."""
         # Espaces de copier-coller en bordure de secret : retirés ici et partout
         # où le champ est lu (_app_secret), puis réécrits normalisés après
         # validation — comme l'URL.
@@ -1135,7 +1151,9 @@ class PreferencesDialog(QDialog):
             pending_settings[notification_rules.DISPLAY_KEYS[category]] = checkbox.isChecked()
         for category, checkbox in self.notification_sound_checkboxes.items():
             pending_settings[notification_rules.SOUND_KEYS[category]] = checkbox.isChecked()
-        self._pending_save = {"settings": pending_settings, "app_secret": app_secret}
+        self._pending_save = {"settings": pending_settings,
+                              "app_secret": app_secret,
+                              "close": close_dialog}
 
         if connection_changed:
             self._validate_connection_then_save()
@@ -1151,6 +1169,15 @@ class PreferencesDialog(QDialog):
         pending = self._pending_save or {}
         return (pending.get("settings", {}).get("web_url", ""),
                 pending.get("app_secret", ""))
+
+    def _on_save_clicked(self):
+        self.save_preferences(close_dialog=True)
+
+    def _on_apply_clicked(self):
+        """« Appliquer » : même validation + persistance qu'« Enregistrer »,
+        mais le dialogue reste ouvert et le signal ``applied`` demande à la
+        fenêtre de recharger ses réglages immédiatement."""
+        self.save_preferences(close_dialog=False)
 
     def _app_secret(self):
         """Secret saisi, débarrassé des espaces de copier-coller en bordure.
@@ -1189,12 +1216,14 @@ class PreferencesDialog(QDialog):
         if not self._start_worker("token_check", worker):
             return
         self.save_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
         self.status_label.setText("Vérification de la connexion au serveur…")
 
     @Slot(bool, str)
     def _on_connection_checked(self, ok, message):
         if not ok:
             self.save_button.setEnabled(True)
+            self.apply_button.setEnabled(True)
             # « Enregistré » n'est PAS affiché : le dialogue reste ouvert et rien
             # n'est persisté tant que la connexion n'est pas exploitable.
             self.status_label.setText("Non enregistré : " + message)
@@ -1211,6 +1240,7 @@ class PreferencesDialog(QDialog):
             # La liste affichée provient déjà de la nouvelle connexion : le
             # comptoir choisi existe forcément sur ce serveur.
             self.save_button.setEnabled(True)
+            self.apply_button.setEnabled(True)
             self.status_label.setText("Connexion vérifiée — enregistrement…")
             self._finalize_save()
         else:
@@ -1232,12 +1262,15 @@ class PreferencesDialog(QDialog):
         if not self._start_counters_worker(
                 "counters_save", url, app_secret, self._on_save_counters_result):
             self.save_button.setEnabled(True)
+            self.apply_button.setEnabled(True)
             return
         self.save_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
         self.status_label.setText("Vérification du comptoir sur le serveur…")
 
     def _on_save_counters_result(self, success, data, pair):
         self.save_button.setEnabled(True)
+        self.apply_button.setEnabled(True)
         if not success:
             # La liste est illisible : impossible de garantir le comptoir
             # choisi — on n'enregistre rien plutôt que de persister un id
@@ -1357,15 +1390,23 @@ class PreferencesDialog(QDialog):
                 "pour un stockage sécurisé.")
 
         # Le snapshot est consommé : un nouvel « Enregistrer » en reconstruira un.
+        close = pending.get("close", True)
         self._pending_save = None
 
-        # Un SEUL mécanisme d'application (point 7) : on ferme le dialogue avec le
-        # résultat Accepted. C'est l'appelant (MainWindow.show_preferences_dialog)
-        # qui, en voyant ce résultat, déclenche l'UNIQUE apply_preferences —
-        # lequel recharge les valeurs, applique le cosmétique (dont always-on-top)
-        # et reconnecte les services au besoin. Le dialogue ne recharge rien et ne
-        # touche plus directement la fenêtre parente (plus de signal concurrent).
-        self.accept()
+        # Un SEUL mécanisme d'application (point 7) :
+        #  - « Appliquer » : le dialogue reste ouvert, le signal ``applied``
+        #    déclenche l'UNIQUE apply_preferences côté fenêtre — qui recharge
+        #    les valeurs, applique le cosmétique et reconnecte au besoin ;
+        #  - « Enregistrer » : Accepted fait la même chose via l'appelant
+        #    (MainWindow.show_preferences_dialog).
+        # Le dialogue ne recharge rien et ne touche jamais la fenêtre parente.
+        if close:
+            self.accept()
+        else:
+            self.save_button.setEnabled(True)
+            self.apply_button.setEnabled(True)
+            self.status_label.setText("Préférences enregistrées et appliquées.")
+            self.applied.emit()
 
     def _apply_side_panel_preset(self):
         """Pré-remplit les réglages recommandés pour un usage en panneau latéral
