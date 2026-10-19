@@ -72,6 +72,12 @@ def normalize_dock_area(value: Any) -> str:
     return value if value in ("bottom", "right") else "bottom"
 
 
+def normalize_sync_policy(value: Any) -> str:
+    """Politique de récupération du profil équipier : « never »/« ask »/« auto »,
+    « ask » (sur demande) pour toute valeur inattendue."""
+    return value if value in ("never", "ask", "auto") else "ask"
+
+
 SETTINGS = {
     # --- Connexion -----------------------------------------------------------
     # URL du serveur : PAS de défaut « en dur » (ni Render ni localhost). Chaque
@@ -86,6 +92,12 @@ SETTINGS = {
     # généralement occupés par la même personne). En cas d'échec, l'écran
     # de connexion classique s'affiche.
     "reconnect_last_user": Setting(default=True, kind=bool),
+    # Politique de récupération du profil équipier sur le serveur. Valeur
+    # LOCALE : elle ne sert que tant qu'aucun profil n'est enregistré — dès
+    # qu'un profil existe, la politique qu'il transporte (qui suit la personne,
+    # pas le poste) fait foi.
+    "profile_sync_policy": Setting(
+        default="ask", kind=str, coerce=normalize_sync_policy),
 
     # --- Raccourcis (mode + options ; combinaisons : voir shortcut_defaults) --
     "shortcut_mode": Setting(default=DEFAULT_MODE, kind=str, coerce=normalize_mode),

@@ -49,7 +49,11 @@ MODIFYING_ACTIONS = [
 ]
 
 # Lectures seules : GET.
-READ_ACTIONS = ["fetch_staff", "messaging_state", "messaging_messages"]
+READ_ACTIONS = ["fetch_staff", "fetch_staff_preferences",
+                "messaging_state", "messaging_messages"]
+
+# Remplacements complets d'une ressource : PUT.
+PUT_ACTIONS = ["upload_staff_preferences"]
 
 
 def _method_body(name):
@@ -83,16 +87,24 @@ def test_lecture_en_get(name):
     assert "_get" in helpers and "_post" not in helpers
 
 
+@pytest.mark.parametrize("name", PUT_ACTIONS)
+def test_remplacement_en_put(name):
+    helpers = _called_helpers(_method_body(name))
+    assert "_put" in helpers, f"{name} n'utilise pas self._put"
+
+
 def test_toutes_les_actions_sont_couvertes():
-    """Une nouvelle action publique doit être classée ici (POST ou GET), sinon ce
-    test échoue : impossible d'en ajouter une sans décider de sa méthode."""
+    """Une nouvelle action publique doit être classée ici (POST, GET ou PUT),
+    sinon ce test échoue : impossible d'en ajouter une sans décider de sa
+    méthode."""
     publiques = {name for name, _ in inspect.getmembers(CounterApi, inspect.isfunction)
                  if not name.startswith("_")}
     infra = {"make_handle", "fetch_token", "clear_token", "stop",
              "fetch_state", "release_counter_blocking", "messaging_leave_blocking"}
-    classees = set(MODIFYING_ACTIONS) | set(READ_ACTIONS) | infra
+    classees = (set(MODIFYING_ACTIONS) | set(READ_ACTIONS) | set(PUT_ACTIONS)
+                | infra)
     assert publiques - classees == set(), (
-        "action non classée POST/GET dans ce test : " + ", ".join(sorted(publiques - classees)))
+        "action non classée dans ce test : " + ", ".join(sorted(publiques - classees)))
 
 
 def test_submit_sans_methode_par_defaut():

@@ -27,6 +27,7 @@ import json
 import uuid
 
 import endpoints
+import profile_sync
 
 _DEFAULT_LOGGER = logging.getLogger("appcomptoir.counter_api")
 
@@ -138,6 +139,10 @@ class CounterApi:
     def _get(self, url, **kwargs):
         """Lecture seule."""
         return self._submit(url, 'GET', **kwargs)
+
+    def _put(self, url, **kwargs):
+        """Remplacement complet d'une ressource (corps JSON, cf. _send)."""
+        return self._submit(url, 'PUT', **kwargs)
 
     def _read_blocking(self, url, expected_type, description):
         """ Lecture bloquante (appelée depuis un thread de fond : démarrage,
@@ -264,6 +269,27 @@ class CounterApi:
         data = {'counter_id': self._counter_id()}
         return self._post(endpoints.remove_staff(self._url()), data=data,
                           on_result=on_result, key="disconnect")
+
+    # --- profil de préférences de l'équipier ---------------------------------
+
+    def fetch_staff_preferences(self, staff_id, on_result=None):
+        """Profil de préférences enregistré pour l'équipier. 404 si aucun
+        profil n'existe — ou si le serveur est trop ancien pour connaître la
+        route (l'appelant distingue les deux via le corps d'erreur)."""
+        return self._get(
+            endpoints.staff_preferences(self._url(), staff_id),
+            on_result=on_result, key=f"staff_prefs_get:{staff_id}")
+
+    def upload_staff_preferences(self, staff_id, payload, on_result=None):
+        """Enregistre (ou remplace) le profil de préférences de l'équipier.
+        PUT JSON ; dernière écriture gagnante — sauvegarde/clonage, pas une
+        synchronisation temps réel."""
+        body = {"payload": payload,
+                "schema_version": profile_sync.PROFILE_PAYLOAD_VERSION}
+        return self._put(
+            endpoints.staff_preferences(self._url(), staff_id),
+            data=body, on_result=on_result,
+            key=f"staff_prefs_put:{staff_id}")
 
     # --- mesures temps réel ---------------------------------------------------
 

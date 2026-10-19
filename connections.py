@@ -277,6 +277,10 @@ class NetworkManager(QObject):
             return self._session.get(spec.url, headers=headers or None, timeout=timeout)
         elif spec.method == "POST":
             return self._session.post(spec.url, data=spec.data, headers=headers or None, timeout=timeout)
+        elif spec.method == "PUT":
+            # Seul usage actuel : profil de préférences équipier, corps JSON
+            # structuré — pas un formulaire comme les POST historiques.
+            return self._session.put(spec.url, json=spec.data, headers=headers or None, timeout=timeout)
         raise ValueError(f"Méthode HTTP non supportée: {spec.method}")
 
     def _reauth(self):

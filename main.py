@@ -36,6 +36,7 @@ from counter_id_utils import coerce_counter_id
 from shortcut_defaults import read_shortcut
 from preferences_diff import needs_service_reconnect
 import endpoints
+import profile_sync
 import resources
 import settings_schema
 from accessibility import (
@@ -171,6 +172,10 @@ class MainWindow(QMainWindow):
         self._auto_warning_active = False
         self._auto_warning_key = None
         self._validate_blink_highlighted = False
+        # Équipiers pour qui la recherche d'un profil de préférences serveur a
+        # déjà été tentée dans cette session : pas de requête ni de question
+        # répétée à chaque reconnexion d'un même équipier.
+        self._profile_checked_staff = set()
 
         # LOAD PREFERENCES
         self.load_preferences()
@@ -1000,6 +1005,10 @@ class MainWindow(QMainWindow):
                 staff_name = data["staff"]["name"]
                 self.update_window_title(staff_name)
                 self.update_staff_label(staff_name)
+                # Session déjà ouverte côté serveur (redémarrage du poste) :
+                # pour ce poste c'est une connexion — même recherche de profil
+                # qu'au login (dédupliquée par _profile_checked_staff).
+                self._maybe_fetch_staff_profile()
             except (TypeError, KeyError):
                 self.logger.warning("Réponse staff inexploitable")
         # si personne au comptoir
@@ -1615,6 +1624,10 @@ class MainWindow(QMainWindow):
             # rattrapage en arrière-plan — jamais de GET bloquant dans le thread
             # graphique (point 2).
             self._request_resync()
+            # Profil de préférences personnel : s'il en existe un sur le
+            # serveur, la politique qui y est jointe décide (automatique,
+            # proposition, ou rien) — voir _maybe_fetch_staff_profile.
+            self._maybe_fetch_staff_profile()
         elif result.status == 204:
             self.logger.debug("Initiales inconnues")
             self.staff_id = False
@@ -1651,6 +1664,95 @@ class MainWindow(QMainWindow):
         dialog.applied.connect(self.apply_preferences)
         if dialog.exec() == QDialog.Accepted:
             self.apply_preferences()
+
+    # --- profil de préférences équipier (serveur) -----------------------------
+
+    def _maybe_fetch_staff_profile(self):
+        """À la connexion d'un équipier, regarde si le serveur détient un
+        profil de préférences pour lui. La politique — transportée dans le
+        profil, donc personnelle — décide ensuite : récupération automatique,
+        proposition, ou rien. Une seule recherche par équipier et par session
+        (pas de question répétée à chaque reconnexion ou resync)."""
+        staff_id = self.staff_id
+        if not (isinstance(staff_id, int) and staff_id):
+            return
+        if staff_id in self._profile_checked_staff:
+            return
+        self._profile_checked_staff.add(staff_id)
+        self._profile_pending_staff = staff_id
+        self.api.fetch_staff_preferences(
+            staff_id, on_result=self._on_staff_profile_result)
+
+    @Slot(object)
+    def _on_staff_profile_result(self, result):
+        """Réception du profil équipier : applique la politique effective."""
+        staff_id = self.staff_id
+        if not (isinstance(staff_id, int) and staff_id):
+            return  # déconnecté entre-temps : hors sujet
+        if staff_id != getattr(self, "_profile_pending_staff", None):
+            return  # la réponse concerne un autre équipier
+        if result.status == 404:
+            error = (result.data.get("error")
+                     if isinstance(result.data, dict) else None)
+            if error == "no_preferences":
+                return  # rien à récupérer — cas le plus courant
+            if error:
+                self.logger.info("Profil équipier refusé : %s", error)
+            else:
+                # Corps non JSON : route inconnue du serveur (version ancienne).
+                self.logger.info(
+                    "Serveur sans gestion des profils de préférences.")
+            return
+        if result.status != 200 or not isinstance(result.data, dict):
+            self.logger.warning(
+                "Lecture du profil équipier : statut %s", result.status)
+            return
+        payload = result.data.get("payload")
+        if not isinstance(payload, dict) or not payload:
+            return
+        local_policy = settings_schema.read(
+            QSettings(), "profile_sync_policy")
+        policy = profile_sync.effective_policy(payload, local_policy)
+        if policy == profile_sync.POLICY_NEVER:
+            return
+        if policy == profile_sync.POLICY_AUTO:
+            self._apply_staff_profile(payload)
+            self._show_inline_notice(
+                "Vos préférences personnelles ont été récupérées.")
+            return
+        # « ask » : proposition, jamais d'écrasement silencieux. « Ne plus me
+        # proposer » est mémorisé localement (confort de CE poste).
+        settings = QSettings()
+        if settings.value("profile_prompt_opt_out", False, type=bool):
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Préférences personnelles")
+        box.setText("Un profil de préférences vous est enregistré sur le "
+                    "serveur.\nVoulez-vous l'appliquer à ce poste ?")
+        box.setInformativeText(
+            "Vos raccourcis, notifications et réglages d'affichage seront "
+            "remplacés par ceux du profil.")
+        yes_btn = box.addButton("Appliquer", QMessageBox.YesRole)
+        box.addButton("Non", QMessageBox.NoRole)
+        never_btn = box.addButton(
+            "Ne plus me proposer", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is never_btn:
+            settings.setValue("profile_prompt_opt_out", True)
+        elif clicked is yes_btn:
+            self._apply_staff_profile(payload)
+
+    def _apply_staff_profile(self, payload):
+        """Persiste le profil dans QSettings puis rejoue l'application
+        habituelle des préférences — un seul mécanisme d'application, comme
+        après « Enregistrer ». Les clés du poste (URL, comptoir, secret) ne
+        figurent pas dans un profil et ne sont donc jamais touchées."""
+        written = profile_sync.apply_payload(payload, QSettings())
+        self.logger.info(
+            "Profil équipier appliqué (%d réglages)", written)
+        self.apply_preferences()
 
 
     def setup_global_shortcut(self):

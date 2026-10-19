@@ -120,6 +120,12 @@ def call_specific_patient(web_url, counter_id, patient_id):
     return f"{_base(web_url)}/call_specific_patient/{_seg(counter_id)}/{_seg(patient_id)}"
 
 
+def staff_preferences(web_url, staff_id):
+    """GET/PUT — profil de préférences d'un équipier
+    (routes/pyside_preferences.py:/api/pyside/staff_preferences/<staff_id>)."""
+    return f"{_base(web_url)}/api/pyside/staff_preferences/{_seg(staff_id)}"
+
+
 # --- Routes applicatives protégées par jeton (routes/counter.py, /app/…) ---
 
 def auto_calling(web_url):

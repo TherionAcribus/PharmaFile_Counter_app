@@ -17,6 +17,7 @@ from shortcut_defaults import (
 )
 from shortcut_edit import ShortcutEdit
 import notification_rules
+import profile_sync
 import settings_schema
 from panel_layout import (
     MIN_PANEL_THICKNESS, MAX_PANEL_THICKNESS, DEFAULT_PANEL_THICKNESS,
@@ -493,6 +494,71 @@ class PreferencesDialog(QDialog):
             "En cas d'échec, l'écran de connexion s'affiche normalement.")
         self.connexion_layout.addWidget(self.reconnect_last_user_checkbox)
 
+        # --- Profil équipier sur le serveur ---
+        # Les réglages personnels (raccourcis, notifications, disposition,
+        # volume…) peuvent être enregistrés côté serveur et récupérés depuis
+        # n'importe quel poste — jamais l'identité du poste (URL, comptoir,
+        # secret). La politique de récupération voyage DANS le profil : elle
+        # suit la personne, pas la machine.
+        self.profile_box = QGroupBox(
+            "Mon profil sur le serveur", self.connexion_page)
+        profile_box_layout = QVBoxLayout(self.profile_box)
+        self.connexion_layout.addWidget(self.profile_box)
+
+        self.profile_policy_label = QLabel(
+            "Récupération de mes préférences :", self.profile_box)
+        profile_box_layout.addWidget(self.profile_policy_label)
+
+        self.profile_policy_combo = QComboBox(self.profile_box)
+        # (libellé affiché, valeur enregistrée) ; « ask » est le défaut schéma.
+        for label, value in (
+            ("Automatique à chaque connexion", "auto"),
+            ("Sur demande (me le proposer)", "ask"),
+            ("Jamais", "never"),
+        ):
+            self.profile_policy_combo.addItem(label, value)
+        self.profile_policy_combo.setToolTip(
+            "À votre connexion, si un profil vous est enregistré sur le "
+            "serveur :\n"
+            "• Automatique : vos réglages sont récupérés sans question ;\n"
+            "• Sur demande : on vous propose de les récupérer ;\n"
+            "• Jamais : rien n'est proposé (les boutons ci-dessous restent "
+            "disponibles).\n"
+            "La politique enregistrée dans votre profil suit la personne "
+            "et prime sur ce choix local.")
+        profile_box_layout.addWidget(self.profile_policy_combo)
+
+        self.profile_buttons_layout = QHBoxLayout()
+        self.profile_send_button = QPushButton(
+            "Envoyer mes préférences au serveur", self.profile_box)
+        self.profile_send_button.setToolTip(
+            "Enregistre les réglages PERSONNELS affichés dans cette fenêtre "
+            "sur votre profil serveur.\nNi l'adresse du serveur, ni le "
+            "comptoir, ni le secret ne sont envoyés.")
+        self.profile_send_button.clicked.connect(self._send_profile)
+        self.profile_fetch_button = QPushButton(
+            "Récupérer mes préférences du serveur", self.profile_box)
+        self.profile_fetch_button.setToolTip(
+            "Charge votre profil dans le formulaire, sans l'enregistrer : "
+            "validez ensuite par « Enregistrer » ou « Appliquer ».")
+        self.profile_fetch_button.clicked.connect(self._fetch_profile)
+        self.profile_buttons_layout.addWidget(self.profile_send_button)
+        self.profile_buttons_layout.addWidget(self.profile_fetch_button)
+        profile_box_layout.addLayout(self.profile_buttons_layout)
+
+        # Indice d'usage : les deux boutons exigent un équipier connecté.
+        self.profile_hint_label = QLabel("", self.profile_box)
+        self.profile_hint_label.setWordWrap(True)
+        profile_box_layout.addWidget(self.profile_hint_label)
+
+        # Résultat des opérations profil (envoi/récupération), distinct du
+        # statut des tests de connexion au-dessus.
+        self.profile_status_label = QLabel("", self.profile_box)
+        self.profile_status_label.setWordWrap(True)
+        self.profile_status_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        profile_box_layout.addWidget(self.profile_status_label)
+
         self.connexion_layout.addStretch()
         
         self.stacked_widget.addWidget(self.connexion_page)
@@ -935,6 +1001,129 @@ class PreferencesDialog(QDialog):
         propre à chaque officine, sans « valeur par défaut » — sont volontairement
         exclus (chargement direct dans load_preferences, jamais remis à zéro)."""
         self.reconnect_last_user_checkbox.setChecked(read("reconnect_last_user"))
+        self._set_policy_combo(read("profile_sync_policy"))
+        self._update_profile_buttons_state()
+
+    def _set_policy_combo(self, value):
+        """Positionne le combo de politique de récupération sur ``value``
+        (« never »/« ask »/« auto », rabattu sur « ask » si inconnu)."""
+        index = self.profile_policy_combo.findData(value)
+        if index < 0:
+            index = self.profile_policy_combo.findData("ask")
+        self.profile_policy_combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _staff_id(self):
+        """Identifiant de l'équipier actuellement connecté (fenêtre parente),
+        ou None — les opérations de profil serveur l'exigent."""
+        parent = self.parent()
+        staff_id = getattr(parent, "staff_id", None) if parent else None
+        return staff_id if isinstance(staff_id, int) and staff_id else None
+
+    def _update_profile_buttons_state(self):
+        """Active les boutons de profil seulement si un équipier est connecté
+        (le profil est personnel : sans identité, rien à envoyer/récupérer).
+        Appelée aussi pendant __init__ via _refresh_live_connection_status,
+        avant la création des widgets : sans effet dans ce cas."""
+        if not hasattr(self, "profile_send_button"):
+            return
+        enabled = self._staff_id() is not None
+        self.profile_send_button.setEnabled(enabled)
+        self.profile_fetch_button.setEnabled(enabled)
+        self.profile_hint_label.setText(
+            "" if enabled else
+            "Connectez-vous avec vos initiales pour utiliser le profil "
+            "serveur.")
+
+    def _send_profile(self):
+        """Pousse les réglages personnels du formulaire vers le profil serveur
+        de l'équipier connecté. L'identité du poste est exclue par
+        ``profile_sync.build_payload`` (ni URL, ni comptoir, ni secret)."""
+        staff_id = self._staff_id()
+        api = getattr(self.parent(), "api", None)
+        if staff_id is None or api is None:
+            self._update_profile_buttons_state()
+            return
+        payload = profile_sync.build_payload(self._form_settings())
+        self.profile_status_label.setText("Envoi du profil au serveur…")
+        self.profile_send_button.setEnabled(False)
+        self.profile_fetch_button.setEnabled(False)
+        api.upload_staff_preferences(
+            staff_id, payload, on_result=self._on_profile_sent)
+
+    def _fetch_profile(self):
+        """Télécharge le profil serveur de l'équipier connecté et le verse dans
+        le formulaire — sans persister : « Enregistrer »/« Appliquer » gardent
+        la main, « Annuler » laisse tout intact."""
+        staff_id = self._staff_id()
+        api = getattr(self.parent(), "api", None)
+        if staff_id is None or api is None:
+            self._update_profile_buttons_state()
+            return
+        self.profile_status_label.setText("Lecture du profil sur le serveur…")
+        self.profile_send_button.setEnabled(False)
+        self.profile_fetch_button.setEnabled(False)
+        api.fetch_staff_preferences(
+            staff_id, on_result=self._on_profile_fetched)
+
+    def _profile_error_text(self, result, fallback):
+        """Message pour un échec profil. Un 404 a deux sens possibles : erreur
+        JSON du serveur (« no_preferences », « staff_unknown ») ou serveur trop
+        ancien qui ne connaît pas la route — distingués via le corps."""
+        if result.status != 404:
+            detail = getattr(result, "message", None) or "serveur injoignable"
+            return f"{fallback} : {detail}"
+        error = None
+        if isinstance(getattr(result, "data", None), dict):
+            error = result.data.get("error")
+        if error == "no_preferences":
+            return "Aucun profil enregistré pour vous sur ce serveur."
+        if error == "staff_unknown":
+            return "Équipier inconnu du serveur — profil impossible."
+        if error:
+            return f"{fallback} : refus du serveur ({error})."
+        return ("Fonction indisponible : ce serveur ne connaît pas encore "
+                "les profils de préférences (mise à jour requise).")
+
+    def _on_profile_sent(self, result):
+        self._update_profile_buttons_state()
+        if result.status == 200:
+            self.profile_status_label.setText(
+                "Préférences enregistrées sur le serveur.")
+        else:
+            self.profile_status_label.setText(
+                self._profile_error_text(result, "Envoi impossible"))
+
+    def _on_profile_fetched(self, result):
+        self._update_profile_buttons_state()
+        data = getattr(result, "data", None)
+        payload = data.get("payload") if isinstance(data, dict) else None
+        if result.status == 200 and isinstance(payload, dict) and payload:
+            self._apply_profile_to_form(payload)
+            self.profile_status_label.setText(
+                "Préférences chargées dans le formulaire — validez par "
+                "« Enregistrer » ou « Appliquer » pour les garder.")
+        else:
+            self.profile_status_label.setText(
+                self._profile_error_text(result, "Récupération impossible"))
+
+    def _apply_profile_to_form(self, payload):
+        """Verse un profil téléchargé dans le formulaire (jamais persisté ici).
+
+        Chaque valeur repasse par la normalisation du schéma via DictSettings
+        (un profil hors-plage est rabattu proprement). La politique transportée
+        par le profil — personnelle — remplace le choix local du combo.
+        L'identité du poste (URL, secret, comptoir, reconnexion du dernier
+        équipier) n'est pas touchée : elle n'est pas dans le profil."""
+        shim = profile_sync.DictSettings(payload)
+
+        def read(key):
+            return settings_schema.read(shim, key)
+
+        self._apply_general_values(read)
+        self._apply_raccourcis_values(
+            read, lambda name: read_shortcut(shim, name, logger))
+        self._apply_notifications_values(read)
+        self._set_policy_combo(read("profile_sync_policy"))
 
     def _apply_raccourcis_values(self, read, read_shortcut_text):
         """Affecte les réglages de la page Raccourcis.
@@ -1148,15 +1337,35 @@ class PreferencesDialog(QDialog):
         # les champs restent éditables entre-temps : _finalize_save écrira ce
         # snapshot et jamais les widgets, pour ne pas persister un texte modifié
         # après le clic — donc non vérifié.
+        pending_settings = self._form_settings()
+        pending_settings["web_url"] = url
+        pending_settings["counter_id"] = counter_id
+        self._pending_save = {"settings": pending_settings,
+                              "app_secret": app_secret,
+                              "close": close_dialog}
+
+        if connection_changed:
+            self._validate_connection_then_save()
+        elif list_is_stale:
+            self._validate_counter_then_save()
+        else:
+            self._finalize_save()
+
+    def _form_settings(self):
+        """Instantané des réglages PERSONNELS du formulaire — hors identité du
+        poste (URL, comptoir, secret, ajoutés par save_preferences seule).
+
+        Sert à la fois à _pending_save (enregistrement local) et à
+        _send_profile (envoi au serveur via build_payload) : un seul mapping
+        widget -> clé, impossible de diverger."""
         pending_settings = {
-            "web_url": url,
-            "counter_id": counter_id,
+            "profile_sync_policy": self.profile_policy_combo.currentData(),
             "reconnect_last_user": self.reconnect_last_user_checkbox.isChecked(),
-            "next_patient_shortcut": next_patient_shortcut,
-            "validate_patient_shortcut": validate_patient_shortcut,
-            "pause_shortcut": pause_shortcut,
-            "recall_shortcut": recall_shortcut,
-            "deconnect_shortcut": deconnect_shortcut,
+            "next_patient_shortcut": self.next_patient_shortcut_input.shortcut(),
+            "validate_patient_shortcut": self.validate_patient_shortcut_input.shortcut(),
+            "pause_shortcut": self.pause_shortcut_input.shortcut(),
+            "recall_shortcut": self.recall_shortcut_input.shortcut(),
+            "deconnect_shortcut": self.deconnect_input.shortcut(),
             "shortcut_mode": self.shortcut_mode_combo.currentData(),
             "confirm_sensitive_shortcuts": self.confirm_sensitive_checkbox.isChecked(),
             "shortcut_feedback": self.shortcut_feedback_checkbox.isChecked(),
@@ -1187,16 +1396,7 @@ class PreferencesDialog(QDialog):
             pending_settings[notification_rules.DISPLAY_KEYS[category]] = checkbox.isChecked()
         for category, checkbox in self.notification_sound_checkboxes.items():
             pending_settings[notification_rules.SOUND_KEYS[category]] = checkbox.isChecked()
-        self._pending_save = {"settings": pending_settings,
-                              "app_secret": app_secret,
-                              "close": close_dialog}
-
-        if connection_changed:
-            self._validate_connection_then_save()
-        elif list_is_stale:
-            self._validate_counter_then_save()
-        else:
-            self._finalize_save()
+        return pending_settings
 
     def _pending_pair(self):
         """Couple (URL, secret) du snapshot en attente d'enregistrement — ce qui
@@ -1264,6 +1464,9 @@ class PreferencesDialog(QDialog):
             text, color = ("État actuel : inconnu — aucune connexion temps "
                            "réel n'a encore été établie.", "")
         # Ne re-rendre que sur changement : le label est rafraîchi par timer.
+        # L'équipier connecté peut changer pendant que le dialogue est ouvert
+        # : les boutons de profil suivent cet état (ils exigent une identité).
+        self._update_profile_buttons_state()
         if text != self.live_status_label.text():
             self.live_status_label.setText(text)
             self.live_status_label.setStyleSheet(
