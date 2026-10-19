@@ -5,7 +5,7 @@ from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
-from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread, QUrl
+from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -461,6 +461,21 @@ class PreferencesDialog(QDialog):
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.connexion_layout.addWidget(self.status_label)
 
+        # État temps réel ACTUEL de l'application (socket) : distinct du
+        # status_label ci-dessus, qui rend compte des TESTS lancés ici. On lit
+        # l'état mémorisé par la fenêtre (_rt_status) et on le rafraîchit tant
+        # que le dialogue est ouvert — l'utilisateur voit tout de suite si le
+        # poste est en ligne, sans tester.
+        self.live_status_label = QLabel("", self.connexion_page)
+        self.live_status_label.setWordWrap(True)
+        self.connexion_layout.addWidget(self.live_status_label)
+        self._refresh_live_connection_status()
+        self._live_status_timer = QTimer(self)
+        self._live_status_timer.setInterval(1500)
+        self._live_status_timer.timeout.connect(
+            self._refresh_live_connection_status)
+        self._live_status_timer.start()
+
         self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
         self.connexion_layout.addWidget(self.counter_label)
         
@@ -562,10 +577,13 @@ class PreferencesDialog(QDialog):
             QLabel("Afficher", self.notifications_page), 0, 1, Qt.AlignHCenter)
         self.notification_categories_grid.addWidget(
             QLabel("Son", self.notifications_page), 0, 2, Qt.AlignHCenter)
+        self.notification_categories_grid.addWidget(
+            QLabel("Écouter", self.notifications_page), 0, 3, Qt.AlignHCenter)
 
         # catégorie -> case à cocher (remplies/relues par load/save_preferences).
         self.notification_display_checkboxes = {}
         self.notification_sound_checkboxes = {}
+        self.notification_listen_buttons = {}
         for row, category in enumerate(notification_rules.CATEGORIES, start=1):
             label_text = notification_rules.CATEGORY_LABELS[category]
             hint = notification_rules.CATEGORY_HINTS[category]
@@ -583,6 +601,17 @@ class PreferencesDialog(QDialog):
                 checkbox.setToolTip(f"{action} — {hint}")
                 self.notification_categories_grid.addWidget(checkbox, row, column, Qt.AlignHCenter)
                 boxes[category] = checkbox
+            # « Écouter » par ligne : joue le son représentatif de la catégorie,
+            # au volume en cours d'édition — sans chercher le bon son dans le
+            # sélecteur « Tester un son ».
+            listen = QPushButton("Jouer", self.notifications_page)
+            listen.setAccessibleName(f"Écouter le son : {label_text}")
+            listen.setToolTip(f"Joue le son de « {label_text} » — {hint}")
+            listen.clicked.connect(
+                lambda _checked=False, c=category: self._test_category_sound(c))
+            self.notification_categories_grid.addWidget(
+                listen, row, 3, Qt.AlignHCenter)
+            self.notification_listen_buttons[category] = listen
         self.notifications_layout.addLayout(self.notification_categories_grid)
 
         # Ajout de l'option pour le temps pour une notification après déconnexion
@@ -1210,6 +1239,36 @@ class PreferencesDialog(QDialog):
                  if self.counter_id else "Liste périmée — relancez le test")
         self.counter_combobox.addItem(label, self.counter_id)
 
+    def _refresh_live_connection_status(self):
+        """Affiche l'état temps réel actuel de la fenêtre principale.
+
+        ``_rt_status``/``_rt_attempts`` sont mémorisés par la fenêtre à chaque
+        évènement socket (``_set_rt_status``) : lire ces valeurs plutôt que
+        l'indicateur graphique fonctionne aussi quand l'interface a été
+        reconstruite — et en test, où le parent est un faux."""
+        parent = self.parent()
+        status = getattr(parent, "_rt_status", None)
+        attempts = getattr(parent, "_rt_attempts", 0) or 0
+        if status == "connected":
+            text, color = ("État actuel : connecté au serveur "
+                           "(temps réel actif).", "#1a7f37")
+        elif status == "connecting":
+            detail = f" (tentative {attempts})" if attempts else ""
+            text, color = ("État actuel : connexion en cours…" + detail,
+                           "#b06000")
+        elif status == "disconnected":
+            detail = f" (tentative {attempts})" if attempts else ""
+            text, color = ("État actuel : déconnecté — reconnexion en cours"
+                           + detail + ".", "#b00020")
+        else:
+            text, color = ("État actuel : inconnu — aucune connexion temps "
+                           "réel n'a encore été établie.", "")
+        # Ne re-rendre que sur changement : le label est rafraîchi par timer.
+        if text != self.live_status_label.text():
+            self.live_status_label.setText(text)
+            self.live_status_label.setStyleSheet(
+                f"color: {color};" if color else "")
+
     def _validate_connection_then_save(self):
         """ Vérifie en arrière-plan que le couple (URL, secret) du snapshot
         donne un jeton, PUIS enregistre seulement en cas de succès. Le bouton
@@ -1694,7 +1753,8 @@ class PreferencesDialog(QDialog):
         enabled = not self.mute_checkbox.isChecked()
         for widget in (self.volume_label, self.volume_slider, self.volume_spinbox,
                        self.sound_test_label, self.sound_test_combo,
-                       self.sound_test_button):
+                       self.sound_test_button,
+                       *self.notification_listen_buttons.values()):
             widget.setEnabled(enabled)
         self.sound_test_button.setToolTip(
             "" if enabled else
@@ -1744,7 +1804,19 @@ class PreferencesDialog(QDialog):
         l'annulation, comme pour « Tester la notification ». Un éventuel
         problème audio affiché est effacé avant l'essai : le message qui
         s'affichera ensuite concerne bien CE clic."""
-        sound_name = self.sound_test_combo.currentData()
+        self._preview_play(self.sound_test_combo.currentData())
+
+    def _test_category_sound(self, category):
+        """Joue le son représentatif d'une catégorie (bouton « Jouer » de la
+        ligne), pour entendre immédiatement ce qu'on vient de cocher."""
+        self._preview_play(
+            notification_rules.CATEGORY_SOUNDS.get(category, "ding"))
+
+    def _preview_play(self, sound_name):
+        """Joue un son en APERÇU (volume et mode muet en cours d'édition,
+        ``force`` pour ignorer la déduplication), et efface le message de
+        problème audio affiché : celui qui apparaîtra ensuite concerne bien
+        CE clic. Aperçu restauré à l'annulation (restore_volume)."""
         if not sound_name:
             return
         player = self._player()

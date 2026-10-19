@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QWidget
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import audio  # noqa: E402
+import notification_rules  # noqa: E402
 import preferences  # noqa: E402
 import settings_schema  # noqa: E402
 
@@ -169,3 +170,44 @@ def test_essai_de_son_efface_le_probleme_precedent(isolated_settings):
 
     assert player.cleared == 1
     assert player.played and player.played[0][1] is True   # force=True
+
+
+# --- Bouton « Écouter » par catégorie ------------------------------------------
+
+def test_chaque_categorie_a_son_bouton_ecouter(isolated_settings):
+    """Une ligne = une catégorie + un bouton, et le mapping couvre toutes les
+    catégories avec des sons réellement embarqués."""
+    dialog = _dialog(isolated_settings)
+    assert set(dialog.notification_listen_buttons) == set(notification_rules.CATEGORIES)
+    for category in notification_rules.CATEGORIES:
+        assert notification_rules.CATEGORY_SOUNDS[category] in audio.SOUNDS
+
+
+def test_ecouter_joue_le_son_de_la_categorie_en_apercu(isolated_settings):
+    """Le bouton d'une ligne joue le son DISTINCTIF de la catégorie au volume
+    en cours d'édition (force=True, aperçu posé), pas un son générique."""
+    player = FakePlayer()
+    dialog = _dialog(isolated_settings, player)
+    dialog.volume_slider.setValue(20)
+
+    dialog.notification_listen_buttons[
+        notification_rules.VALIDATION].click()
+    dialog.notification_listen_buttons[
+        notification_rules.CURRENT_PATIENT].click()
+    dialog.notification_listen_buttons[
+        notification_rules.SYSTEM].click()
+
+    assert [p[0] for p in player.played] == [
+        "please_validate", "ding", "patient_taken"]
+    assert all(force for _name, force in player.played)
+    assert player.volume == 20                            # aperçu appliqué
+
+
+def test_boutons_ecouter_grises_en_mode_muet(isolated_settings):
+    dialog = _dialog(isolated_settings)
+    dialog.mute_checkbox.setChecked(True)
+    assert all(not b.isEnabled()
+               for b in dialog.notification_listen_buttons.values())
+    dialog.mute_checkbox.setChecked(False)
+    assert all(b.isEnabled()
+               for b in dialog.notification_listen_buttons.values())

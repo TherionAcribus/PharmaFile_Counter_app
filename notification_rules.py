@@ -132,6 +132,22 @@ SOUND_KEYS = {
 #: Toutes les clés à charger depuis QSettings (affichage + son).
 ALL_KEYS = tuple(DISPLAY_KEYS[c] for c in CATEGORIES) + tuple(SOUND_KEYS[c] for c in CATEGORIES)
 
+#: Son représentatif de chaque catégorie, joué par le bouton « Écouter » de la
+#: ligne dans les préférences : le son DISTINCTIF de la catégorie quand elle en
+#: a un (« please_validate » pour le rappel de validation, « patient_taken »
+#: pour les alertes système), « ding » sinon — cf. notification.py et
+#: play_notification_sound dans main.py.
+CATEGORY_SOUNDS = {
+    CURRENT_PATIENT: "ding",
+    AUTOCALLING: "ding",
+    SPECIFIC_ACTS: "ding",
+    PAPER: "ding",
+    CONNECTION: "ding",
+    VALIDATION: "please_validate",
+    SYSTEM: "patient_taken",
+    MESSAGING: "ding",
+}
+
 
 def category_for_origin(origin):
     """Catégorie d'une notification à partir de son ``origin`` (SYSTEM par défaut)."""

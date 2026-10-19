@@ -377,7 +377,8 @@ def _fake_dialog(parent, volume=50):
         sound_test_combo=QComboBox(),
         parent=lambda: parent,
     )
-    for name in ("_player", "_set_player_volume", "apply_audio_preview", "test_sound"):
+    for name in ("_player", "_set_player_volume", "apply_audio_preview",
+                 "_preview_play", "test_sound"):
         setattr(dialog, name,
                 types.MethodType(getattr(prefs.PreferencesDialog, name), dialog))
     return dialog

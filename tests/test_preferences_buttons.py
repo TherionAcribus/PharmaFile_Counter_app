@@ -222,6 +222,34 @@ def test_ouvrir_dossier_journaux_echec_signale(isolated_settings, monkeypatch, t
     assert warned
 
 
+def test_etat_connexion_en_direct_suit_le_parent(isolated_settings):
+    """La page Connexion affiche l'état temps réel de l'application (socket),
+    lu depuis la fenêtre principale et rafraîchi tant que le dialogue vit."""
+    parent = QWidget()
+    parent._rt_status = "connected"
+    parent._rt_attempts = 0
+    dialog = preferences.PreferencesDialog(parent)
+    dialog._test_parent = parent
+    assert "connecté" in dialog.live_status_label.text()
+
+    parent._rt_status = "disconnected"
+    parent._rt_attempts = 3
+    dialog._refresh_live_connection_status()
+    assert "déconnecté" in dialog.live_status_label.text()
+    assert "tentative 3" in dialog.live_status_label.text()
+
+    parent._rt_status = "connecting"
+    dialog._refresh_live_connection_status()
+    assert "en cours" in dialog.live_status_label.text()
+
+
+def test_etat_connexion_inconnu_sans_etat_parent(isolated_settings):
+    """Parent sans état temps réel (avant la première connexion, test) :
+    affichage honnête « inconnu » plutôt qu'un faux « connecté »."""
+    dialog = _dialog()
+    assert "inconnu" in dialog.live_status_label.text()
+
+
 def test_pages_sont_scrollables(isolated_settings):
     """Les 4 pages sont des QScrollArea redimensionnables : le contenu reste
     accessible sur petit écran / grande police au lieu d'être tronqué."""
