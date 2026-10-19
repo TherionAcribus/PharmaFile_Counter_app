@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread
 from connections import DEFAULT_TIMEOUT
 import endpoints
@@ -12,8 +12,9 @@ import resources
 from secret_store import load_secret, save_secret
 from counter_id_utils import coerce_counter_id
 from shortcut_defaults import (
-    UI_MODIFIERS, join_shortcut, read_shortcut, split_shortcut,
+    default_shortcut, join_shortcut, read_shortcut, split_shortcut,
 )
+from shortcut_edit import ShortcutEdit
 import notification_rules
 import settings_schema
 from panel_layout import (
@@ -498,31 +499,36 @@ class PreferencesDialog(QDialog):
         self.next_patient_shortcut_label = QLabel("Raccourci - Patient suivant:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.next_patient_shortcut_label)
         
-        self.next_patient_shortcut_input = self.create_shortcut_input()
+        self.next_patient_shortcut_input = self.create_shortcut_input(
+            "Raccourci patient suivant")
         self.raccourcis_layout.addWidget(self.next_patient_shortcut_input)
         
         self.validate_patient_shortcut_label = QLabel("Raccourci - Valider patient:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_label)
 
-        self.validate_patient_shortcut_input = self.create_shortcut_input()
+        self.validate_patient_shortcut_input = self.create_shortcut_input(
+            "Raccourci valider patient")
         self.raccourcis_layout.addWidget(self.validate_patient_shortcut_input)
         
         self.pause_shortcut_label = QLabel("Raccourci - Pause:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.pause_shortcut_label)
         
-        self.pause_shortcut_input = self.create_shortcut_input()
+        self.pause_shortcut_input = self.create_shortcut_input(
+            "Raccourci pause")
         self.raccourcis_layout.addWidget(self.pause_shortcut_input)
         
         self.recall_label = QLabel("Raccourci - Rappel patient:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.recall_label)
         
-        self.recall_shortcut_input = self.create_shortcut_input()
+        self.recall_shortcut_input = self.create_shortcut_input(
+            "Raccourci rappel patient")
         self.raccourcis_layout.addWidget(self.recall_shortcut_input)
         
         self.deconnect_label = QLabel("Raccourci - Déconnexion:", self.raccourcis_page)
         self.raccourcis_layout.addWidget(self.deconnect_label)
         
-        self.deconnect_input = self.create_shortcut_input()
+        self.deconnect_input = self.create_shortcut_input(
+            "Raccourci déconnexion")
         self.raccourcis_layout.addWidget(self.deconnect_input)
         
         self.raccourcis_layout.addStretch()
@@ -717,6 +723,22 @@ class PreferencesDialog(QDialog):
         self.button_box.addButton("Annuler", QDialogButtonBox.RejectRole)
         self.save_button.clicked.connect(self.save_preferences)
         self.button_box.rejected.connect(self.reject)
+        # « Valeurs par défaut » : remet les champs aux défauts du schéma sans
+        # rien persister (l'utilisateur valide ensuite par « Enregistrer » ou
+        # abandonne par « Annuler »). Menu à deux portées : page ou tout.
+        self.defaults_button = self.button_box.addButton(
+            "Valeurs par défaut", QDialogButtonBox.ResetRole)
+        self.defaults_button.setToolTip(
+            "Rétablit les valeurs par défaut.\n"
+            "L'adresse du serveur, le secret et le comptoir sont conservés.")
+        defaults_menu = QMenu(self.defaults_button)
+        defaults_menu.addAction(
+            "Rétablir cette page",
+            lambda: self._reset_to_defaults(current_page_only=True))
+        defaults_menu.addAction(
+            "Rétablir toutes les pages",
+            lambda: self._reset_to_defaults(current_page_only=False))
+        self.defaults_button.setMenu(defaults_menu)
         self.main_layout.addWidget(self.button_box)
 
         self.load_skins()
@@ -806,33 +828,15 @@ class PreferencesDialog(QDialog):
         if focus_widget is not None:
             focus_widget.setFocus()
 
-    def create_shortcut_input(self):
-        """ Groupe « modificateurs + touche » d'un raccourci.
+    def create_shortcut_input(self, accessible_name=""):
+        """Champ de capture de frappe d'un raccourci (point 12).
 
-        Les sous-widgets sont retrouvés par findChild(objectName) dans
-        load_shortcut / get_shortcut_text : ce sont donc des variables LOCALES.
-        En attributs d'instance, ils ne pointeraient que vers le dernier
-        raccourci créé — état trompeur qui invitait à l'erreur. """
-        widget = QWidget()
-        layout = QHBoxLayout()
-        widget.setLayout(layout)
-
-        ctrl_button = QCheckBox("Ctrl")
-        ctrl_button.setObjectName("Ctrl")
-        alt_button = QCheckBox("Alt")
-        alt_button.setObjectName("Alt")
-        shift_button = QCheckBox("Maj")
-        shift_button.setObjectName("Maj")
-        win_button = QCheckBox("Win")
-        win_button.setObjectName("Win")
-        key_input = QLineEdit()
-        key_input.setObjectName("Key")
-
-        for child in (ctrl_button, alt_button, shift_button, win_button,
-                      key_input):
-            layout.addWidget(child)
-
-        return widget
+        L'utilisateur clique puis tape la combinaison ; la valeur est la
+        forme canonique « Ctrl+Alt+Maj+P » persistée dans QSettings."""
+        edit = ShortcutEdit()
+        if accessible_name:
+            edit.setAccessibleName(accessible_name)
+        return edit
 
     def change_page(self, item, _previous=None):
         # currentItemChanged émet (courant, précédent) ; None si la liste est
@@ -862,85 +866,128 @@ class PreferencesDialog(QDialog):
         self.counter_id = coerce_counter_id(settings.value("counter_id", None))
         label = f"{self.counter_id} - Chargement en cours..." if self.counter_id else "Sélectionnez un comptoir..."
         self.counter_combobox.addItem(label, self.counter_id)
-        self.reconnect_last_user_checkbox.setChecked(
-            settings_schema.read(settings, "reconnect_last_user"))
-        vertical_position = settings_schema.read(settings, "patient_list_vertical_position")
-        horizontal_position = settings_schema.read(settings, "patient_list_horizontal_position")
+        def read(key):
+            return settings_schema.read(settings, key)
 
-        # Défauts centralisés dans shortcut_defaults (identiques à main.py).
-        self.load_shortcut(settings, "next_patient_shortcut", self.next_patient_shortcut_input)
-        self.load_shortcut(settings, "validate_patient_shortcut", self.validate_patient_shortcut_input)
-        self.load_shortcut(settings, "pause_shortcut", self.pause_shortcut_input)
-        self.load_shortcut(settings, "recall_shortcut", self.recall_shortcut_input)
-        self.load_shortcut(settings, "deconnect_shortcut", self.deconnect_input)
+        self._apply_connexion_values(read)
+        self._apply_raccourcis_values(
+            read, lambda name: read_shortcut(settings, name, logger))
+        self._apply_notifications_values(read)
+        self._apply_general_values(read)
 
-        # Mode des raccourcis + options (point 27).
-        mode = settings_schema.read(settings, "shortcut_mode")
-        mode_index = self.shortcut_mode_combo.findData(mode)
+        # Valeurs ENREGISTRÉES (servent à restaurer l'aperçu skin/volume si
+        # l'utilisateur ferme sans enregistrer).
+        self.current_volume = read("notification_volume")
+        self.current_muted = read("notification_muted")
+        self.current_skin = read("selected_skin")
+
+    def _apply_connexion_values(self, read):
+        """Affecte les réglages de la page Connexion lus via ``read``.
+
+        L'adresse du serveur, le secret et le comptoir choisi — configuration
+        propre à chaque officine, sans « valeur par défaut » — sont volontairement
+        exclus (chargement direct dans load_preferences, jamais remis à zéro)."""
+        self.reconnect_last_user_checkbox.setChecked(read("reconnect_last_user"))
+
+    def _apply_raccourcis_values(self, read, read_shortcut_text):
+        """Affecte les réglages de la page Raccourcis.
+
+        ``read_shortcut_text`` fournit le texte canonique d'un raccourci :
+        ``read_shortcut`` au chargement (défaut + migration + persistance de la
+        correction, partagé avec main.py), ``default_shortcut`` à la remise à
+        zéro."""
+        for name, widget in (
+            ("next_patient_shortcut", self.next_patient_shortcut_input),
+            ("validate_patient_shortcut", self.validate_patient_shortcut_input),
+            ("pause_shortcut", self.pause_shortcut_input),
+            ("recall_shortcut", self.recall_shortcut_input),
+            ("deconnect_shortcut", self.deconnect_input),
+        ):
+            self._set_shortcut_value(widget, read_shortcut_text(name))
+        mode_index = self.shortcut_mode_combo.findData(read("shortcut_mode"))
         self.shortcut_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
-        self.confirm_sensitive_checkbox.setChecked(
-            settings_schema.read(settings, "confirm_sensitive_shortcuts"))
-        self.shortcut_feedback_checkbox.setChecked(
-            settings_schema.read(settings, "shortcut_feedback"))
+        self.confirm_sensitive_checkbox.setChecked(read("confirm_sensitive_shortcuts"))
+        self.shortcut_feedback_checkbox.setChecked(read("shortcut_feedback"))
 
+    def _set_shortcut_value(self, widget, text):
+        """Affiche un raccourci canonique (« Alt+Maj+P ») dans un ShortcutEdit."""
+        modifiers, key = split_shortcut(text)
+        widget.setShortcut(join_shortcut(modifiers, key))
+
+    def _apply_notifications_values(self, read):
+        """Affecte les réglages de la page Notifications lus via ``read``."""
         for category, checkbox in self.notification_display_checkboxes.items():
-            checkbox.setChecked(settings_schema.read(
-                settings, notification_rules.DISPLAY_KEYS[category]))
+            checkbox.setChecked(read(notification_rules.DISPLAY_KEYS[category]))
         for category, checkbox in self.notification_sound_checkboxes.items():
-            checkbox.setChecked(settings_schema.read(
-                settings, notification_rules.SOUND_KEYS[category]))
-        self.notification_after_deconnection_spinbox.setValue(settings_schema.read(settings, "notification_after_deconnection"))
-        self.notification_after_calling_spinbox.setValue(settings_schema.read(settings, "notification_after_calling"))
-        self.notification_duration_spinbox.setValue(settings_schema.read(settings, "notification_duration"))
-        self.notification_font_size_spinbox.setValue(settings_schema.read(settings, "notification_font_size"))
-        tone_value = settings_schema.read(settings, "message_tone")
-        tone_index = self.message_tone_combo.findData(tone_value)
+            checkbox.setChecked(read(notification_rules.SOUND_KEYS[category]))
+        self.notification_after_deconnection_spinbox.setValue(
+            read("notification_after_deconnection"))
+        self.notification_after_calling_spinbox.setValue(
+            read("notification_after_calling"))
+        self.notification_duration_spinbox.setValue(
+            read("notification_duration"))
+        self.notification_font_size_spinbox.setValue(
+            read("notification_font_size"))
+        tone_index = self.message_tone_combo.findData(read("message_tone"))
         self.message_tone_combo.setCurrentIndex(tone_index if tone_index >= 0 else 0)
-        corner_value = settings_schema.read(settings, "notification_corner")
-        corner_index = self.notification_corner_combo.findData(corner_value)
-        self.notification_corner_combo.setCurrentIndex(corner_index if corner_index >= 0 else 0)
-        volume = settings_schema.read(settings, "notification_volume")
-        self.volume_slider.setValue(volume)
-        self.current_volume = volume
-        muted = settings_schema.read(settings, "notification_muted")
-        self.mute_checkbox.setChecked(muted)
-        self.current_muted = muted
+        corner_index = self.notification_corner_combo.findData(read("notification_corner"))
+        self.notification_corner_combo.setCurrentIndex(
+            corner_index if corner_index >= 0 else 0)
+        self.volume_slider.setValue(read("notification_volume"))
+        self.mute_checkbox.setChecked(read("notification_muted"))
         self.update_sound_controls_enabled()
         self.watch_audio_errors()
 
-        self.always_on_top_checkbox.setChecked(settings_schema.read(settings, "always_on_top"))
-        self.horizontal_mode_checkbox.setChecked(settings_schema.read(settings, "vertical_mode"))
-        self.compact_mode_checkbox.setChecked(settings_schema.read(settings, "compact_mode"))
-        self.panel_snap_checkbox.setChecked(settings_schema.read(settings, "panel_snap"))
-        self.panel_thickness_spinbox.setValue(settings_schema.read(settings, "panel_thickness"))
-        self.tray_single_icon_checkbox.setChecked(settings_schema.read(settings, "tray_single_icon"))
-        self.show_auto_call_button_checkbox.setChecked(settings_schema.read(settings, "show_auto_call_button"))
-        self.display_patient_list.setChecked(settings_schema.read(settings, "display_patient_list"))
-        self.patient_list_font_size_spinbox.setValue(settings_schema.read(settings, "patient_list_font_size"))
-        self.patient_list_position_vertical.setCurrentText(REVERSE_POSITION_MAPPING.get(vertical_position, BOTTOM_TEXT))
-        self.patient_list_position_horizontal.setCurrentText(REVERSE_POSITION_MAPPING.get(horizontal_position, RIGHT_TEXT))
+    def _apply_general_values(self, read):
+        """Affecte les réglages de la page Général lus via ``read``."""
+        self.always_on_top_checkbox.setChecked(read("always_on_top"))
+        self.horizontal_mode_checkbox.setChecked(read("vertical_mode"))
+        self.compact_mode_checkbox.setChecked(read("compact_mode"))
+        self.panel_snap_checkbox.setChecked(read("panel_snap"))
+        self.panel_thickness_spinbox.setValue(read("panel_thickness"))
+        self.tray_single_icon_checkbox.setChecked(read("tray_single_icon"))
+        self.show_auto_call_button_checkbox.setChecked(
+            read("show_auto_call_button"))
+        self.display_patient_list.setChecked(read("display_patient_list"))
+        self.patient_list_font_size_spinbox.setValue(
+            read("patient_list_font_size"))
+        self.patient_list_position_vertical.setCurrentText(
+            REVERSE_POSITION_MAPPING.get(
+                read("patient_list_vertical_position"), BOTTOM_TEXT))
+        self.patient_list_position_horizontal.setCurrentText(
+            REVERSE_POSITION_MAPPING.get(
+                read("patient_list_horizontal_position"), RIGHT_TEXT))
         self.messaging_position.setCurrentText(REVERSE_POSITION_MAPPING.get(
-            settings_schema.read(settings, "messaging_dock_area"), BOTTOM_TEXT))
-        self.debug_window.setChecked(settings_schema.read(settings, "debug_window"))
-
-        # pour les skins
-        selected_skin = settings_schema.read(settings, "selected_skin")
-        index = self.skin_combo.findText(selected_skin)
+            read("messaging_dock_area"), BOTTOM_TEXT))
+        self.debug_window.setChecked(read("debug_window"))
+        index = self.skin_combo.findText(read("selected_skin") or "Pas de skin")
         if index >= 0:
             self.skin_combo.setCurrentIndex(index)
-        self.current_skin = selected_skin
 
-    def load_shortcut(self, settings, name, widget):
-        """Remplit les cases/le champ d'un raccourci depuis les préférences.
+    def _reset_to_defaults(self, current_page_only):
+        """Rétablit les valeurs par défaut du schéma dans les champs du dialogue.
 
-        La LECTURE (défaut, migration, persistance de la correction) est celle de
-        shortcut_defaults.read_shortcut, partagée avec main.py : la fenêtre de
-        préférences et le démarrage voient donc toujours la même valeur.
-        """
-        modifiers, key = split_shortcut(read_shortcut(settings, name, logger))
-        for modifier in UI_MODIFIERS:
-            widget.findChild(QCheckBox, modifier).setChecked(modifier in modifiers)
-        widget.findChild(QLineEdit).setText(key)
+        Simple édition du formulaire : rien n'est persisté tant que
+        l'utilisateur n'enregistre pas, et « Annuler » laisse tout intact.
+        L'adresse du serveur, le secret et le comptoir choisi — configuration
+        propre à l'officine — ne sont jamais modifiés."""
+        read = settings_schema.default
+        targets = [self.navigation_list.currentItem()] if current_page_only \
+            else [self.general_item, self.connexion_item,
+                  self.raccourcis_item, self.notifications_item]
+        # QListWidgetItem n'est pas hachable : comparaisons (comme change_page)
+        # plutôt qu'un dict.
+        for item in targets:
+            if item == self.general_item:
+                self._apply_general_values(read)
+            elif item == self.connexion_item:
+                self._apply_connexion_values(read)
+            elif item == self.raccourcis_item:
+                self._apply_raccourcis_values(read, default_shortcut)
+            elif item == self.notifications_item:
+                self._apply_notifications_values(read)
+        logger.info("Valeurs par défaut rétablies (%s).",
+                    "page courante" if current_page_only else "toutes les pages")
 
     def save_preferences(self):
         # Espaces de copier-coller en bordure de secret : retirés ici et partout
@@ -950,11 +997,11 @@ class PreferencesDialog(QDialog):
         # counter_id normalisé en entier strictement positif (cohérent avec le
         # serveur et avec les comparaisons de l'app).
         counter_id = coerce_counter_id(self.counter_combobox.currentData())
-        next_patient_shortcut = self.get_shortcut_text(self.next_patient_shortcut_input)
-        validate_patient_shortcut = self.get_shortcut_text(self.validate_patient_shortcut_input)
-        recall_shortcut = self.get_shortcut_text(self.recall_shortcut_input)
-        deconnect_shortcut = self.get_shortcut_text(self.deconnect_input)
-        pause_shortcut = self.get_shortcut_text(self.pause_shortcut_input)
+        next_patient_shortcut = self.next_patient_shortcut_input.shortcut()
+        validate_patient_shortcut = self.validate_patient_shortcut_input.shortcut()
+        recall_shortcut = self.recall_shortcut_input.shortcut()
+        deconnect_shortcut = self.deconnect_input.shortcut()
+        pause_shortcut = self.pause_shortcut_input.shortcut()
 
         # Validation + normalisation de l'URL (point 8) : schéma http/https, hôte
         # présent, et http interdit pour un serveur distant (sauf mode dev). On
@@ -1005,7 +1052,7 @@ class PreferencesDialog(QDialog):
             first = next(iter(invalid))
             self._show_page(
                 self.raccourcis_item,
-                shortcut_widgets[first].findChild(QLineEdit))
+                shortcut_widgets[first])
             QMessageBox.warning(
                 self, "Raccourcis invalides",
                 "Certains raccourcis ne sont pas valides :\n\n"
@@ -1023,7 +1070,7 @@ class PreferencesDialog(QDialog):
             first_actions = next(iter(duplicates.values()))
             self._show_page(
                 self.raccourcis_item,
-                shortcut_widgets[first_actions[0]].findChild(QLineEdit))
+                shortcut_widgets[first_actions[0]])
             QMessageBox.warning(
                 self, "Raccourcis en conflit",
                 "Plusieurs actions utilisent la même combinaison :\n\n"
@@ -1345,12 +1392,6 @@ class PreferencesDialog(QDialog):
             logger.warning(
                 "Réinitialisation de la position demandée, mais le parent (%r) "
                 "n'expose pas reset_window_position.", parent)
-
-    def get_shortcut_text(self, widget):
-        """Recompose le raccourci saisi (inverse exact de load_shortcut)."""
-        modifiers = [m for m in UI_MODIFIERS
-                     if widget.findChild(QCheckBox, m).isChecked()]
-        return join_shortcut(modifiers, widget.findChild(QLineEdit).text())
 
     def test_url(self):
         # Même validation qu'à l'enregistrement (point 8) : on ne lance pas de
