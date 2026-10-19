@@ -365,28 +365,12 @@ class PreferencesDialog(QDialog):
         self.url_label = QLabel("Adresse du site web:", self.connexion_page)
         self.connexion_layout.addWidget(self.url_label)
         
-        self.url_layout = QHBoxLayout()
         self.url_input = QLineEdit(self.connexion_page)
         # Aucune adresse par défaut n'est gravée dans le code : le texte indicatif
         # guide la saisie de l'adresse propre à l'officine.
         self.url_input.setPlaceholderText("https://mon-serveur.example.com")
-        self.url_layout.addWidget(self.url_input)
-        
-        self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
-        self.test_button.clicked.connect(self.test_url)
-        self.url_layout.addWidget(self.test_button)
-        
-        self.connexion_layout.addLayout(self.url_layout)
-        
-        self.status_label = QLabel(self.connexion_page)
-        # wordWrap plutôt qu'une largeur fixe : le texte long (message d'erreur)
-        # passe à la ligne et le dialogue reste redimensionnable.
-        self.status_label.setWordWrap(True)
-        # Texte sélectionnable : un message d'erreur reste copiable, comme
-        # avec l'ancien QTextEdit en lecture seule.
-        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.connexion_layout.addWidget(self.status_label)
-        
+        self.connexion_layout.addWidget(self.url_input)
+
         self.app_secret_label = QLabel("Secret applicatif (doit correspondre à APP_SECRET côté serveur):", self.connexion_page)
         self.connexion_layout.addWidget(self.app_secret_label)
 
@@ -405,6 +389,21 @@ class PreferencesDialog(QDialog):
                 QLineEdit.Normal if checked else QLineEdit.Password))
         self.app_secret_row.addWidget(self.show_secret_checkbox)
         self.connexion_layout.addLayout(self.app_secret_row)
+
+        # Le test exploite l'adresse ET le secret (chargement des comptoirs) :
+        # le bouton est placé sous les deux champs qu'il consomme.
+        self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
+        self.test_button.clicked.connect(self.test_url)
+        self.connexion_layout.addWidget(self.test_button)
+
+        self.status_label = QLabel(self.connexion_page)
+        # wordWrap plutôt qu'une largeur fixe : le texte long (message d'erreur)
+        # passe à la ligne et le dialogue reste redimensionnable.
+        self.status_label.setWordWrap(True)
+        # Texte sélectionnable : un message d'erreur reste copiable, comme
+        # avec l'ancien QTextEdit en lecture seule.
+        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.connexion_layout.addWidget(self.status_label)
 
         self.counter_label = QLabel("Sélectionner le comptoir:", self.connexion_page)
         self.connexion_layout.addWidget(self.counter_label)
@@ -1193,6 +1192,10 @@ class PreferencesDialog(QDialog):
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
             self.status_label.setText("L'URL ne peut pas être vide")
+            return
+        if not self.app_secret_input.text():
+            QMessageBox.warning(self, "Erreur", "Le secret applicatif ne peut pas être vide")
+            self.status_label.setText("Le secret applicatif ne peut pas être vide")
             return
 
         worker = TestConnectionWorker(url)
