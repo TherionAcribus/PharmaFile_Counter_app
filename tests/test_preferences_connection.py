@@ -16,12 +16,17 @@ import preferences  # noqa: E402
 
 # --- _on_connection_checked -------------------------------------------------
 
-def _dialog(loaded_for=("http://serveur", "secret")):
+def _dialog(loaded_for=("http://serveur", "secret"),
+            pending_url="http://serveur", pending_secret="secret"):
     w = types.SimpleNamespace(calls={"finalize": 0, "counter_check": 0})
     w.status_label = types.SimpleNamespace(setText=lambda t: None)
     w.save_button = types.SimpleNamespace(setEnabled=lambda v: None)
-    w.url_input = types.SimpleNamespace(text=lambda: "http://serveur")
-    w.app_secret_input = types.SimpleNamespace(text=lambda: "secret")
+    # Le couple vérifié vient du snapshot (_pending_save), pas des champs —
+    # restés éditables pendant le worker réseau (point 1).
+    w._pending_save = {"settings": {"web_url": pending_url},
+                       "app_secret": pending_secret}
+    w._pending_pair = types.MethodType(
+        preferences.PreferencesDialog._pending_pair, w)
     w._counters_loaded_for = loaded_for
     w._finalize_save = lambda: w.calls.__setitem__("finalize", w.calls["finalize"] + 1)
     w._validate_counter_then_save = (
@@ -47,6 +52,19 @@ def test_connection_ok_but_list_never_loaded_checks_counter_first():
 
 def test_connection_ok_but_stale_list_checks_counter_first():
     w = _dialog(loaded_for=("http://autre", "secret"))
+    w._on_connection_checked(True, "")
+    assert w.calls["counter_check"] == 1
+    assert w.calls["finalize"] == 0
+
+
+def test_decision_uses_pending_snapshot_not_current_fields():
+    """Régression : les champs pouvaient être modifiés pendant le worker, la
+    comparaison avec la liste affichée doit porter sur le couple VÉRIFIÉ
+    (snapshot), pas sur le texte courant."""
+    w = _dialog(loaded_for=("http://serveur", "secret"))
+    # L'utilisateur a édité l'URL pendant la vérification : le snapshot porte
+    # une autre valeur que la liste affichée -> le comptoir est re-vérifié.
+    w._pending_save["settings"]["web_url"] = "http://edite-pendant-le-test"
     w._on_connection_checked(True, "")
     assert w.calls["counter_check"] == 1
     assert w.calls["finalize"] == 0

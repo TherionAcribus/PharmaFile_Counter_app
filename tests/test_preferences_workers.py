@@ -414,8 +414,13 @@ def _save_check_dialog(selected=3):
     w._finalize_save = lambda: w._finalized.append(True)
     w._loaded = []
     w.counters_loaded = types.SimpleNamespace(emit=lambda data: w._loaded.append(data))
-    w._selected = selected
-    w.counter_combobox.currentData = lambda: w._selected
+    # Le comptoir à vérifier et le couple (URL, secret) viennent du snapshot
+    # posé au clic « Enregistrer », pas des widgets (point 1).
+    w._pending_save = {"settings": {"web_url": "http://serveur",
+                                    "counter_id": selected},
+                       "app_secret": "secret"}
+    w._pending_pair = types.MethodType(
+        preferences.PreferencesDialog._pending_pair, w)
     w.counter_combobox.findData = lambda d: 0
     w.counter_combobox.setCurrentIndex = lambda i: None
     w._on_save_counters_result = types.MethodType(

@@ -193,6 +193,14 @@ class PreferencesDialog(QDialog):
         # l'enregistrement (save_preferences).
         self._counters_loaded_for = None
 
+        # Instantané des valeurs à enregistrer : rempli par save_preferences
+        # APRÈS validation, lu par _finalize_save et les vérifications
+        # asynchrones. Les champs restent éditables pendant les workers réseau
+        # (le bouton Enregistrer est désactivé, pas les saisies) : sans ce
+        # snapshot, un texte modifié entre le clic et la fin de la vérification
+        # serait persisté sans avoir été vérifié.
+        self._pending_save = None
+
         # Volume enregistré (celui du lecteur principal à l'ouverture) et drapeau
         # « un aperçu a modifié le volume du lecteur ». Le bouton « Tester la
         # notification » joue le son au volume EN COURS D'ÉDITION : sans ce
@@ -680,8 +688,20 @@ class PreferencesDialog(QDialog):
 
         self.load_skins()
         self.load_preferences()
-        
+
         self.counters_loaded.connect(self.update_counters)
+
+        # Page d'ouverture : « Connexion » tant que la connexion n'est pas
+        # complètement renseignée (adresse ou comptoir manquant) — c'est le
+        # seul endroit où la compléter, et c'est l'écran que main ouvre au
+        # premier démarrage. « Général » sinon. setCurrentItem coche l'entrée
+        # de la liste et change_page rejoue le clic (index de la page +
+        # chargement des comptoirs si possible).
+        initial_item = (self.general_item
+                        if self.url_input.text() and self.counter_id is not None
+                        else self.connexion_item)
+        self.navigation_list.setCurrentItem(initial_item)
+        self.change_page(initial_item)
         
 
     def _start_worker(self, kind, worker):
@@ -941,18 +961,75 @@ class PreferencesDialog(QDialog):
         # d'un autre serveur alors que la connexion enregistrée est inchangée.
         list_is_stale = (self._counters_loaded_for is not None
                          and self._counters_loaded_for != (url, app_secret))
+
+        # Instantané de TOUTES les valeurs validées. La suite est
+        # potentiellement asynchrone (vérifications réseau en arrière-plan) et
+        # les champs restent éditables entre-temps : _finalize_save écrira ce
+        # snapshot et jamais les widgets, pour ne pas persister un texte modifié
+        # après le clic — donc non vérifié.
+        pending_settings = {
+            "web_url": url,
+            "counter_id": counter_id,
+            "reconnect_last_user": self.reconnect_last_user_checkbox.isChecked(),
+            "next_patient_shortcut": next_patient_shortcut,
+            "validate_patient_shortcut": validate_patient_shortcut,
+            "pause_shortcut": pause_shortcut,
+            "recall_shortcut": recall_shortcut,
+            "deconnect_shortcut": deconnect_shortcut,
+            "shortcut_mode": self.shortcut_mode_combo.currentData(),
+            "confirm_sensitive_shortcuts": self.confirm_sensitive_checkbox.isChecked(),
+            "shortcut_feedback": self.shortcut_feedback_checkbox.isChecked(),
+            "notification_after_deconnection": self.notification_after_deconnection_spinbox.value(),
+            "notification_duration": self.notification_duration_spinbox.value(),
+            "notification_after_calling": self.notification_after_calling_spinbox.value(),
+            "notification_font_size": self.notification_font_size_spinbox.value(),
+            "message_tone": self.message_tone_combo.currentData(),
+            "notification_corner": self.notification_corner_combo.currentData(),
+            "notification_volume": self.volume_slider.value(),
+            "notification_muted": self.mute_checkbox.isChecked(),
+            "always_on_top": self.always_on_top_checkbox.isChecked(),
+            "vertical_mode": self.horizontal_mode.isChecked(),
+            "compact_mode": self.compact_mode_checkbox.isChecked(),
+            "panel_snap": self.panel_snap_checkbox.isChecked(),
+            "panel_thickness": self.panel_thickness_spinbox.value(),
+            "tray_single_icon": self.tray_single_icon_checkbox.isChecked(),
+            "show_auto_call_button": self.show_auto_call_button_checkbox.isChecked(),
+            "display_patient_list": self.display_patient_list.isChecked(),
+            "patient_list_font_size": self.patient_list_font_size_spinbox.value(),
+            "patient_list_vertical_position": POSITION_MAPPING[self.patient_list_position_vertical.currentText()],
+            "patient_list_horizontal_position": POSITION_MAPPING[self.patient_list_position_horizontal.currentText()],
+            "messaging_dock_area": POSITION_MAPPING[self.messaging_position.currentText()],
+            "debug_window": self.debug_window.isChecked(),
+            "selected_skin": self.skin_combo.currentText(),
+        }
+        for category, checkbox in self.notification_display_checkboxes.items():
+            pending_settings[notification_rules.DISPLAY_KEYS[category]] = checkbox.isChecked()
+        for category, checkbox in self.notification_sound_checkboxes.items():
+            pending_settings[notification_rules.SOUND_KEYS[category]] = checkbox.isChecked()
+        self._pending_save = {"settings": pending_settings, "app_secret": app_secret}
+
         if connection_changed:
-            self._validate_connection_then_save(url, app_secret)
+            self._validate_connection_then_save()
         elif list_is_stale:
             self._validate_counter_then_save()
         else:
             self._finalize_save()
 
-    def _validate_connection_then_save(self, web_url, app_secret):
-        """ Vérifie en arrière-plan que (URL, secret) donnent un jeton, PUIS
-        enregistre seulement en cas de succès. Le bouton Enregistrer est désactivé
-        pendant la vérification pour éviter les doubles soumissions. """
-        worker = TokenCheckWorker(web_url, app_secret)
+    def _pending_pair(self):
+        """Couple (URL, secret) du snapshot en attente d'enregistrement — ce qui
+        a été validé (et vérifié, le cas échéant), indépendamment du texte actuel
+        des champs, restés éditables pendant les workers réseau."""
+        pending = self._pending_save or {}
+        return (pending.get("settings", {}).get("web_url", ""),
+                pending.get("app_secret", ""))
+
+    def _validate_connection_then_save(self):
+        """ Vérifie en arrière-plan que le couple (URL, secret) du snapshot
+        donne un jeton, PUIS enregistre seulement en cas de succès. Le bouton
+        Enregistrer est désactivé pendant la vérification pour éviter les
+        doubles soumissions. """
+        url, app_secret = self._pending_pair()
+        worker = TokenCheckWorker(url, app_secret)
         worker.checked.connect(self._on_connection_checked)
         # Suivi + anti-doublon via le registre (point 9) : si une vérification est
         # déjà en cours, on ne relance rien (le bouton est déjà désactivé).
@@ -973,7 +1050,9 @@ class PreferencesDialog(QDialog):
                 message + "\n\nLes préférences n'ont PAS été enregistrées. "
                 "Vérifiez l'adresse du serveur et le secret applicatif.")
             return
-        pair = (self.url_input.text(), self.app_secret_input.text())
+        # Le couple VÉRIFIÉ est celui du snapshot, pas celui des champs (qui ont
+        # pu être modifiés pendant le worker réseau).
+        pair = self._pending_pair()
         if self._counters_loaded_for == pair:
             # La liste affichée provient déjà de la nouvelle connexion : le
             # comptoir choisi existe forcément sur ce serveur.
@@ -995,9 +1074,9 @@ class PreferencesDialog(QDialog):
         persisté contre le nouveau serveur : le comptoir enregistré aurait pu
         ne pas y exister. Le bouton Enregistrer est désactivé pendant la
         vérification pour éviter les doubles soumissions. """
+        url, app_secret = self._pending_pair()
         if not self._start_counters_worker(
-                "counters_save", self.url_input.text(),
-                self.app_secret_input.text(), self._on_save_counters_result):
+                "counters_save", url, app_secret, self._on_save_counters_result):
             self.save_button.setEnabled(True)
             return
         self.save_button.setEnabled(False)
@@ -1017,7 +1096,10 @@ class PreferencesDialog(QDialog):
             return
         # La liste récupérée devient la liste affichée (combo rechargé).
         self._counters_loaded_for = pair
-        selected = coerce_counter_id(self.counter_combobox.currentData())
+        # Le comptoir à vérifier est celui du snapshot (choisi au clic
+        # « Enregistrer »), pas la sélection courante du combo — modifiable
+        # pendant le worker.
+        selected = (self._pending_save or {}).get("settings", {}).get("counter_id")
         self.counters_loaded.emit(data)
         ids = {coerce_counter_id(counter["id"]) for counter in data
                if isinstance(counter, dict) and "id" in counter}
@@ -1058,8 +1140,14 @@ class PreferencesDialog(QDialog):
         return True
 
     def _finalize_save(self):
-        """ Persiste toutes les préférences (l'URL a déjà été validée/normalisée et,
-        si la connexion changeait, vérifiée) puis ferme le dialogue avec Accepted.
+        """ Persiste le snapshot de préférences validé par save_preferences
+        (URL normalisée et, si la connexion changeait, vérifiée) puis ferme le
+        dialogue avec Accepted.
+
+        On n'écrit QUE le snapshot : les vérifications réseau sont asynchrones
+        et les champs sont restés éditables entre-temps — relire les widgets ici
+        persisterait des valeurs non vérifiées (course de saisie corrigée par le
+        snapshot _pending_save).
 
         Ordre voulu (point 10) pour éviter une configuration à moitié enregistrée
         entre QSettings et le magasin de secrets : on écrit d'abord TOUS les
@@ -1067,54 +1155,18 @@ class PreferencesDialog(QDialog):
         (``sync``/``status``) ; seulement alors on enregistre le secret, puis on
         re-synchronise et re-vérifie. Toute défaillance affiche une erreur et
         laisse le dialogue ouvert (pas d'``accept``), donc rien n'est confirmé. """
-        url = self.url_input.text()
-        app_secret = self.app_secret_input.text()
+        pending = self._pending_save
+        if pending is None:
+            # Ne devrait pas arriver (appelé uniquement depuis save_preferences,
+            # qui pose le snapshot avant tout enchaînement asynchrone). On refuse
+            # de relire les champs : ce serait persister un état non validé.
+            logger.error("_finalize_save appelé sans snapshot de préférences.")
+            return
+        values = pending["settings"]
+        app_secret = pending["app_secret"]
         settings = QSettings()
-        settings.setValue("web_url", url)
-        # Valeurs relues des widgets (le dialogue est modal : elles n'ont pas
-        # changé depuis la validation). counter_id normalisé en entier.
-        settings.setValue("counter_id", coerce_counter_id(self.counter_combobox.currentData()))
-        settings.setValue("reconnect_last_user", self.reconnect_last_user_checkbox.isChecked())
-        settings.setValue("next_patient_shortcut", self.get_shortcut_text(self.next_patient_shortcut_input))
-        settings.setValue("validate_patient_shortcut", self.get_shortcut_text(self.validate_patient_shortcut_input))
-        settings.setValue("pause_shortcut", self.get_shortcut_text(self.pause_shortcut_input))
-        settings.setValue('recall_shortcut', self.get_shortcut_text(self.recall_shortcut_input))
-        settings.setValue("deconnect_shortcut", self.get_shortcut_text(self.deconnect_input))
-        settings.setValue("shortcut_mode", self.shortcut_mode_combo.currentData())
-        settings.setValue("confirm_sensitive_shortcuts", self.confirm_sensitive_checkbox.isChecked())
-        settings.setValue("shortcut_feedback", self.shortcut_feedback_checkbox.isChecked())
-        
-        # notifications
-        for category, checkbox in self.notification_display_checkboxes.items():
-            settings.setValue(notification_rules.DISPLAY_KEYS[category], checkbox.isChecked())
-        for category, checkbox in self.notification_sound_checkboxes.items():
-            settings.setValue(notification_rules.SOUND_KEYS[category], checkbox.isChecked())
-        settings.setValue("notification_after_deconnection", self.notification_after_deconnection_spinbox.value())
-        settings.setValue("notification_duration", self.notification_duration_spinbox.value())
-        settings.setValue("notification_after_calling", self.notification_after_calling_spinbox.value())
-        settings.setValue("notification_font_size", self.notification_font_size_spinbox.value())
-        settings.setValue("message_tone", self.message_tone_combo.currentData())
-        settings.setValue("notification_corner", self.notification_corner_combo.currentData())
-        settings.setValue("notification_volume", self.volume_slider.value())
-        settings.setValue("notification_muted", self.mute_checkbox.isChecked())
-
-        settings.setValue("always_on_top", self.always_on_top_checkbox.isChecked())
-        settings.setValue("vertical_mode", self.horizontal_mode.isChecked())
-        settings.setValue("compact_mode", self.compact_mode_checkbox.isChecked())
-        settings.setValue("panel_snap", self.panel_snap_checkbox.isChecked())
-        settings.setValue("panel_thickness", self.panel_thickness_spinbox.value())
-        settings.setValue("tray_single_icon", self.tray_single_icon_checkbox.isChecked())
-        settings.setValue("show_auto_call_button", self.show_auto_call_button_checkbox.isChecked())
-        settings.setValue("display_patient_list", self.display_patient_list.isChecked())
-        settings.setValue("patient_list_font_size", self.patient_list_font_size_spinbox.value())
-        settings.setValue("patient_list_vertical_position", POSITION_MAPPING[self.patient_list_position_vertical.currentText()])
-        settings.setValue("patient_list_horizontal_position", POSITION_MAPPING[self.patient_list_position_horizontal.currentText()])
-        settings.setValue("messaging_dock_area", POSITION_MAPPING[self.messaging_position.currentText()])
-        settings.setValue("debug_window", self.debug_window.isChecked())
-
-        # skins
-        settings.setValue("selected_skin", self.skin_combo.currentText())
-        self.current_skin = self.skin_combo.currentText()
+        for key, value in values.items():
+            settings.setValue(key, value)
 
         # Persistance des réglages non secrets d'abord, VÉRIFIÉE avant de toucher
         # au magasin de secrets (évite un état mixte QSettings/keyring).
@@ -1124,8 +1176,9 @@ class PreferencesDialog(QDialog):
         # Enregistrement effectif : le volume édité devient le volume de
         # référence, un aperçu antérieur n'a donc plus rien à restaurer (c'est
         # apply_preferences, côté fenêtre, qui l'applique au lecteur).
-        self.current_volume = self.volume_slider.value()
-        self.current_muted = self.mute_checkbox.isChecked()
+        self.current_volume = values["notification_volume"]
+        self.current_muted = values["notification_muted"]
+        self.current_skin = values["selected_skin"]
         self._volume_previewed = False
 
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
@@ -1146,6 +1199,9 @@ class PreferencesDialog(QDialog):
                 "configuration locale.\n\nInstallez/activez un magasin de secrets "
                 "(Gestionnaire d'identifiants Windows, Trousseau, Secret Service) "
                 "pour un stockage sécurisé.")
+
+        # Le snapshot est consommé : un nouvel « Enregistrer » en reconstruira un.
+        self._pending_save = None
 
         # Un SEUL mécanisme d'application (point 7) : on ferme le dialogue avec le
         # résultat Accepted. C'est l'appelant (MainWindow.show_preferences_dialog)
