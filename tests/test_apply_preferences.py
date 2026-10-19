@@ -71,6 +71,35 @@ def test_no_service_change_does_not_reconnect():
     assert w.calls["shortcut"] == 1     # cosmétique quand même appliqué
 
 
+# --- Skin appliqué à chaud ---------------------------------------------------
+
+def _count_skin_loads(w):
+    w.calls["skin"] = 0
+    w.load_skin = lambda: w.calls.__setitem__("skin", w.calls["skin"] + 1)
+
+
+def test_changement_de_skin_applique_sans_reconnexion():
+    """Le skin changé est appliqué à toute l'application tout de suite — même
+    sans reconstruction de l'interface (auparavant seul l'aperçu, posé sur la
+    fenêtre, changeait ; les autres fenêtres attendaient le redémarrage)."""
+    w = _win()
+    w.selected_skin = "Darkeum"
+    _count_skin_loads(w)
+    w.load_preferences = lambda: setattr(w, "selected_skin", "")
+    w.apply_preferences()
+    assert w.calls["skin"] == 1
+    assert w.calls["reconnect"] == 0
+
+
+def test_skin_inchange_n_est_pas_reapplique():
+    w = _win()
+    w.selected_skin = "Darkeum"
+    _count_skin_loads(w)
+    w.load_preferences = lambda: None
+    w.apply_preferences()
+    assert w.calls["skin"] == 0
+
+
 # --- Réglages audio appliqués à chaud (point 4) ------------------------------
 
 class _RecordingPlayer:

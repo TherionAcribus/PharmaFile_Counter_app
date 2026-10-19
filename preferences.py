@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("appcomptoir.preferences")
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QWidget, QVBoxLayout, QCheckBox, QLineEdit, QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QSlider, QGridLayout, QScrollArea, QGroupBox, QMenu
 from PySide6.QtCore import Signal, Slot, QSettings, Qt, QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from connections import DEFAULT_TIMEOUT
@@ -220,6 +220,10 @@ class PreferencesDialog(QDialog):
         # d'édition, sinon « Tester » resterait muet après avoir décoché).
         self.current_muted = None
         self._volume_previewed = False
+        # Même principe pour le skin : « un aperçu a changé le skin affiché ».
+        # Sans aperçu, l'annulation ne réapplique rien (inutile de recalculer
+        # le style de toute l'application).
+        self._skin_previewed = False
 
         # Layout vertical : le contenu (navigation + page courante) au-dessus,
         # la barre de boutons Enregistrer/Annuler en bas — auparavant le seul
@@ -388,8 +392,11 @@ class PreferencesDialog(QDialog):
         self.skin_label = QLabel("Sélectionner un skin:", appearance_box)
         appearance_box_layout.addWidget(self.skin_label)
 
+        # L'aperçu n'est branché qu'APRÈS le chargement des préférences (fin de
+        # __init__) : remplir la liste ou y sélectionner le skin enregistré ne
+        # doit rien appliquer — auparavant le skin était retiré puis remis à
+        # chaque ouverture du dialogue.
         self.skin_combo = QComboBox(appearance_box)
-        self.skin_combo.currentTextChanged.connect(self.preview_skin)
         appearance_box_layout.addWidget(self.skin_combo)
 
         # --- Journal ---
@@ -851,6 +858,7 @@ class PreferencesDialog(QDialog):
 
         self.load_skins()
         self.load_preferences()
+        self.skin_combo.currentIndexChanged.connect(self._on_skin_selected)
 
         self.counters_loaded.connect(self.update_counters)
 
@@ -1190,7 +1198,7 @@ class PreferencesDialog(QDialog):
         self.messaging_position.setCurrentText(REVERSE_POSITION_MAPPING.get(
             read("messaging_dock_area"), BOTTOM_TEXT))
         self.debug_window.setChecked(read("debug_window"))
-        index = self.skin_combo.findText(read("selected_skin") or "Pas de skin")
+        index = self.skin_combo.findData(read("selected_skin"))
         if index >= 0:
             self.skin_combo.setCurrentIndex(index)
 
@@ -1384,7 +1392,8 @@ class PreferencesDialog(QDialog):
             "patient_list_horizontal_position": POSITION_MAPPING[self.patient_list_position_horizontal.currentText()],
             "messaging_dock_area": POSITION_MAPPING[self.messaging_position.currentText()],
             "debug_window": self.debug_window.isChecked(),
-            "selected_skin": self.skin_combo.currentText(),
+            "selected_skin": resources.normalize_skin_name(
+                self.skin_combo.currentData()),
         }
         for category, checkbox in self.notification_display_checkboxes.items():
             pending_settings[notification_rules.DISPLAY_KEYS[category]] = checkbox.isChecked()
@@ -1632,6 +1641,7 @@ class PreferencesDialog(QDialog):
         self.current_muted = values["notification_muted"]
         self.current_skin = values["selected_skin"]
         self._volume_previewed = False
+        self._skin_previewed = False
 
         # Le secret est stocké dans le magasin sécurisé (keyring), pas en clair
         # dans QSettings. save_secret efface aussi toute copie en clair héritée.
@@ -1870,30 +1880,51 @@ class PreferencesDialog(QDialog):
         Ne crée plus le dossier « skins » s'il manque : l'ancienne version en
         fabriquait un (vide) dans le répertoire de lancement de l'application.
         """
-        self.skin_combo.addItem("Pas de skin")
+        # Donnée de chaque entrée = valeur enregistrée (NO_SKIN pour « aucun ») :
+        # le libellé affiché n'est plus jamais persisté.
+        self.skin_combo.addItem(resources.LEGACY_NO_SKIN_LABEL, resources.NO_SKIN)
         skins = resources.available_skins()
         if not skins:
             logger.warning("Aucun skin trouvé dans %s", resources.skins_dir())
         for name in skins:
-            self.skin_combo.addItem(name)
+            self.skin_combo.addItem(name, name)
+
+    def _on_skin_selected(self, _index):
+        """Sélection d'un skin dans la liste : aperçu immédiat (annulable)."""
+        self.preview_skin(self.skin_combo.currentData())
 
     def preview_skin(self, skin_name):
-        logger.debug("Aperçu du skin : %s", skin_name)
-        if skin_name == "Pas de skin":
-            # Supprime le skin en désactivant tous les styles QSS
-            self.parent().setStyleSheet("")
-        elif skin_name:
-            qss = resources.read_skin(skin_name)
-            if qss is None:
-                logger.warning("Skin '%s' introuvable ou illisible", skin_name)
-                return
-            self.parent().setStyleSheet(qss)
+        """Applique ``skin_name`` en APERÇU à toute l'application — même portée
+        que l'application réelle (``MainWindow.load_skin``), pour voir ce qui
+        sera enregistré. Annulé par restore_skin si le dialogue est fermé sans
+        enregistrer."""
+        logger.debug("Aperçu du skin : %r", skin_name)
+        if not resources.apply_skin(skin_name, window=self.parent(),
+                                    app=QApplication.instance()):
+            logger.warning("Skin '%s' introuvable ou illisible", skin_name)
+            return
+        self._skin_previewed = True
+
+    def restore_skin(self):
+        """Annule l'aperçu de skin : réapplique le skin ENREGISTRÉ (y compris
+        « aucun »). Sans aperçu, ne touche à rien."""
+        if not self._skin_previewed:
+            return
+        window, app = self.parent(), QApplication.instance()
+        if not resources.apply_skin(self.current_skin, window=window, app=app):
+            # Skin enregistré disparu : au démarrage, load_skin n'aurait rien
+            # appliqué — on revient donc au style standard plutôt que de garder
+            # l'aperçu.
+            logger.warning("Skin enregistré '%s' introuvable : style standard rétabli",
+                           self.current_skin)
+            resources.apply_skin(resources.NO_SKIN, window=window, app=app)
+        self._skin_previewed = False
 
     def reject(self):
         # Réapplique le skin ET le volume enregistrés si l'utilisateur ferme sans
         # sauvegarder : le test de notification est un APERÇU, il ne doit rien
         # laisser derrière lui.
-        self.preview_skin(self.current_skin)
+        self.restore_skin()
         self.restore_volume()
         super().reject()
 

@@ -35,6 +35,7 @@ from accessibility import (
     DEFAULT_LIST_FONT_SIZE, DEFAULT_TONE, clamp_font_size, normalize_tone,
 )
 from panel_layout import DEFAULT_PANEL_THICKNESS, clamp_thickness
+from resources import NO_SKIN, normalize_skin_name
 from shortcut_config import DEFAULT_MODE, normalize_mode
 
 
@@ -181,7 +182,10 @@ SETTINGS = {
 
     # --- Divers --------------------------------------------------------------
     "debug_window": Setting(default=False, kind=bool),
-    "selected_skin": Setting(default="", kind=str),
+    # « Aucun skin » = chaîne vide ; l'ancien libellé « Pas de skin », enregistré
+    # tel quel par les versions précédentes, est ramené à la chaîne vide.
+    "selected_skin": Setting(
+        default=NO_SKIN, kind=str, coerce=normalize_skin_name),
 }
 
 

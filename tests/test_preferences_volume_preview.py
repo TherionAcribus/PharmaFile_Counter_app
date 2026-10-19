@@ -151,7 +151,8 @@ def test_reject_restores_skin_and_volume(_shared_qapplication):
     dialog = preferences.PreferencesDialog.__new__(preferences.PreferencesDialog)
     QDialog.__init__(dialog, parent)
     dialog._workers, dialog._closing = {}, False
-    dialog.current_skin = "Pas de skin"
+    dialog.current_skin = ""
+    dialog._skin_previewed = False
     dialog.current_volume = 50
     dialog.current_muted = True
     dialog._volume_previewed = False

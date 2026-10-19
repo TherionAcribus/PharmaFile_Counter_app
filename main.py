@@ -1825,6 +1825,7 @@ class MainWindow(QMainWindow):
                       getattr(self, "show_auto_call_button", False))
         old_on_top = getattr(self, "always_on_top", False)
         old_tray_single = getattr(self, "tray_single_icon", False)
+        old_skin = getattr(self, "selected_skin", "")
         self.load_preferences()
 
         # « Toujours au premier plan » : appliqué ICI (plus dans le dialogue, qui ne
@@ -1865,6 +1866,12 @@ class MainWindow(QMainWindow):
         new_tray_single = getattr(self, "tray_single_icon", False)
         if new_tray_single != old_tray_single and getattr(self, "tray", None):
             self.tray.setup()
+        # Skin : appliqué à toute l'application dès qu'il change. Auparavant il
+        # ne l'était qu'en cas de reconstruction de l'interface : seul l'aperçu
+        # des préférences (posé sur la fenêtre) changeait, les autres fenêtres
+        # gardaient l'ancien skin jusqu'au redémarrage.
+        if getattr(self, "selected_skin", "") != old_skin:
+            self.load_skin()
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
@@ -2323,19 +2330,14 @@ class MainWindow(QMainWindow):
 
 
     def load_skin(self):
-        """ Applique le skin choisi. Le fichier est localisé par ``resources``
-        (chemin absolu) : le skin s'applique donc aussi dans un build PyInstaller
-        onefile et quel que soit le répertoire de lancement. """
-        if not self.selected_skin:
-            return
-        qss = resources.read_skin(self.selected_skin)
-        if qss is None:
-            self.logger.warning("Skin '%s' introuvable ou illisible : style par défaut conservé",
+        """ Applique le skin choisi à la fenêtre et à toute l'application, ou
+        retire le skin courant si « aucun » est choisi. Le fichier est localisé
+        par ``resources`` (chemin absolu) : le skin s'applique donc aussi dans un
+        build PyInstaller onefile et quel que soit le répertoire de lancement. """
+        if not resources.apply_skin(self.selected_skin, window=self,
+                                    app=QApplication.instance()):
+            self.logger.warning("Skin '%s' introuvable ou illisible : style courant conservé",
                                 self.selected_skin)
-            return
-        self.setStyleSheet(qss)
-        # Appliquer le style à toute l'application
-        QApplication.instance().setStyleSheet(qss)
 
 
     def cleanup_systray(self):

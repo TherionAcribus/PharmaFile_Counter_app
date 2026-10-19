@@ -90,3 +90,43 @@ def read_skin(name):
             return handle.read()
     except (OSError, UnicodeDecodeError):
         return None
+
+
+#: Valeur enregistrée pour « aucun skin » (style Qt standard).
+NO_SKIN = ""
+#: Ancienne valeur enregistrée pour « aucun skin » : le libellé affiché du
+#: sélecteur. Elle désignait un fichier « Pas de skin.qss » introuvable — le
+#: skin précédent restait donc appliqué jusqu'au redémarrage.
+LEGACY_NO_SKIN_LABEL = "Pas de skin"
+
+
+def normalize_skin_name(value):
+    """Nom de skin enregistré, ``NO_SKIN`` pour « aucun » (y compris l'ancien
+    libellé et toute valeur non textuelle)."""
+    if not isinstance(value, str):
+        return NO_SKIN
+    value = value.strip()
+    return NO_SKIN if value == LEGACY_NO_SKIN_LABEL else value
+
+
+def apply_skin(name, window=None, app=None):
+    """Applique le skin ``name`` à la fenêtre ET à toute l'application, ou retire
+    tout skin si ``name`` désigne « aucun ».
+
+    Point d'application UNIQUE (démarrage, enregistrement, aperçu et annulation
+    des préférences) : appliquer l'aperçu à la seule fenêtre laissait les autres
+    fenêtres (notifications, dialogues) sur l'ancien skin.
+
+    Renvoie False — sans rien modifier — si le fichier du skin est introuvable ou
+    illisible. ``window``/``app`` : tout objet exposant ``setStyleSheet``."""
+    name = normalize_skin_name(name)
+    if name:
+        qss = read_skin(name)
+        if qss is None:
+            return False
+    else:
+        qss = ""
+    for target in (window, app):
+        if target is not None:
+            target.setStyleSheet(qss)
+    return True

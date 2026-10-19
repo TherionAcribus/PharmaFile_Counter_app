@@ -148,10 +148,54 @@ def test_load_skin_absent_conserve_le_style_par_defaut(fake_app, caplog):
     assert any("SkinInexistant" in r.getMessage() for r in caplog.records)
 
 
-def test_load_skin_sans_skin_ne_touche_a_rien(fake_app):
-    w = FakeWindow("")
-    w.load_skin()
-    assert w.stylesheet is None and fake_app.stylesheet is None
+@pytest.mark.parametrize("saved", ["", "Pas de skin"])
+def test_load_skin_sans_skin_retire_le_skin_courant(fake_app, saved, caplog):
+    """« Aucun skin » (ou l'ancien libellé enregistré) retire le skin en place
+    — fenêtre ET application — au lieu de laisser l'ancien jusqu'au
+    redémarrage, et sans avertissement « skin introuvable »."""
+    w = FakeWindow(saved)
+    w.stylesheet = fake_app.stylesheet = "QWidget { color: red; }"
+    with caplog.at_level(logging.WARNING, logger="test.resources"):
+        w.load_skin()
+    assert w.stylesheet == "" and fake_app.stylesheet == ""
+    assert not caplog.records
+
+
+# --- point d'application unique : resources.apply_skin ----------------------
+
+@pytest.mark.parametrize("value, expected", [
+    ("", ""), ("Pas de skin", ""), (None, ""), (3, ""),
+    ("Darkeum", "Darkeum"), ("  Darkeum ", "Darkeum"),
+])
+def test_normalize_skin_name(value, expected):
+    assert resources.normalize_skin_name(value) == expected
+
+
+def test_apply_skin_applique_a_la_fenetre_et_a_l_application():
+    window, app = FakeApp(), FakeApp()
+    assert resources.apply_skin("Darkeum", window=window, app=app) is True
+    assert window.stylesheet and window.stylesheet == app.stylesheet
+
+
+def test_apply_skin_introuvable_ne_modifie_rien():
+    window, app = FakeApp(), FakeApp()
+    window.stylesheet = app.stylesheet = "avant"
+    assert resources.apply_skin("SkinInexistant", window=window, app=app) is False
+    assert window.stylesheet == app.stylesheet == "avant"
+
+
+def test_apply_skin_tolere_l_absence_de_fenetre():
+    app = FakeApp()
+    assert resources.apply_skin("", window=None, app=app) is True
+    assert app.stylesheet == ""
+
+
+def test_schema_ramene_l_ancien_libelle_a_aucun_skin():
+    import settings_schema
+    from profile_sync import DictSettings
+    assert settings_schema.read(DictSettings({"selected_skin": "Pas de skin"}),
+                                "selected_skin") == ""
+    assert settings_schema.read(DictSettings({}), "selected_skin") == ""
 
 
 # --- cliquet : aucun chemin de ressource relatif ---------------------------
