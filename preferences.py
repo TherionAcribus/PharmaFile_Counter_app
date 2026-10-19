@@ -222,7 +222,9 @@ class PreferencesDialog(QDialog):
 
         self.navigation_list = QListWidget()
         self.navigation_list.setFixedWidth(150)
-        self.navigation_list.itemClicked.connect(self.change_page)
+        # currentItemChanged (et non itemClicked) : les flèches du clavier et le
+        # Tab changent aussi de page, pas seulement un clic souris.
+        self.navigation_list.currentItemChanged.connect(self.change_page)
         
         self.general_item = QListWidgetItem("Général")
         self.connexion_item = QListWidgetItem("Connexion")
@@ -241,11 +243,15 @@ class PreferencesDialog(QDialog):
         self.general_layout = QVBoxLayout()
         self.general_page.setLayout(self.general_layout)
         
-        self.always_on_top_checkbox = QCheckBox("Always on top", self.general_page)
+        self.always_on_top_checkbox = QCheckBox("Toujours au premier plan", self.general_page)
         self.general_layout.addWidget(self.always_on_top_checkbox)
 
-        self.horizontal_mode = QCheckBox("Orientation verticale", self.general_page)
-        self.general_layout.addWidget(self.horizontal_mode)
+        # « vertical_mode » est une clé QSettings historique : elle porte en
+        # réalité le mode HORIZONTAL de l'app (QHBoxLayout = barre large).
+        # La case dit donc « horizontale » — l'ancien libellé « verticale »
+        # produisait l'effet inverse de ce qu'il annonçait.
+        self.horizontal_mode_checkbox = QCheckBox("Orientation horizontale", self.general_page)
+        self.general_layout.addWidget(self.horizontal_mode_checkbox)
 
         # --- Mode panneau compact (point 25) ---
         # Panneau étroit docké sur un bord (colonne verticale ou barre
@@ -406,7 +412,7 @@ class PreferencesDialog(QDialog):
 
         # Le test exploite l'adresse ET le secret (chargement des comptoirs) :
         # le bouton est placé sous les deux champs qu'il consomme.
-        self.test_button = QPushButton("Tester l'adresse", self.connexion_page)
+        self.test_button = QPushButton("Tester la connexion", self.connexion_page)
         self.test_button.clicked.connect(self.test_url)
         self.connexion_layout.addWidget(self.test_button)
 
@@ -786,7 +792,11 @@ class PreferencesDialog(QDialog):
 
         return widget
 
-    def change_page(self, item):
+    def change_page(self, item, _previous=None):
+        # currentItemChanged émet (courant, précédent) ; None si la liste est
+        # vidée. L'appel initial (page d'ouverture) n'a qu'un argument.
+        if item is None:
+            return
         if item == self.general_item:
             self.stacked_widget.setCurrentIndex(0)
         elif item == self.connexion_item:
@@ -857,7 +867,7 @@ class PreferencesDialog(QDialog):
         self.watch_audio_errors()
 
         self.always_on_top_checkbox.setChecked(settings_schema.read(settings, "always_on_top"))
-        self.horizontal_mode.setChecked(settings_schema.read(settings, "vertical_mode"))
+        self.horizontal_mode_checkbox.setChecked(settings_schema.read(settings, "vertical_mode"))
         self.compact_mode_checkbox.setChecked(settings_schema.read(settings, "compact_mode"))
         self.panel_snap_checkbox.setChecked(settings_schema.read(settings, "panel_snap"))
         self.panel_thickness_spinbox.setValue(settings_schema.read(settings, "panel_thickness"))
@@ -999,7 +1009,7 @@ class PreferencesDialog(QDialog):
             "notification_volume": self.volume_slider.value(),
             "notification_muted": self.mute_checkbox.isChecked(),
             "always_on_top": self.always_on_top_checkbox.isChecked(),
-            "vertical_mode": self.horizontal_mode.isChecked(),
+            "vertical_mode": self.horizontal_mode_checkbox.isChecked(),
             "compact_mode": self.compact_mode_checkbox.isChecked(),
             "panel_snap": self.panel_snap_checkbox.isChecked(),
             "panel_thickness": self.panel_thickness_spinbox.value(),
@@ -1254,8 +1264,8 @@ class PreferencesDialog(QDialog):
         self.compact_mode_checkbox.setChecked(True)
         self.panel_snap_checkbox.setChecked(True)
         self.always_on_top_checkbox.setChecked(True)
-        # Colonne verticale étroite : « Orientation verticale » décochée.
-        self.horizontal_mode.setChecked(False)
+        # Colonne verticale étroite : « Orientation horizontale » décochée.
+        self.horizontal_mode_checkbox.setChecked(False)
         self.panel_thickness_spinbox.setValue(DEFAULT_PANEL_THICKNESS)
         # Liste sous le panneau en mode vertical (onglets partagés avec la
         # messagerie en mode compact) plutôt qu'à droite, qui élargirait.

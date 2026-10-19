@@ -69,6 +69,17 @@ def test_boutons_en_bas_du_dialogue(isolated_settings):
     assert dialog.button_box.buttonRole(dialog.save_button) == QDialogButtonBox.AcceptRole
 
 
+def test_navigation_par_selection_change_de_page(isolated_settings):
+    """La navigation suit la SÉLECTION (currentItemChanged) : clics souris mais
+    aussi flèches du clavier et Tab — auparavant seul itemClicked réagissait."""
+    dialog = _dialog()
+    dialog.navigation_list.setCurrentItem(dialog.notifications_item)
+    assert dialog.stacked_widget.currentIndex() == 3
+    dialog.navigation_list.setCurrentItem(dialog.general_item)
+    assert dialog.stacked_widget.currentIndex() == 0
+    dialog.change_page(None)   # sélection vidée : tolérée sans erreur
+
+
 def test_status_label_est_un_label_enroule(isolated_settings):
     """Le statut de connexion est un QLabel à retour à la ligne (plus de
     QTextEdit à largeur fixe qui bloquait le redimensionnement), et le texte
