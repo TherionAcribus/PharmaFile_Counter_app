@@ -199,20 +199,95 @@ def test_counters_success(monkeypatch):
     assert got["ok"] is True and got["data"] == counters
 
 
-# --- update_counters : champs manquants -------------------------------------
+# --- update_counters : champs manquants, ids et resélection -----------------
+
+class FakeCombo:
+    """Combo minimal : liste d'items (libellé, donnée) + index courant, avec la
+    même sémantique que QComboBox (le premier item ajouté est sélectionné)."""
+
+    def __init__(self):
+        self.items = []
+        self.index = -1
+
+    def clear(self):
+        self.items.clear()
+        self.index = -1
+
+    def addItem(self, label, data):
+        self.items.append((label, data))
+        if self.index == -1:
+            self.index = 0
+
+    def insertItem(self, i, label, data):
+        self.items.insert(i, (label, data))
+
+    def currentData(self):
+        return self.items[self.index][1] if 0 <= self.index < len(self.items) else None
+
+    def findData(self, data):
+        for i, (_, d) in enumerate(self.items):
+            if d == data:
+                return i
+        return -1
+
+    def setCurrentIndex(self, i):
+        self.index = i
+
+
+def _counter_dialog(saved_id=None):
+    w = types.SimpleNamespace(counter_id=saved_id)
+    w.counter_combobox = FakeCombo()
+    w.update_counters = types.MethodType(
+        preferences.PreferencesDialog.update_counters, w)
+    return w
+
 
 def test_update_counters_skips_entries_missing_fields():
-    items = []
-    w = types.SimpleNamespace(counter_id=None)
-    w.counter_combobox = types.SimpleNamespace(
-        clear=lambda: items.clear(),
-        addItem=lambda name, cid: items.append((name, cid)),
-        findData=lambda d: -1,
-        setCurrentIndex=lambda i: None,
-    )
-    w.update_counters = types.MethodType(preferences.PreferencesDialog.update_counters, w)
+    w = _counter_dialog()
     w.update_counters([{"name": "A", "id": 1}, {"id": 2}, {"name": "B", "id": 3}])
-    assert items == [("A", 1), ("B", 3)]  # l'entrée sans « name » est ignorée
+    # L'entrée sans « name » est ignorée ; sans comptoir enregistré, on affiche
+    # une entrée d'attente (donnée None) plutôt qu'une présélection arbitraire.
+    assert w.counter_combobox.items == [
+        ("Sélectionnez un comptoir...", None), ("A", 1), ("B", 3)]
+
+
+def test_update_counters_normalizes_string_ids():
+    """Le serveur peut renvoyer des ids en chaîne : normalisés en entier, le
+    comptoir enregistré est bien resélectionné (avant, findData(3) ne trouvait
+    jamais « 3 »)."""
+    w = _counter_dialog(saved_id=3)
+    w.update_counters([{"name": "A", "id": "3"}, {"name": "B", "id": "4"}])
+    assert w.counter_combobox.items == [("A", 3), ("B", 4)]
+    assert w.counter_combobox.currentData() == 3
+
+
+def test_update_counters_unknown_saved_counter_shows_placeholder():
+    """Comptoir enregistré absent du serveur : PAS de présélection silencieuse
+    du premier comptoir — une entrée d'attente sans donnée force un choix
+    explicite à l'enregistrement."""
+    w = _counter_dialog(saved_id=9)
+    w.update_counters([{"name": "A", "id": 1}, {"name": "B", "id": 2}])
+    assert w.counter_combobox.items[0][1] is None
+    assert "introuvable" in w.counter_combobox.items[0][0]
+    assert w.counter_combobox.currentData() is None
+
+
+def test_update_counters_preserves_unsaved_selection():
+    """L'utilisateur a choisi un autre comptoir sans enregistrer : un
+    rechargement de la liste conserve SON choix, pas celui enregistré."""
+    w = _counter_dialog(saved_id=1)
+    w.counter_combobox.addItem("A", 1)
+    w.counter_combobox.addItem("B", 2)
+    w.counter_combobox.setCurrentIndex(1)   # choix utilisateur : comptoir 2
+    w.update_counters([{"name": "A", "id": 1}, {"name": "B", "id": 2}])
+    assert w.counter_combobox.currentData() == 2
+
+
+def test_update_counters_skips_invalid_ids():
+    w = _counter_dialog()
+    w.update_counters([{"name": "A", "id": "abc"}, {"name": "B", "id": 0},
+                       {"name": "C", "id": 2}])
+    assert w.counter_combobox.items[1:] == [("C", 2)]  # ids invalides ignorés
 
 
 # --- Boutons de test : activation/désactivation -----------------------------
@@ -223,7 +298,11 @@ def _button_dialog():
     w.status_label.setText = lambda t: setattr(w.status_label, "_t", t)
     w.test_button = types.SimpleNamespace(_e=True)
     w.test_button.setEnabled = lambda v: setattr(w.test_button, "_e", v)
-    w.url_input = types.SimpleNamespace(text=lambda: "http://serveur")
+    # Champ URL avec setText : test_url y réécrit la forme normalisée.
+    w._url_text = "http://serveur"
+    w.url_input = types.SimpleNamespace(
+        text=lambda: w._url_text,
+        setText=lambda t: setattr(w, "_url_text", t))
     w.app_secret_input = types.SimpleNamespace(text=lambda: "secret")
     # État « liste des comptoirs » : l'entrée d'attente initiale (libellé +
     # counter_id enregistré) et les couples (URL, secret) suivis par le vrai
@@ -268,6 +347,42 @@ def test_test_url_leaves_button_when_duplicate(monkeypatch):
     w.test_url = types.MethodType(preferences.PreferencesDialog.test_url, w)
     w.test_url()
     assert w.test_button._e is True  # inchangé : aucun test lancé
+
+
+def test_test_url_normalizes_url_before_testing(monkeypatch):
+    """La même normalisation qu'à l'enregistrement : espaces/slash final
+    retirés, forme propre réécrite dans le champ et testée."""
+    seen = {}
+    monkeypatch.setattr(
+        preferences, "TestConnectionWorker",
+        lambda url: (seen.__setitem__("url", url), types.SimpleNamespace(
+            connection_tested=types.SimpleNamespace(connect=lambda f: None)))[1])
+    w = _button_dialog()
+    w._url_text = "  http://serveur/  "
+    w._start_worker = lambda kind, worker: True
+    w.test_url = types.MethodType(preferences.PreferencesDialog.test_url, w)
+    w.test_url()
+    assert seen["url"] == "http://serveur"
+    assert w._url_text == "http://serveur"
+
+
+def test_test_url_refuses_invalid_url(monkeypatch):
+    """Pas de worker sur une URL que l'enregistrement refuserait (schéma non
+    http(s), http distant, vide) : avertissement + message de statut."""
+    built = []
+    warned = []
+    monkeypatch.setattr(preferences, "TestConnectionWorker",
+                        lambda url: built.append(url))
+    monkeypatch.setattr(preferences.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a))
+    w = _button_dialog()
+    w._url_text = "http://serveur-distant.example.com"   # http distant interdit
+    w._start_worker = lambda kind, worker: built.append("started")
+    w.test_url = types.MethodType(preferences.PreferencesDialog.test_url, w)
+    w.test_url()
+    assert built == []
+    assert warned
+    assert "https" in w.status_label._t or "http" in w.status_label._t
 
 
 def test_on_connection_tested_failure_reenables_button():

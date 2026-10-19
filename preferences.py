@@ -1244,11 +1244,18 @@ class PreferencesDialog(QDialog):
         return join_shortcut(modifiers, widget.findChild(QLineEdit).text())
 
     def test_url(self):
-        url = self.url_input.text()
-        if not url:
-            QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
-            self.status_label.setText("L'URL ne peut pas être vide")
+        # Même validation qu'à l'enregistrement (point 8) : on ne lance pas de
+        # test sur une adresse que save_preferences refuserait (vide, espaces,
+        # slash final, schéma non http(s), http distant interdit). L'URL
+        # normalisée est réécrite dans le champ — comme au save — et c'est elle
+        # qui est testée.
+        ok, url, error = validate_server_url(
+            self.url_input.text(), allow_insecure_remote=dev_insecure_allowed())
+        if not ok:
+            QMessageBox.warning(self, "URL invalide", error)
+            self.status_label.setText(error)
             return
+        self.url_input.setText(url)
         if not self.app_secret_input.text():
             QMessageBox.warning(self, "Erreur", "Le secret applicatif ne peut pas être vide")
             self.status_label.setText("Le secret applicatif ne peut pas être vide")
@@ -1340,20 +1347,42 @@ class PreferencesDialog(QDialog):
 
     @Slot(list)
     def update_counters(self, counters):
+        # Comptoir à resélectionner : d'abord la sélection COURANTE du combo —
+        # l'utilisateur a pu choisir un autre comptoir sans encore enregistrer,
+        # un rechargement de la liste ne doit pas reprendre son choix. À défaut
+        # (entrée d'attente sans donnée), le comptoir enregistré.
+        wanted = coerce_counter_id(self.counter_combobox.currentData())
+        if wanted is None:
+            wanted = self.counter_id
         self.counter_combobox.clear()
         for counter in counters:
-            # Champs manquants côté serveur : on ignore l'entrée plutôt que de
-            # lever une KeyError qui interromprait la mise à jour de la liste.
+            # Champs manquants ou identifiant invalide : on ignore l'entrée
+            # plutôt que d'interrompre la mise à jour de la liste. Les ids sont
+            # normalisés en entier (coerce_counter_id) pour que findData compare
+            # des types identiques — un id « 3 » (chaîne) ne correspondrait
+            # jamais à int(3).
             try:
-                self.counter_combobox.addItem(counter['name'], counter['id'])
+                name, cid = counter['name'], coerce_counter_id(counter['id'])
             except (KeyError, TypeError):
                 logger.warning("Comptoir ignoré (champ manquant) : %r", counter)
                 continue
+            if cid is None:
+                logger.warning("Comptoir ignoré (identifiant invalide) : %r", counter)
+                continue
+            self.counter_combobox.addItem(name, cid)
 
-        if self.counter_id:
-            index = self.counter_combobox.findData(int(self.counter_id))
-            if index != -1:
-                self.counter_combobox.setCurrentIndex(index)
+        index = self.counter_combobox.findData(wanted) if wanted else -1
+        if index != -1:
+            self.counter_combobox.setCurrentIndex(index)
+        else:
+            # Le comptoir voulu n'existe pas (ou plus) sur ce serveur : entrée
+            # d'attente SANS donnée plutôt que présélectionner le premier
+            # comptoir — sinon un simple « Enregistrer » changerait de comptoir
+            # silencieusement. L'enregistrement exigera un choix explicite.
+            label = (f"{wanted} - comptoir introuvable sur ce serveur"
+                     if wanted else "Sélectionnez un comptoir...")
+            self.counter_combobox.insertItem(0, label, None)
+            self.counter_combobox.setCurrentIndex(0)
     
     def load_skins(self):
         """Remplit la liste des skins depuis les ressources embarquées.
