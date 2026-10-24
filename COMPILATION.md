@@ -17,12 +17,24 @@ Pour éviter les erreurs connues lors de la compilation :
     de substitution dans `main.py`. Si vous en ajoutez un le temps d'un profilage,
     retirez-le avant de compiler (cf. § Dépannage).
 
-## 2. Le fichier de configuration (.spec)
+## 2. Les fichiers de configuration (.spec)
 
-`PharmaFile.spec` est le **seul** fichier de configuration PyInstaller du projet.
+Deux fichiers `.spec`, et seulement eux, existent à la racine :
+
+- `PharmaFile.spec` : build « dossier », sortie dans `dist/PharmaFile_v3/`
+  (exe + `_internal/`). Format recommandé en usage courant : démarrage rapide.
+- `PharmaFile_onefile.spec` : build « exe unique », sortie `dist/PharmaFile.exe`.
+  Utilisé par la release GitHub pour les utilisateurs qui veulent un seul
+  fichier à copier. Démarrage un peu plus lent (extraction dans `%TEMP%`).
+
 (Un `main.spec` obsolète — sans les exclusions serveur, sans les backends
-`keyring` et sans les dossiers `skins/`/`templates/` — traînait à la racine :
-il a été supprimé pour qu'il n'y ait aucun doute sur le fichier à utiliser.)
+`keyring` et sans les dossiers `skins/`/`templates/` — traînait autrefois à la
+racine : il a été supprimé pour qu'il n'y ait aucun doute sur le fichier à
+utiliser.)
+
+Les deux specs partagent les mêmes listes critiques (exclusions serveur,
+hiddenimports `keyring`, dossiers de données). Un test les compare et bloque
+toute divergence : `tests/test_build_spec.py`.
 
 Il gère déjà l'inclusion des dossiers nécessaires :
 - `assets/` (images, sons)
@@ -55,11 +67,37 @@ pyinstaller --noconfirm --clean PharmaFile.spec
 
 ## 4. Résultat
 
-Une fois terminé, votre application compilée se trouve dans le dossier `dist/PharmaFile/` (ou le nom défini dans le `.spec`).
+Une fois terminé, votre application compilée se trouve dans le dossier `dist/PharmaFile_v3/` (le nom défini dans `coll` du `.spec`).
 
-L'exécutable est : `dist/PharmaFile/PharmaFile.exe`.
+L'exécutable est : `dist/PharmaFile_v3/PharmaFile.exe`.
 
-## 5. Résolution de problèmes courants
+Pour la variante exe unique :
+
+```bash
+pyinstaller --noconfirm --clean PharmaFile_onefile.spec
+```
+
+produit `dist/PharmaFile.exe`.
+
+## 5. Release GitHub (compilation automatisée)
+
+Le workflow `.github/workflows/release.yml` compile les deux formats sur
+`windows-latest` et publie une release GitHub dès qu'un tag `v*` est poussé :
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+La release créée contient :
+
+- `PharmaFile-<tag>-win64.zip` : le dossier complet (exe + `_internal/`) — format recommandé ;
+- `PharmaFile-<tag>-win64.exe` : l'exécutable autonome unique.
+
+Page publique des releases :
+<https://github.com/TherionAcribus/PharmaFile_Counter_app/releases>
+
+## 6. Résolution de problèmes courants
 
 ### Erreur "Permission denied"
 Si la compilation échoue avec une erreur d'accès au fichier `.exe` :

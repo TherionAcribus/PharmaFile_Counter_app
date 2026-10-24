@@ -1,48 +1,92 @@
 """Configuration de build PyInstaller (point 10.6).
 
-Un seul fichier .spec doit exister : un `main.spec` obsolète cohabitait avec
-`PharmaFile.spec`, sans exclusions serveur, sans les backends keyring et sans
-les dossiers `skins/`/`templates/` — compiler avec le mauvais fichier produisait
-un binaire silencieusement dégradé (aucun thème, secret stocké en clair).
+Deux fichiers .spec, et seulement eux, doivent exister :
+- ``PharmaFile.spec``         : build « dossier » (dist/PharmaFile_v3/)
+- ``PharmaFile_onefile.spec`` : build « exe unique » (dist/PharmaFile.exe),
+  utilisé par le workflow de release
+
+Un `main.spec` obsolète cohabitait autrefois avec `PharmaFile.spec`, sans
+exclusions serveur, sans les backends keyring et sans les dossiers
+`skins/`/`templates/` — compiler avec le mauvais fichier produisait un binaire
+silencieusement dégradé (aucun thème, secret stocké en clair). La même
+vigilance s'applique aux deux specs : leurs listes critiques doivent rester
+identiques.
 """
 
 import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPECS = ["PharmaFile.spec", "PharmaFile_onefile.spec"]
 SPEC = os.path.join(APP_DIR, "PharmaFile.spec")
 
 
-def _spec_source():
-    with open(SPEC, encoding="utf-8") as fh:
+def _spec_source(path=SPEC):
+    with open(path, encoding="utf-8") as fh:
         return fh.read()
 
 
-def test_un_seul_fichier_spec():
+def _critical_lists(path):
+    """Extrait les listes SERVER_AND_DEV_EXCLUDES, KEYRING_HIDDENIMPORTS et
+    datas d'un fichier .spec, pour comparaison entre les deux specs."""
+    tree = ast.parse(_spec_source(path), filename=os.path.basename(path))
+    constants = {}
+    datas = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in (
+                    "SERVER_AND_DEV_EXCLUDES",
+                    "KEYRING_HIDDENIMPORTS",
+                ):
+                    constants[target.id] = ast.literal_eval(node.value)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Analysis":
+            for kw in node.keywords:
+                if kw.arg == "datas":
+                    datas = ast.literal_eval(kw.value)
+    return constants, datas
+
+
+def test_fichiers_spec():
     specs = sorted(n for n in os.listdir(APP_DIR) if n.endswith(".spec"))
-    assert specs == ["PharmaFile.spec"], f"fichiers .spec inattendus : {specs}"
+    assert specs == SPECS, f"fichiers .spec inattendus : {specs}"
 
 
-def test_spec_est_du_python_valide():
-    ast.parse(_spec_source(), filename="PharmaFile.spec")
+def test_specs_sont_du_python_valide():
+    for name in SPECS:
+        ast.parse(
+            _spec_source(os.path.join(APP_DIR, name)),
+            filename=name,
+        )
 
 
 def test_toutes_les_ressources_embarquees():
     """Les dossiers lus par resources.py doivent être embarqués."""
-    source = _spec_source()
-    for folder in ("assets", "skins", "templates"):
-        assert f"('{folder}', '{folder}')" in source, folder
+    for name in SPECS:
+        source = _spec_source(os.path.join(APP_DIR, name))
+        for folder in ("assets", "skins", "templates"):
+            assert f"('{folder}', '{folder}')" in source, f"{name}: {folder}"
 
 
 def test_backends_keyring_forces():
     """Sans ces imports cachés, le binaire gelé ne trouve aucun backend et le
     secret applicatif retombe sur un stockage en clair."""
-    source = _spec_source()
-    assert "keyring.backends.Windows" in source
-    assert "win32ctypes.core" in source
+    for name in SPECS:
+        source = _spec_source(os.path.join(APP_DIR, name))
+        assert "keyring.backends.Windows" in source, name
+        assert "win32ctypes.core" in source, name
 
 
 def test_dependances_serveur_exclues():
-    source = _spec_source()
-    for module in ("flask", "sqlalchemy", "pytest", "line_profiler"):
-        assert f"'{module}'" in source, module
+    for name in SPECS:
+        source = _spec_source(os.path.join(APP_DIR, name))
+        for module in ("flask", "sqlalchemy", "pytest", "line_profiler"):
+            assert f"'{module}'" in source, f"{name}: {module}"
+
+
+def test_listes_critiques_synchronisees():
+    """Les deux specs doivent embarquer les mêmes exclusions, hiddenimports et
+    dossiers de ressources — sinon l'un des deux binaires serait dégradé."""
+    reference = _critical_lists(SPEC)
+    onefile = _critical_lists(os.path.join(APP_DIR, "PharmaFile_onefile.spec"))
+    assert onefile == reference
