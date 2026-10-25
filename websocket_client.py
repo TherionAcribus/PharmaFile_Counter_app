@@ -191,6 +191,18 @@ class WebSocketClient(QThread):
     def on_connect(self):
         logger.info("WebSocket connecté")
         self.ws_connection_status.emit(True, 0, True)
+        # Le serveur place le sid dans la room messaging_counter_<id> pour ne
+        # recevoir que les messaging_changed qui concernent ce comptoir. La
+        # room est attachée au sid, donc perdue à chaque (re)connexion : il
+        # faut la redemander à chaque connect.
+        counter_id = getattr(self.parent, "counter_id", None)
+        if counter_id:
+            try:
+                self.sio.emit("join_messaging_room",
+                              {"counter_id": int(counter_id)},
+                              namespace='/socket_app_counter')
+            except Exception as e:
+                logger.warning("Déclaration du comptoir à la room messaging échouée : %s", e)
 
     def on_disconnect(self):
         logger.info("WebSocket déconnecté")
