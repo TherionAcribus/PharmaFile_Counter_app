@@ -61,6 +61,15 @@ resource_path = resources.resource_path
 #: colonne de ~300 px logiques sans déborder.
 ACTIVITY_LABEL_MAX = 34
 
+#: Délai avant la première re-vérification d'état quand le compte à rebours
+#: « Prolonger » affiche 0 : le job serveur de validation automatique tourne
+#: toutes les 5 s — on lui laisse le temps de trancher avant de resynchroniser.
+EXPIRED_CALL_RECHECK_DELAY_S = 6
+#: Périodicité des re-vérifications tant que le serveur n'a pas confirmé la
+#: validation automatique : couvre la perte d'un évènement temps réel
+#: (coupure socket, conteneur « scheduler » sans file de messages partagée).
+EXPIRED_CALL_RECHECK_PERIOD_S = 15
+
 
 def _elide(text, limit=ACTIVITY_LABEL_MAX):
     """ Compacte les espaces/retours et tronque avec « … » au-delà de ``limit``
@@ -174,6 +183,7 @@ class MainWindow(QMainWindow):
         self.call_auto_validation = {"enabled": False}
         self._auto_warning_active = False
         self._auto_warning_key = None
+        self._expired_resync_at = None
         self._validate_blink_highlighted = False
         # Équipiers pour qui la recherche d'un profil de préférences serveur a
         # déjà été tentée dans cette session : pas de requête ni de question
@@ -2502,10 +2512,30 @@ class MainWindow(QMainWindow):
         state = resolve_call_auto_validation(
             self.my_patient, self.call_auto_validation)
         if not state.armed:
+            self._expired_resync_at = None
             self.call_deadline_timer.stop()
             self._clear_call_extension_warning()
             return
         self._render_call_auto_validation(state)
+        self._maybe_resync_expired_call(state)
+
+    def _maybe_resync_expired_call(self, state):
+        """Auto-guérison : l'échéance affiche 0 mais le serveur n'a pas encore
+        confirmé la validation — l'évènement temps réel a pu être perdu. On
+        redemande alors l'état autoritatif, d'abord après un court délai (le
+        job serveur tourne toutes les 5 s) puis périodiquement tant que le
+        compteur reste bloqué à 0."""
+        if state.remaining_seconds > 0:
+            self._expired_resync_at = None
+            return
+        now = time.monotonic()
+        if self._expired_resync_at is None:
+            self._expired_resync_at = now + EXPIRED_CALL_RECHECK_DELAY_S
+            return
+        if now < self._expired_resync_at:
+            return
+        self._expired_resync_at = now + EXPIRED_CALL_RECHECK_PERIOD_S
+        self._request_resync()
 
     def _render_call_auto_validation(self, state):
         if not state.warning_active:
