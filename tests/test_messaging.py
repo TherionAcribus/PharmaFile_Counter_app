@@ -1460,6 +1460,29 @@ def test_read_receipt_is_discreet_grey():
     assert "color:#6b7280" in controller.thread.toHtml()
 
 
+def test_delivered_receipt_shows_remis_until_read():
+    # « Remis » (l'app du destinataire a récupéré le message) se distingue
+    # de « Lu » (consultation réelle) : Lu prime quand les deux existent.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "remis ?",
+         "delivered_at": "2025-01-01T10:00:00",
+         "sender": {"name": "Alice", "staff_id": 1}},
+    ])
+    html_out = controller.thread.toHtml()
+    assert "Remis" in html_out and "Lu" not in html_out
+    _feed(controller, window.api, [
+        {"id": 1, "body": "vu ?", "delivered_at": "2025-01-01T10:00:00",
+         "read_at": "2025-01-01T10:05:00",
+         "sender": {"name": "Alice", "staff_id": 1}},
+    ])
+    html_out = controller.thread.toHtml()
+    assert "Lu" in html_out and "Remis" not in html_out
+
+
 # --- Alerte barre des tâches ---------------------------------------------------
 
 def test_new_message_flashes_taskbar_when_window_inactive(monkeypatch):

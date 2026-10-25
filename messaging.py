@@ -1242,9 +1242,13 @@ class MessagingController(QObject):
             name = "Vous" if mine else html.escape(str(sender.get("name") or "Inconnu"))
             timestamp = self._format_time(message.get("created_at"))
             body = html.escape(str(message.get("body") or "")).replace("\n", "<br>")
-            # « · Lu » en gris discret : utile à l'expéditeur, sans crier.
-            receipt = (' · <span style="color:#6b7280">Lu</span>'
-                       if mine and message.get("read_at") else "")
+            # Accusés en gris discret : « Lu » (consultation réelle) prime,
+            # sinon « Remis » (l'app du destinataire a récupéré le message).
+            receipt = ""
+            if mine and message.get("read_at"):
+                receipt = ' · <span style="color:#6b7280">Lu</span>'
+            elif mine and message.get("delivered_at"):
+                receipt = ' · <span style="color:#6b7280">Remis</span>'
             # Repère visuel posé juste avant le PREMIER message entrant non
             # lu — uniquement si des messages le précèdent : un fil 100 %
             # non lu se suffit (le repère n'apparaît pas entre les non-lus
