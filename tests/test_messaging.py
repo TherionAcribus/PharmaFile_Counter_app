@@ -377,6 +377,48 @@ def test_mark_read_only_when_dock_is_visible():
     assert any(call[:2] == ("read", [4]) for call in window.api.calls)
 
 
+def test_mark_read_skipped_while_window_is_minimized(monkeypatch):
+    # Fenêtre réduite : le dock reste « visible » pour Qt, mais personne ne
+    # peut lire le fil — aucun accusé « Lu » ne doit partir.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    controller.messages = [{"id": 4, "is_unread": True}]
+    monkeypatch.setattr(window, "isMinimized", lambda: True)
+    controller._mark_visible_read()
+    assert not any(call[0] == "read" for call in window.api.calls)
+
+
+def test_window_restored_marks_pending_unread_messages(monkeypatch):
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    controller.messages = [{"id": 4, "is_unread": True},
+                           {"id": 5, "is_unread": True}]
+    # Réduite pendant l'arrivée des messages : rien n'est accusé.
+    monkeypatch.setattr(window, "isMinimized", lambda: True)
+    controller._mark_visible_read()
+    assert not any(call[0] == "read" for call in window.api.calls)
+    # Restauration : les non-lus affichés pendant l'absence deviennent lisibles.
+    monkeypatch.setattr(window, "isMinimized", lambda: False)
+    controller.on_window_restored()
+    assert any(call[:2] == ("read", [4, 5]) for call in window.api.calls)
+
+
+def test_mark_read_skipped_while_window_is_hidden(monkeypatch):
+    # Fenêtre masquée (systray) : même constat — pas de « Lu » mensonger.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    controller.messages = [{"id": 4, "is_unread": True}]
+    monkeypatch.setattr(window, "isVisible", lambda: False)
+    controller._mark_visible_read()
+    assert not any(call[0] == "read" for call in window.api.calls)
+
+
 def test_socket_disable_removes_every_entry_point():
     _window, controller = _controller()
     controller.set_enabled(True)

@@ -2,7 +2,7 @@ import sys
 import time
 from functools import partial
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QDialog
-from PySide6.QtCore import Signal, Slot, QSettings, QTimer, Qt
+from PySide6.QtCore import Signal, Slot, QSettings, QTimer, Qt, QEvent
 from PySide6.QtGui import QIcon, QAction
 
 from websocket_client import WebSocketClient
@@ -849,6 +849,25 @@ class MainWindow(QMainWindow):
         décidé par ``WindowPlacement``."""
         super().moveEvent(event)
         self.placement.on_window_moved()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # Sortie de réduction : le panneau de messagerie redevient lisible —
+        # les messages affichés mais non lus peuvent être accusés.
+        if event.type() == QEvent.Type.WindowStateChange and not self.isMinimized():
+            self._notify_window_restored()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._notify_window_restored()
+
+    def _notify_window_restored(self):
+        messaging = getattr(self, "messaging", None)
+        if messaging is not None:
+            try:
+                messaging.on_window_restored()
+            except RuntimeError:
+                pass
 
     def reset_window_position(self):
         """Réinitialise la géométrie mémorisée de la fenêtre. Délègue à

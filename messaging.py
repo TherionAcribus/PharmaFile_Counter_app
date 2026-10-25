@@ -652,6 +652,15 @@ class MessagingController:
         # l'expéditeur recevrait un accusé « Lu » à tort.
         if not self.dock or not dock_in_front(self.dock):
             return
+        # La fenêtre réduite ou masquée (systray) laisse le dock « visible »
+        # pour Qt : sans ce garde, l'expéditeur recevrait un « Lu » mensonger
+        # alors que personne ne peut lire le fil.
+        window = self.window
+        try:
+            if not window.isVisible() or window.isMinimized():
+                return
+        except RuntimeError:
+            return  # fenêtre détruite : rien à marquer
         ids = [item.get("id") for item in self.messages if item.get("is_unread")]
         ids = [value for value in ids if value is not None]
         if ids:
@@ -659,6 +668,11 @@ class MessagingController:
                 ids,
                 on_result=self._network_callback(
                     lambda _result: self.request_state()))
+
+    def on_window_restored(self):
+        """Fenêtre restaurée (dé-réduite, sortie du systray) : les non-lus
+        affichés pendant l'absence deviennent réellement lisibles."""
+        self._mark_visible_read()
 
     def _update_composer(self):
         conversation = self._selected()
