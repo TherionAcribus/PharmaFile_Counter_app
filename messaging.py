@@ -567,6 +567,17 @@ class MessagingController:
                 return
             if isinstance(result.data, dict) and result.data.get("error") == "messaging_disabled":
                 self.set_enabled(False)
+            else:
+                # Un refus persistant (staff_not_connected : l'agent n'est
+                # plus rattaché au comptoir côté serveur, ou counter_id
+                # erroné) était jusqu'ici invisible : les heartbeats
+                # échouaient en silence et l'équipier restait « hors ligne »
+                # pour tous. Le journal est la seule trace de ce diagnostic.
+                logger = getattr(self.window, "logger", None)
+                if logger is not None:
+                    logger.warning(
+                        "Réponse messagerie inattendue (statut=%s, data=%s)",
+                        result.status, result.data)
         finally:
             # Une demande d'état reçue pendant le vol de cette requête
             # (refusée comme doublon, _state_pending) est honorée maintenant
