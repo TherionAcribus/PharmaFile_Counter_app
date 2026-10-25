@@ -70,6 +70,17 @@ EXPIRED_CALL_RECHECK_DELAY_S = 6
 #: (coupure socket, conteneur « scheduler » sans file de messages partagée).
 EXPIRED_CALL_RECHECK_PERIOD_S = 15
 
+#: Périodicité du chien de garde de fraîcheur de la file. Socket.IO n'est
+#: qu'une notification : si un évènement n'est jamais émis ou livré (échec
+#: serveur après commit, coupure TCP silencieuse, réplica sans file de
+#: messages partagée), seule la resync HTTP — indépendante du socket — fait
+#: converger l'affichage.
+FRESHNESS_WATCHDOG_PERIOD_S = 60
+#: Silence sans application d'état de file au-delà duquel le watchdog
+#: resynchronise même quand la liaison se dit « connected » : une émission
+#: perdue est indistinguable d'une file simplement calme.
+QUEUE_MAX_SILENCE_S = 240
+
 
 def _elide(text, limit=ACTIVITY_LABEL_MAX):
     """ Compacte les espaces/retours et tronque avec « … » au-delà de ``limit``
@@ -159,6 +170,16 @@ class MainWindow(QMainWindow):
         self.realtime_health_timer.setInterval(REPORT_INTERVAL_SECONDS * 1000)
         self.realtime_health_timer.timeout.connect(self._report_realtime_health)
         self.realtime_health_timer.start()
+
+        # Chien de garde de fraîcheur : la liste doit converger même si une
+        # notification Socket.IO n'arrive jamais (émission serveur perdue après
+        # commit, coupure silencieuse). La resync passe par HTTP, indépendante
+        # du socket — cf. _freshness_watchdog_tick.
+        self._queue_refresh_at = None
+        self.freshness_watchdog_timer = QTimer(self)
+        self.freshness_watchdog_timer.setInterval(FRESHNESS_WATCHDOG_PERIOD_S * 1000)
+        self.freshness_watchdog_timer.timeout.connect(self._freshness_watchdog_tick)
+        self.freshness_watchdog_timer.start()
 
         # Placement de la fenêtre (point 10.12) : géométrie persistée,
         # garde-fou multi-écran, mode panneau compact et magnétisme aux bords.
@@ -1270,6 +1291,29 @@ class MainWindow(QMainWindow):
         les demandes reçues entretemps. """
         self.session.request_resync(self._on_resync_ready)
 
+    def _freshness_watchdog_tick(self):
+        """ Resynchronise la file quand le temps réel ne prouve plus la
+        fraîcheur de l'affichage : liaison coupée ou « connected » mais sans
+        état appliqué depuis QUEUE_MAX_SILENCE_S (évènement perdu —
+        indistinguable d'une file calme). La resync passe par HTTP,
+        indépendante du socket, et session.request_resync coalesce les
+        passes simultanées. """
+        if getattr(self, "shutting_down", False):
+            return
+        if not (isinstance(self.staff_id, int) and self.staff_id):
+            return  # écran de connexion : pas de file affichée
+        last = getattr(self, "_queue_refresh_at", None)
+        stale_link = getattr(self, "_rt_status", "connecting") != "connected"
+        silent = last is None or (time.monotonic() - last) >= QUEUE_MAX_SILENCE_S
+        if not (stale_link or silent):
+            return
+        self.logger.info(
+            "Watchdog fraîcheur : resync (liaison=%s, dernier état %s)",
+            getattr(self, "_rt_status", "?"),
+            "jamais appliqué" if last is None
+            else f"il y a {int(time.monotonic() - last)} s")
+        self._request_resync()
+
     def patient_already_taken(self):
         self.logger.debug("Patient déjà attribué à un autre comptoir")
         self._safe_widget(
@@ -1372,6 +1416,7 @@ class MainWindow(QMainWindow):
         """ Applique effectivement la snapshot et rafraîchit l'UI (patient courant,
         liste, papier, autocalling ET staff). """
         self._apply_state(state)
+        self._queue_refresh_at = time.monotonic()
         self.realtime_health.record_resync_applied()
 
         # Staff en premier : peut faire basculer entre l'écran de connexion et
@@ -2272,6 +2317,7 @@ class MainWindow(QMainWindow):
 
         # mise à jour de self.patient
         self.list_patients = patient
+        self._queue_refresh_at = time.monotonic()
         self.refresh_patient_lists()
 
 
