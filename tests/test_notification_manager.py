@@ -331,3 +331,57 @@ def test_queued_sticky_keeps_its_flag(main_window):
     visible.close()
     assert len(mgr.active_notifications) == 1
     assert not mgr.active_notifications[0]._close_timer.isActive()
+
+
+# --- Clic sur une notification : action associée (messagerie) -------------
+
+class FakeClickManager:
+    """Gestionnaire minimal enregistrant les clics de notifications."""
+
+    def __init__(self):
+        self.clicked = []
+
+    def on_notification_clicked(self, notif):
+        self.clicked.append(notif)
+
+
+def test_notification_keeps_the_full_data_dict(main_window):
+    # Certaines origines transportent des données utiles au clic
+    # (messagerie : la clé de la conversation à ouvrir).
+    data = {"origin": "messaging", "message": "m", "conversation_key": "direct:2"}
+    notif = CustomNotification(data=data, parent=main_window, internal=True)
+    assert notif.data == data
+
+
+def test_click_notifies_manager_then_closes(main_window):
+    manager = FakeClickManager()
+    notif = CustomNotification(data={"origin": "messaging", "message": "m"},
+                               parent=main_window, internal=True,
+                               manager=manager)
+    notif.show()
+    notif.mousePressEvent(None)
+    assert manager.clicked == [notif]
+    assert not notif.isVisible()
+
+
+def test_click_without_manager_still_closes(main_window):
+    # Notification créée hors gestionnaire : le clic ferme, sans action.
+    notif = CustomNotification(data=_data(), parent=main_window, internal=True)
+    notif.show()
+    notif.mousePressEvent(None)
+    assert not notif.isVisible()
+
+
+def test_manager_delegates_click_to_the_main_window(main_window):
+    calls = []
+    main_window.on_notification_clicked = (
+        lambda origin, data: calls.append((origin, data)))
+    mgr = NotificationManager(main_window)
+    notif = mgr.notify({"origin": "messaging", "message": "m",
+                        "conversation_key": "direct:2"}, internal=True)
+
+    notif.mousePressEvent(None)
+
+    assert calls == [("messaging", {"origin": "messaging", "message": "m",
+                                    "conversation_key": "direct:2"})]
+    assert mgr.active_notifications == []

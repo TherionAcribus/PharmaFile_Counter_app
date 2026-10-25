@@ -2360,6 +2360,15 @@ class MainWindow(QMainWindow):
             return False
         return patient_id != getattr(self, "patient_id", None)
 
+    def on_notification_clicked(self, origin, data):
+        """Clic sur une notification (relais du NotificationManager). La
+        messagerie ouvre son panneau sur la conversation concernée ; toutes
+        les autres origines gardent le comportement « clic = fermer »."""
+        if origin == "messaging":
+            messaging = getattr(self, "messaging", None)
+            if messaging is not None:
+                messaging.open_from_notification(data)
+
     def play_notification_sound(self, origin, sound):
         """Joue un son d'alerte NON accompagné d'une notification (p. ex. patient
         déjà pris). Respecte la préférence de son de la catégorie correspondante,

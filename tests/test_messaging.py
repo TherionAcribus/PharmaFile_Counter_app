@@ -854,3 +854,108 @@ def test_broadcast_checked_checkbox_sends_scope_online_with_online_count():
     assert "0 personne(s) connectée(s)" in controller.status_label.text()
     controller.send()
     assert _sends(window.api)[-1][5] == "online"
+
+
+# --- Clic sur une notification « Nouveau message » : ouverture du bon fil ---
+
+def test_new_message_notification_carries_direct_conversation_key():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._pending_event = {
+        "message_id": 9, "kind": "direct", "sender_staff_id": 2,
+        "sender_name": "Bob",
+    }
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert window.notifications[0][0] == {
+        "origin": "messaging",
+        "message": "Nouveau message de Bob.",
+        "conversation_key": "direct:2",
+    }
+
+
+def test_new_message_notification_carries_broadcast_conversation_key():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._pending_event = {
+        "message_id": 9, "kind": "broadcast", "sender_staff_id": 2,
+        "sender_name": "Bob",
+    }
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert window.notifications[0][0]["conversation_key"] == "broadcast"
+
+
+def test_event_without_sender_uses_neutral_text_and_no_key():
+    # Payload {"read": True} (accusé de lecture) : pas d'expéditeur — le
+    # texte est neutre et la notification ne cible aucune conversation.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._pending_event = {"read": True}
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert window.notifications[0][0] == {
+        "origin": "messaging", "message": "Nouveau message.",
+    }
+
+
+def test_open_from_notification_selects_direct_conversation():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    controller.dock.hide()
+
+    controller.open_from_notification({"conversation_key": "direct:2"})
+
+    assert not controller.dock.isHidden()
+    assert controller.selector.currentData() == "direct:2"
+
+
+def test_open_from_notification_selects_broadcast():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+
+    controller.open_from_notification({"conversation_key": "broadcast"})
+
+    assert not controller.dock.isHidden()
+    assert controller.selector.currentData() == "broadcast"
+
+
+def test_open_from_notification_without_key_keeps_selection():
+    # Notification « Vous avez N message(s) non lu(s). » : pas de clé — le
+    # panneau s'ouvre sur la conversation déjà sélectionnée.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    controller.dock.hide()
+
+    controller.open_from_notification({})
+
+    assert not controller.dock.isHidden()
+    assert controller.selector.currentData() == "direct:2"
+
+
+def test_open_restores_minimized_window(monkeypatch):
+    # Fenêtre réduite au moment du clic : elle est restaurée, sinon
+    # l'ouverture du panneau resterait invisible.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    monkeypatch.setattr(window, "isMinimized", lambda: True)
+    restored = []
+    monkeypatch.setattr(window, "showNormal", lambda: restored.append(True))
+
+    controller.open_from_notification({"conversation_key": "direct:2"})
+
+    assert restored == [True]
+    assert controller.selector.currentData() == "direct:2"
+
+
+def test_open_does_nothing_when_feature_is_disabled():
+    _window, controller = _controller()      # jamais activée
+    controller.open_from_notification({"conversation_key": "direct:2"})
+    assert controller.dock is None

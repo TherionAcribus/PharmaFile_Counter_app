@@ -136,6 +136,14 @@ class NotificationManager:
                          origin, len(visible), len(queued))
         return len(queued) + len(visible)
 
+    def on_notification_clicked(self, notif):
+        """Clic sur une notification affichée : délégué à la fenêtre
+        principale, seule à savoir quoi faire de chaque origine (messagerie :
+        ouvrir le panneau sur la conversation concernée)."""
+        callback = getattr(self.main_window, "on_notification_clicked", None)
+        if callable(callback):
+            callback(notif.origin, getattr(notif, "data", None))
+
     def update_positions(self):
         """Repositionne toutes les notifications visibles sur l'écran courant de
         la fenêtre principale (et non plus toujours l'écran principal)."""
@@ -313,6 +321,10 @@ class CustomNotification(QDialog):
             except json.JSONDecodeError:
                 logger.error("Données de notification illisibles (JSON invalide)")
 
+        # Le dict complet est conservé : certaines origines y transportent
+        # des données utiles au clic (messagerie : conversation_key du fil
+        # à ouvrir). Voir NotificationManager.on_notification_clicked.
+        self.data = notification_data
         self.origin = notification_data["origin"]
         logger.debug("Notification affichée (origin=%s)", self.origin)
         self.message = notification_data["message"]
@@ -373,6 +385,12 @@ class CustomNotification(QDialog):
         super().closeEvent(event)
 
     def mousePressEvent(self, event):
+        # Un clic ferme toujours la notification, mais certaines origines y
+        # associent une action (messagerie : ouvrir le panneau sur le bon
+        # fil) — le gestionnaire délègue à la fenêtre principale.
+        handler = getattr(self.manager, "on_notification_clicked", None)
+        if callable(handler):
+            handler(self)
         self.close()
 
     def keyPressEvent(self, event):

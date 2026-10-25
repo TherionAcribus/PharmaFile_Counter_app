@@ -421,6 +421,32 @@ class MessagingController:
         if toggle_dock(self.dock):
             self.request_state()
 
+    def open(self, conversation_key=None):
+        """Ouvre le panneau au premier plan et sélectionne la conversation
+        demandée — utilisé au clic sur une notification de messagerie."""
+        if not self.enabled or not self.staff_id:
+            return
+        self._ensure_dock()
+        # Fenêtre réduite quand on clique la notification : la restaurer,
+        # sinon l'ouverture du panneau reste invisible.
+        if self.window.isMinimized():
+            self.window.showNormal()
+        # show()/raise_(), jamais toggle()/toggle_dock : elles masqueraient
+        # un panneau déjà au premier plan.
+        self.dock.show()
+        self.dock.raise_()
+        if conversation_key and self.selector is not None:
+            index = self.selector.findData(conversation_key)
+            if index >= 0:
+                self.selector.setCurrentIndex(index)
+        # _visibility_changed/_conversation_changed déclenchent déjà
+        # request_state/mark_read ; cet appel couvre le cas « dock déjà
+        # visible et conversation déjà sélectionnée ».
+        self.request_state()
+
+    def open_from_notification(self, data):
+        self.open((data or {}).get("conversation_key"))
+
     def _visibility_changed(self, visible):
         if self.dock is None or self._arranging or self.arranger.busy:
             # Déplacement programmatique en cours : ce changement n'est pas un
@@ -501,11 +527,28 @@ class MessagingController:
                 self._populate_conversations()
                 self._update_badge()
                 if self.unread_total > previous_unread and self._pending_event:
-                    sender = self._pending_event.get("sender_name") or "un professionnel"
-                    self.window.show_notification({
+                    event = self._pending_event
+                    sender = event.get("sender_name")
+                    notification = {
                         "origin": "messaging",
-                        "message": f"Nouveau message de {sender}.",
-                    }, internal=True)
+                        # Événement sans expéditeur (accusé de lecture, par
+                        # exemple un payload {"read": True}) : pas de nom à
+                        # afficher, texte de repli neutre.
+                        "message": (f"Nouveau message de {sender}." if sender
+                                    else "Nouveau message."),
+                    }
+                    # Un clic sur la notification ouvre le panneau sur la
+                    # conversation concernée : on transporte la clé du fil
+                    # (cf. open_from_notification).
+                    if event.get("kind") == "broadcast":
+                        conversation_key = "broadcast"
+                    elif event.get("sender_staff_id"):
+                        conversation_key = f"direct:{event.get('sender_staff_id')}"
+                    else:
+                        conversation_key = None
+                    if conversation_key is not None:
+                        notification["conversation_key"] = conversation_key
+                    self.window.show_notification(notification, internal=True)
                 elif not self._baseline_known and self.unread_total > 0:
                     # Première réponse d'état de la session (connexion ou
                     # reconnexion) : rappeler les non-lus accumulés pendant
