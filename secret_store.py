@@ -26,8 +26,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Namespace de l'entrée dans le magasin d'identifiants.
-SERVICE_NAME = "GestionFile-AppComptoir"
+SERVICE_NAME = "Flowelis-Comptoir"
 SECRET_ENTRY = "app_secret"
+
+# Anciens namespaces, de la plus récente à la plus ancienne version. Le service
+# a été renommé avec la marque : une valeur déjà enregistrée sous l'ancien nom
+# est reprise au premier ``load_secret`` (copie conservatrice, l'ancienne entrée
+# est conservée pour permettre un retour à une version antérieure).
+LEGACY_SERVICE_NAMES = ("GestionFile-AppComptoir",)
 
 # Clé QSettings historique (secret en clair) : lue pour migration, puis effacée.
 _LEGACY_QSETTINGS_KEY = "app_secret"
@@ -46,13 +52,33 @@ except Exception as exc:  # pragma: no cover - dépend de l'environnement
 
 
 def _keyring_get():
+    return _keyring_get_service(SERVICE_NAME)
+
+
+def _keyring_get_service(service):
+    """Lecture dans le magasin sous le namespace ``service``, ``None`` si
+    keyring est indisponible ou si la lecture échoue."""
     if not _KEYRING_AVAILABLE:
         return None
     try:
-        return keyring.get_password(SERVICE_NAME, SECRET_ENTRY)
+        return keyring.get_password(service, SECRET_ENTRY)
     except (KeyringError, Exception) as exc:  # pragma: no cover
         logger.warning("Lecture keyring impossible (%s) : repli sur QSettings.", exc)
         return None
+
+
+def _migrate_legacy_service():
+    """Reprend le secret enregistré sous un ancien namespace (renommage de
+    marque). L'entrée d'origine est conservée : un retour à une version
+    antérieure du client la retrouve encore."""
+    for service in LEGACY_SERVICE_NAMES:
+        value = _keyring_get_service(service)
+        if value:
+            _keyring_set(value)
+            logger.info(
+                "Secret applicatif repris depuis l'ancien namespace « %s ».", service)
+            return value
+    return None
 
 
 def _keyring_set(value) -> bool:
@@ -74,6 +100,11 @@ def load_secret(settings) -> str:
     chaîne vide.
     """
     secret = _keyring_get()
+    if secret:
+        return secret
+
+    # Reprise d'un secret enregistré sous un ancien namespace de marque.
+    secret = _migrate_legacy_service()
     if secret:
         return secret
 
@@ -101,6 +132,8 @@ def secret_storage(settings) -> str:
     (magasin sécurisé), ``STORAGE_SETTINGS`` (repli en clair dans QSettings) ou
     ``STORAGE_NONE``. Sert à AFFICHER l'état sans jamais montrer la valeur."""
     if _keyring_get():
+        return STORAGE_KEYRING
+    if any(_keyring_get_service(s) for s in LEGACY_SERVICE_NAMES):
         return STORAGE_KEYRING
     if settings.value(_LEGACY_QSETTINGS_KEY, "") or "":
         return STORAGE_SETTINGS

@@ -1,9 +1,10 @@
 """Identité applicative et reprise des réglages hérités (point 10.5).
 
-L'ancienne identité d'exemple (« MyCompany2 » / « PySide6 Web Browser Example2 »)
-déterminait l'emplacement de QSettings : la renommer sans reprise ferait
-redémarrer chaque poste avec une configuration vierge (URL du serveur et
-comptoir perdus). Ces tests vérifient les deux moitiés du renommage.
+L'emplacement de QSettings dépend du couple organisation/application : renommer
+sans reprise ferait redémarrer chaque poste avec une configuration vierge (URL
+du serveur et comptoir perdus). Ces tests vérifient les deux moitiés du
+renommage — d'abord « PharmaFile »/« AppComptoir » (depuis l'identité
+d'exemple), désormais « Flowelis »/« Comptoir » (marque Flowelis v1).
 """
 
 import os
@@ -13,8 +14,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app_identity import (  # noqa: E402
-    APPLICATION_NAME, LEGACY_IDENTITIES, MIGRATION_MARKER_KEY, ORGANIZATION_NAME,
-    apply_identity, legacy_sources, migrate_legacy_settings,
+    APPLICATION_NAME, DISPLAY_NAME, LEGACY_IDENTITIES, MIGRATION_MARKER_KEY,
+    ORGANIZATION_NAME, apply_identity, legacy_sources, migrate_legacy_settings,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,33 +50,41 @@ LEGACY_CONFIG = {
 
 # --- identité ---------------------------------------------------------------
 
-def test_identite_sans_residu_d_exemple():
+def test_identite_flowelis_sans_residu():
     for value in (ORGANIZATION_NAME, APPLICATION_NAME):
         assert "Example" not in value
         assert "MyCompany" not in value
-    assert ORGANIZATION_NAME == "PharmaFile"
+        assert "PharmaFile" not in value
+    assert (ORGANIZATION_NAME, APPLICATION_NAME) == ("Flowelis", "Comptoir")
+    assert DISPLAY_NAME == "Flowelis Comptoir"
 
 
 def test_apply_identity_pose_les_deux_noms():
     class FakeApp:
         def __init__(self):
-            self.org = self.name = self.domain = None
+            self.org = self.name = self.domain = self.display = None
         def setOrganizationName(self, v):
             self.org = v
         def setApplicationName(self, v):
             self.name = v
+        def setApplicationDisplayName(self, v):
+            self.display = v
         def setOrganizationDomain(self, v):  # ne doit pas être appelé
             self.domain = v
 
     app = FakeApp()
     apply_identity(app)
     assert (app.org, app.name) == (ORGANIZATION_NAME, APPLICATION_NAME)
+    assert app.display == DISPLAY_NAME
     # Le domaine fictif « mycompany.com » n'est plus déclaré (il primerait sur le
     # nom d'organisation sous macOS).
     assert app.domain is None
 
 
-def test_ancienne_identite_conservee_comme_source_de_reprise():
+def test_anciennes_identites_conservees_comme_sources_de_reprise():
+    """Chaque identité passée reste une source de reprise, de la plus récente à
+    la plus ancienne : PharmaFile d'abord, identité d'exemple ensuite."""
+    assert LEGACY_IDENTITIES[0] == ("PharmaFile", "AppComptoir")
     assert ("MyCompany2", "PySide6 Web Browser Example2") in LEGACY_IDENTITIES
 
 
@@ -199,9 +208,13 @@ def test_setup_application_applique_identite_et_reprise(monkeypatch):
             ordre.append(("org", v))
         def setApplicationName(self, v):
             ordre.append(("app", v))
+        def setApplicationDisplayName(self, v):
+            ordre.append(("display", v))
+        def setWindowIcon(self, v):
+            ordre.append(("icon", v))
 
     monkeypatch.setattr(main, "migrate_legacy_settings",
                         lambda target, sources: ordre.append(("migration", None)))
     monkeypatch.setattr(main, "legacy_sources", lambda factory: [])
     main.setup_application(FakeApp())
-    assert [step for step, _ in ordre] == ["org", "app", "migration"]
+    assert [step for step, _ in ordre] == ["org", "app", "display", "icon", "migration"]

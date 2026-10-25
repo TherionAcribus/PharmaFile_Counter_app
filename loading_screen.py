@@ -7,9 +7,11 @@ est active — il branche pour cela un handler sur ``AppLogger``.
 """
 
 from PySide6.QtCore import QCoreApplication, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 
 from my_logger import AppLogger
+from resources import resource_path
 
 
 class LoadingScreen(QWidget):
@@ -21,8 +23,8 @@ class LoadingScreen(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PharmaFile")
-        self.setFixedSize(400, 200)
+        self.setWindowTitle("Flowelis Comptoir")
+        self.setFixedSize(400, 260)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         # Configuration de l'interface utilisateur
@@ -39,6 +41,15 @@ class LoadingScreen(QWidget):
     def _setup_ui(self):
         """Configure l'interface utilisateur"""
         layout = QVBoxLayout()
+
+        logo = QLabel()
+        pixmap = QPixmap(resource_path("assets/images/flowelis-logo.png"))
+        if not pixmap.isNull():
+            logo.setPixmap(pixmap.scaledToWidth(
+                180, Qt.SmoothTransformation))
+        logo.setAlignment(Qt.AlignCenter)
+        layout.addWidget(logo)
+
         self.label = QLabel("Logging de l'application...")
         self.progress = QPlainTextEdit()
         self.progress.setReadOnly(True)

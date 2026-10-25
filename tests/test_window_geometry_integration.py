@@ -39,8 +39,8 @@ class GeoWindow(QMainWindow):
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path):
     """Isole QSettings dans un INI temporaire pour ne pas polluer le système."""
-    QCoreApplication.setOrganizationName("PharmaFileTest")
-    QCoreApplication.setApplicationName("AppComptoirTest")
+    QCoreApplication.setOrganizationName("FlowelisTest")
+    QCoreApplication.setApplicationName("ComptoirTest")
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
     QSettings.setDefaultFormat(QSettings.IniFormat)
     s = QSettings()

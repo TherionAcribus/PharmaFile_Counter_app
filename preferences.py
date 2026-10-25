@@ -450,7 +450,7 @@ class PreferencesDialog(QDialog):
         # (libellé affiché, valeur enregistrée)
         self.shortcut_mode_options = [
             ("Désactivés", MODE_DISABLED),
-            ("Actifs seulement si PharmaFile est au premier plan", MODE_FOCUSED),
+            ("Actifs seulement si Flowelis est au premier plan", MODE_FOCUSED),
             ("Globaux (tout le système)", MODE_GLOBAL),
         ]
         for label, value in self.shortcut_mode_options:

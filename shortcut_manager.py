@@ -144,7 +144,7 @@ class ShortcutManager(QObject):
 
     def _install_focused(self):
         """ Mode « premier plan » : QShortcut avec contexte ApplicationShortcut ->
-        n'agissent que lorsqu'une fenêtre de PharmaFile est active. Aucun hook
+        n'agissent que lorsqu'une fenêtre de Flowelis est active. Aucun hook
         système : pas de conflit avec le progiciel quand l'utilisateur travaille
         ailleurs. """
         self._qshortcuts = []

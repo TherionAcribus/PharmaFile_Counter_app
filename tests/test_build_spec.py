@@ -1,11 +1,11 @@
 """Configuration de build PyInstaller (point 10.6).
 
 Deux fichiers .spec, et seulement eux, doivent exister :
-- ``PharmaFile.spec``         : build « dossier » (dist/PharmaFile_v3/)
-- ``PharmaFile_onefile.spec`` : build « exe unique » (dist/PharmaFile.exe),
-  utilisé par le workflow de release
+- ``FlowelisComptoir.spec``         : build « dossier » (dist/FlowelisComptoir/)
+- ``FlowelisComptoir_onefile.spec`` : build « exe unique »
+  (dist/FlowelisComptoir.exe), utilisé par le workflow de release
 
-Un `main.spec` obsolète cohabitait autrefois avec `PharmaFile.spec`, sans
+Un `main.spec` obsolète cohabitait autrefois avec le spec de production, sans
 exclusions serveur, sans les backends keyring et sans les dossiers
 `skins/`/`templates/` — compiler avec le mauvais fichier produisait un binaire
 silencieusement dégradé (aucun thème, secret stocké en clair). La même
@@ -17,8 +17,8 @@ import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPECS = ["PharmaFile.spec", "PharmaFile_onefile.spec"]
-SPEC = os.path.join(APP_DIR, "PharmaFile.spec")
+SPECS = ["FlowelisComptoir.spec", "FlowelisComptoir_onefile.spec"]
+SPEC = os.path.join(APP_DIR, "FlowelisComptoir.spec")
 
 
 def _spec_source(path=SPEC):
@@ -88,5 +88,5 @@ def test_listes_critiques_synchronisees():
     """Les deux specs doivent embarquer les mêmes exclusions, hiddenimports et
     dossiers de ressources — sinon l'un des deux binaires serait dégradé."""
     reference = _critical_lists(SPEC)
-    onefile = _critical_lists(os.path.join(APP_DIR, "PharmaFile_onefile.spec"))
+    onefile = _critical_lists(os.path.join(APP_DIR, "FlowelisComptoir_onefile.spec"))
     assert onefile == reference

@@ -2,7 +2,7 @@
 
 Objectifs (remplace les ``print()`` disséminés) :
 - niveaux DEBUG/INFO/WARNING/ERROR, DEBUG désactivé en production ;
-- fichier tournant dans un dossier utilisateur (%LOCALAPPDATA%\\PharmaFile\\logs
+- fichier tournant dans un dossier utilisateur (%LOCALAPPDATA%\\Flowelis\\logs
   sous Windows) ;
 - masquage (redaction) des jetons, secrets, mots de passe, initiales et données
   patient, en défense en profondeur ;
@@ -28,7 +28,7 @@ import threading
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-APP_NAME = "PharmaFile"
+APP_NAME = "Flowelis"
 LOG_FILENAME = "application.log"
 APP_LOGGER_NAME = "appcomptoir"
 
@@ -43,7 +43,7 @@ _MIN_SECRET_LEN = 4
 def default_log_dir() -> Path:
     """Répertoire de logs dans l'espace utilisateur.
 
-    Windows : %LOCALAPPDATA%\\PharmaFile\\logs. Linux/macOS : repli sous le home.
+    Windows : %LOCALAPPDATA%\\Flowelis\\logs. Linux/macOS : repli sous le home.
     """
     system = platform.system()
     if system == "Windows":

@@ -83,7 +83,7 @@ class TrayManager(QObject):
         menu.addSeparator()
         self.patient_menu.setTitle("Appeler un patient…")
         menu.addMenu(self.patient_menu)
-        self._add_icon("assets/images/next_orange.ico", "PharmaFile — comptoir",
+        self._add_icon("assets/images/flowelis.ico", "Flowelis — comptoir",
                        action=self.show_panel, menu=menu)
 
     def show_panel(self):

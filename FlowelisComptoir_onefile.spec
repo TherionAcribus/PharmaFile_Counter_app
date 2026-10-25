@@ -1,13 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-# Variante « onefile » de PharmaFile.spec : produit un exécutable unique
-# autonome (dist/PharmaFile.exe) au lieu du dossier dist/PharmaFile_v3/.
+# Variante « onefile » de FlowelisComptoir.spec : produit un exécutable unique
+# autonome (dist/FlowelisComptoir.exe) au lieu du dossier
+# dist/FlowelisComptoir/.
 # Utilisée par le workflow de release (.github/workflows/release.yml) pour les
 # utilisateurs qui veulent un seul fichier à copier ; le build « dossier » reste
 # recommandé en usage courant (démarrage plus rapide, pas d'extraction des
 # ressources dans %TEMP% à chaque lancement).
 #
-# Les listes ci-dessous DOIVENT rester identiques à celles de PharmaFile.spec :
+# Les listes ci-dessous DOIVENT rester identiques à celles de
+# FlowelisComptoir.spec :
 # tests/test_build_spec.py compare les deux fichiers et échoue en cas de
 # divergence (risque historique : un main.spec obsolète produisait un binaire
 # silencieusement dégradé).
@@ -51,7 +53,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='PharmaFile',
+    name='FlowelisComptoir',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

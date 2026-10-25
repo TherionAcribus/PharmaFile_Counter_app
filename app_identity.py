@@ -7,17 +7,20 @@ servi de base au projet :
     app.setOrganizationName("MyCompany2")
     app.setOrganizationDomain("mycompany.com")
 
+Un premier renommage (« PharmaFile » / « AppComptoir ») avait corrigé cela ;
+l'application porte désormais la marque **Flowelis** (kit de design v1) :
+« Flowelis » / « Comptoir », soit ``HKCU/Software/Flowelis/Comptoir``.
+
 Ce n'est pas cosmétique : ``QSettings()`` construit son emplacement à partir de
 ces deux noms. Toute la configuration des postes (URL du serveur, comptoir,
-raccourcis, notifications, géométrie de fenêtre…) vit donc sous
-``HKCU/Software/MyCompany2/PySide6 Web Browser Example2``. Renommer sans plus
+raccourcis, notifications, géométrie de fenêtre…) y vit. Renommer sans plus
 attendre reviendrait à faire redémarrer chaque poste avec une configuration
 vierge — URL et comptoir perdus, application inutilisable tant qu'un humain n'a
 pas ressaisi les préférences.
 
 Ce module porte donc les DEUX faces du renommage :
   * la nouvelle identité (``apply_identity``) ;
-  * la reprise, une fois pour toutes, des réglages de l'ancienne identité
+  * la reprise, une fois pour toutes, des réglages des anciennes identités
     (``migrate_legacy_settings``), avant toute lecture de configuration.
 
 La copie est volontairement conservatrice : elle n'écrase jamais une valeur déjà
@@ -32,13 +35,18 @@ logger = logging.getLogger(__name__)
 #: Identité courante. ``QSettings()`` s'appuie dessus : la changer déplace la
 #: configuration de tous les postes — ajouter alors l'ancienne valeur à
 #: LEGACY_IDENTITIES plutôt que de la remplacer.
-ORGANIZATION_NAME = "PharmaFile"
-APPLICATION_NAME = "AppComptoir"
+ORGANIZATION_NAME = "Flowelis"
+APPLICATION_NAME = "Comptoir"
+
+#: Nom affiché (boîtes de dialogue, à-propos, barre des tâches) : le nom de
+#: composant de la charte (« Flowelis Comptoir »).
+DISPLAY_NAME = "Flowelis Comptoir"
 
 #: Identités historiques, de la plus récente à la plus ancienne. Chaque entrée
 #: est un couple (organisation, application) tel qu'il a été utilisé par une
 #: version précédente du client.
 LEGACY_IDENTITIES = (
+    ("PharmaFile", "AppComptoir"),
     ("MyCompany2", "PySide6 Web Browser Example2"),
 )
 
@@ -57,6 +65,7 @@ def apply_identity(app):
     """
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setApplicationName(APPLICATION_NAME)
+    app.setApplicationDisplayName(DISPLAY_NAME)
 
 
 def migrate_legacy_settings(target, sources):

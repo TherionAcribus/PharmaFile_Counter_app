@@ -443,9 +443,9 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         self.logger.info("Initialisation de l'interface...")
 
-        icon_path = resource_path('assets/images/next.ico')
+        icon_path = resource_path('assets/images/flowelis.ico')
         self.setWindowIcon(QIcon(icon_path))
-        self.setWindowTitle("PharmaFile")
+        self.setWindowTitle("Flowelis Comptoir")
 
         self.tray.setup()
 
@@ -1156,7 +1156,7 @@ class MainWindow(QMainWindow):
 
     def update_window_title(self, staff_name):
         """ Met a jour le titre de la fenetre """
-        self.setWindowTitle(f"PharmaFile - {self.counter_name} - {staff_name}")
+        self.setWindowTitle(f"Flowelis - {self.counter_name} - {staff_name}")
 
     def update_staff_label(self, staff_name):
         """ Met à jour le nom de l'équipier """
@@ -1610,7 +1610,7 @@ class MainWindow(QMainWindow):
             self.messaging.leave_presence()
         # Mémorise le titre courant (nom du staff) pour le restaurer en cas d'échec.
         self._title_before_disconnect = self.windowTitle()
-        self.setWindowTitle("PharmaFile - Déconnexion en cours…")
+        self.setWindowTitle("Flowelis - Déconnexion en cours…")
         self.disconnect_from_counter(on_result=self.handle_disconnect_result)
 
     def deconnexion_interface(self):
@@ -2630,6 +2630,9 @@ def setup_application(app):
     (dont dépend l'emplacement de QSettings) puis reprise des réglages laissés
     par les versions qui s'annonçaient encore sous l'identité d'exemple. """
     apply_identity(app)
+    # Icône applicative : posée sur QApplication, elle s'applique à toutes les
+    # fenêtres et dialogues (chargement, configuration, préférences…).
+    app.setWindowIcon(QIcon(resource_path('assets/images/flowelis.ico')))
     migrate_legacy_settings(QSettings(), legacy_sources(QSettings))
     return app
 

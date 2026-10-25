@@ -24,7 +24,7 @@ from __future__ import annotations
 # --- Modes de raccourci -----------------------------------------------------
 
 MODE_DISABLED = "disabled"   # aucun raccourci
-MODE_FOCUSED = "focused"     # actifs seulement quand PharmaFile est au premier plan
+MODE_FOCUSED = "focused"     # actifs seulement quand Flowelis est au premier plan
 MODE_GLOBAL = "global"       # actifs partout dans le système
 MODES = (MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL)
 # Par défaut : global, pour préserver le comportement historique des postes

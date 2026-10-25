@@ -29,20 +29,20 @@ jobs:
       - name: Installer les dépendances de build
         run: pip install -r requirements-build.txt
 
-      # Exe unique autonome -> dist/PharmaFile.exe
+      # Exe unique autonome -> dist/FlowelisComptoir.exe
       - name: Compiler l'EXE autonome (onefile)
-        run: pyinstaller --noconfirm --clean PharmaFile_onefile.spec
+        run: pyinstaller --noconfirm --clean FlowelisComptoir_onefile.spec
 
-      # Dossier exe + _internal -> dist/PharmaFile_v3/
+      # Dossier exe + _internal -> dist/FlowelisComptoir/
       - name: Compiler le dossier (onedir)
-        run: pyinstaller --noconfirm --clean PharmaFile.spec
+        run: pyinstaller --noconfirm --clean FlowelisComptoir.spec
 
       - name: Préparer les artefacts
         run: |
           $tag = "${{ github.ref_name }}"
           New-Item -ItemType Directory -Force release-assets | Out-Null
-          Move-Item dist/PharmaFile.exe "release-assets/PharmaFile-$tag-win64.exe"
-          Compress-Archive -Path dist/PharmaFile_v3 -DestinationPath "release-assets/PharmaFile-$tag-win64.zip"
+          Move-Item dist/FlowelisComptoir.exe "release-assets/FlowelisComptoir-$tag-win64.exe"
+          Compress-Archive -Path dist/FlowelisComptoir -DestinationPath "release-assets/FlowelisComptoir-$tag-win64.zip"
 
       - name: Publier la release GitHub
         env:

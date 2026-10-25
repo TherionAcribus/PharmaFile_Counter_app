@@ -23,7 +23,7 @@ def _win():
         _disconnect_in_progress=False,
         staff_id=7,
         logger=logging.getLogger("test.disconnect"),
-        _title="PharmaFile - Comptoir 1 - JD",
+        _title="Flowelis - Comptoir 1 - JD",
         calls={"disconnect_from_counter": 0, "deconnexion_interface": 0,
                "offer_retry": 0, "update_title": []},
         _dc_on_result="unset",
