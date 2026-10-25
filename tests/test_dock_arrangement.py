@@ -244,6 +244,9 @@ def test_background_tab_does_not_acknowledge_messages(settings):
 
         msg.raise_()                      # l'onglet passe devant : acquitté
         _settle()
+        # L'accusé est temporisé (le temps de voir le fil) : on déclenche
+        # l'échéance directement plutôt que d'attendre 1,5 s réel.
+        win.messaging._read_timer.timeout.emit()
         win.api.messaging_read.assert_called()
         assert win.api.messaging_read.call_args.args[0] == [7]
     finally:

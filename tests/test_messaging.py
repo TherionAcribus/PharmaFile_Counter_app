@@ -2,10 +2,17 @@
 
 import uuid
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDockWidget, QHBoxLayout, QMainWindow, QMenu, QWidget
+import pytest
 
-from messaging import MessagingController
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import (
+    QApplication, QDockWidget, QHBoxLayout, QMainWindow, QMenu, QTabBar, QWidget,
+)
+
+from messaging import (
+    MessagingController, _NAME_ROLE, _RecipientFilterModel,
+)
 from net_result import NetResult
 
 
@@ -72,6 +79,19 @@ class FakeSettings:
         self.values[key] = value
 
 
+@pytest.fixture(autouse=True)
+def _clean_fake_settings():
+    """FakeSettings.values est un attribut de CLASSE partagé par toute la
+    session : sans isolation, les clés persistées par la messagerie (onglets
+    ouverts, dernière conversation, zone du dock) fuiteraient d'un test à
+    l'autre."""
+    previous = dict(FakeSettings.values)
+    FakeSettings.values.clear()
+    yield
+    FakeSettings.values.clear()
+    FakeSettings.values.update(previous)
+
+
 def _controller():
     window = FakeWindow()
     controller = MessagingController(window, settings_factory=FakeSettings)
@@ -90,9 +110,29 @@ def _state(unread=0, online=True):
              "online": True, "unread_count": 0},
             {"key": "direct:2", "kind": "direct", "staff_id": 2, "name": "Bob",
              "counter_id": 2, "counter_name": "2", "online": online,
-             "unread_count": unread},
+             "unread_count": unread, "last_message_id": 1},
         ],
     }
+
+
+def _index(controller, key):
+    """Position de l'onglet portant ``key``, -1 s'il n'existe pas."""
+    for i in range(controller.tabs.count()):
+        if controller.tabs.tabData(i) == key:
+            return i
+    return -1
+
+
+def _select(controller, key):
+    """Sélectionne l'onglet d'une conversation (équivalent du clic)."""
+    index = _index(controller, key)
+    assert index >= 0, f"onglet absent : {key}"
+    controller.tabs.setCurrentIndex(index)
+
+
+def _activate_window(monkeypatch, window):
+    """Simule la fenêtre au premier plan pour le garde « Lu »."""
+    monkeypatch.setattr(QApplication, "activeWindow", lambda: window)
 
 
 def test_feature_is_absent_until_enabled_and_destroyed_when_disabled():
@@ -238,8 +278,8 @@ def test_offline_contact_remains_visible_and_can_still_receive_message():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state(online=False)))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
-    assert "hors ligne" in controller.selector.currentText()
+    _select(controller, "direct:2")
+    assert "hors ligne" in controller.tabs.tabToolTip(_index(controller, "direct:2"))
     assert controller.input.isEnabled()
     assert "prochaine connexion" in controller.status_label.text()
     controller.input.setPlainText("On se voit demain")
@@ -261,7 +301,7 @@ def test_second_send_during_flight_does_not_duplicate():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     controller.send()          # second Entrée / clic pendant le vol
@@ -275,7 +315,7 @@ def test_send_button_stays_disabled_while_typing_during_flight():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     controller.input.setPlainText("Brouillon suivant")
@@ -290,7 +330,7 @@ def test_draft_typed_during_send_survives_the_response():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     controller.input.setPlainText("Autre message en préparation")
@@ -302,7 +342,7 @@ def test_unchanged_text_is_cleared_after_success():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
@@ -315,7 +355,7 @@ def test_logout_during_send_releases_the_lock():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     controller.clear_identity(notify_server=False)
@@ -329,9 +369,9 @@ def test_messages_response_for_old_conversation_is_dropped():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     old_cb = [c for c in window.api.calls if c[0] == "messages"][-1][3]
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     stale = NetResult(200, data={
         "messages": [{"id": 9, "body": "fil précédent", "sender": {"name": "Bob"}}]})
     old_cb(stale)
@@ -343,7 +383,7 @@ def test_messages_response_for_current_conversation_is_applied():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     cb = [c for c in window.api.calls if c[0] == "messages"][-1][3]
     cb(NetResult(200, data={
         "messages": [{"id": 9, "body": "Salut", "sender": {"name": "Bob"}}]}))
@@ -355,7 +395,7 @@ def test_direct_send_uses_selected_staff_and_clears_after_success():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     call = next(call for call in window.api.calls if call[0] == "send")
@@ -364,10 +404,11 @@ def test_direct_send_uses_selected_staff_and_clears_after_success():
     assert controller.input.toPlainText() == ""
 
 
-def test_mark_read_only_when_dock_is_visible():
+def test_mark_read_only_when_dock_is_visible(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     window.show()
+    _activate_window(monkeypatch, window)
     controller.messages = [{"id": 4, "is_unread": True}]
     controller.dock.hide()
     controller._mark_visible_read()
@@ -401,9 +442,15 @@ def test_window_restored_marks_pending_unread_messages(monkeypatch):
     monkeypatch.setattr(window, "isMinimized", lambda: True)
     controller._mark_visible_read()
     assert not any(call[0] == "read" for call in window.api.calls)
-    # Restauration : les non-lus affichés pendant l'absence deviennent lisibles.
+    # Restauration : les non-lus affichés pendant l'absence deviennent
+    # lisibles — via la temporisation (le temps de voir le fil), pas en
+    # instantané.
     monkeypatch.setattr(window, "isMinimized", lambda: False)
+    _activate_window(monkeypatch, window)
     controller.on_window_restored()
+    assert not any(call[0] == "read" for call in window.api.calls)
+    assert controller._read_timer.isActive()
+    controller._read_timer.timeout.emit()
     assert any(call[:2] == ("read", [4, 5]) for call in window.api.calls)
 
 
@@ -439,7 +486,7 @@ def test_direct_identity_switch_wipes_previous_agent_immediately():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state(unread=1)))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     _last_callback(window.api, "messages", 3)(NetResult(200, data={
         "messages": [{"id": 9, "body": "Secret d'Alice",
                       "sender": {"name": "Bob"}}]}))
@@ -456,7 +503,7 @@ def test_direct_identity_switch_wipes_previous_agent_immediately():
     assert controller.unread_total == 0
     assert controller._pending_event is None
     assert not controller._send_in_flight
-    assert controller.selector.count() == 0
+    assert controller.tabs.count() == 0
     assert "Secret" not in controller.thread.toPlainText()
     assert controller.input.toPlainText() == ""
     assert controller.status_label.text() == ""
@@ -487,13 +534,13 @@ def test_same_identity_resync_keeps_displayed_data():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Brouillon")
 
     controller.set_identity(1, "Alice")  # même agent relu en resync
 
     assert controller.input.toPlainText() == "Brouillon"
-    assert controller.selector.count() == 2
+    assert controller.tabs.count() == 2
 
 
 def test_stale_state_response_of_previous_agent_is_ignored():
@@ -505,7 +552,7 @@ def test_stale_state_response_of_previous_agent_is_ignored():
     stale_cb(NetResult(200, data=_state(unread=5)))
     assert controller.conversations == []
     assert controller.unread_total == 0
-    assert controller.selector.count() == 0
+    assert controller.tabs.count() == 0
     assert controller.button.text() == "💬"
 
 
@@ -541,7 +588,7 @@ def test_stale_send_response_of_previous_agent_is_ignored():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Message d'Alice")
     controller.send()
     stale_cb = _sends(window.api)[-1][4]
@@ -554,10 +601,11 @@ def test_stale_send_response_of_previous_agent_is_ignored():
     assert len(window.api.calls) == calls_before
 
 
-def test_stale_read_response_of_previous_agent_is_ignored():
+def test_stale_read_response_of_previous_agent_is_ignored(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     window.show()
+    _activate_window(monkeypatch, window)
     controller._handle_state_result(NetResult(200, data=_state()))
     controller.dock.show()
     controller.messages = [{"id": 4, "is_unread": True}]
@@ -599,7 +647,7 @@ def test_send_error_notifies_without_modal_and_keeps_draft():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller._online_only.setChecked(True)
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()
@@ -619,7 +667,7 @@ def test_send_error_messaging_disabled_disables_feature():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     _sends(window.api)[-1][4](NetResult(403, data={"error": "messaging_disabled"}))
@@ -632,7 +680,7 @@ def test_too_long_message_is_refused_inline_and_draft_kept():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.input.setPlainText("x" * 1001)
     controller.send()
     assert not _sends(window.api)                       # rien ne part
@@ -644,7 +692,7 @@ def test_broadcast_requires_a_second_send_as_inline_confirmation():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()                                  # 1er Entrée : consigne
     assert not _sends(window.api)
@@ -664,7 +712,7 @@ def test_broadcast_confirmation_disarmed_asks_again():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()
     assert controller._broadcast_confirm
@@ -680,11 +728,11 @@ def test_switching_conversation_cancels_broadcast_confirmation():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()
     assert controller._broadcast_confirm
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     assert not controller._broadcast_confirm
     assert controller.status_label.text() == ""
 
@@ -809,13 +857,13 @@ def test_online_only_checkbox_follows_the_selected_conversation():
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     # Direct : pas de portée à choisir, la case reste cachée.
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     assert controller._online_only.isHidden()
     # Broadcast : la case apparaît…
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     assert not controller._online_only.isHidden()
     # …et disparaît au retour sur un direct.
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     assert controller._online_only.isHidden()
 
 
@@ -823,9 +871,9 @@ def test_online_only_checkbox_resets_on_conversation_change():
     _window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller._online_only.setChecked(True)
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     assert not controller._online_only.isChecked()
 
 
@@ -833,7 +881,7 @@ def test_broadcast_unchecked_checkbox_sends_scope_all_with_team_count():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()
     # « all » vise tous les équipiers listés, connectés ou non.
@@ -846,7 +894,7 @@ def test_broadcast_checked_checkbox_sends_scope_online_with_online_count():
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state(online=False)))
-    controller.selector.setCurrentIndex(controller.selector.findData("broadcast"))
+    _select(controller, "broadcast")
     controller._online_only.setChecked(True)
     controller.input.setPlainText("Réunion dans 5 minutes")
     controller.send()
@@ -906,7 +954,7 @@ def test_open_from_notification_selects_direct_conversation():
     controller.open_from_notification({"conversation_key": "direct:2"})
 
     assert not controller.dock.isHidden()
-    assert controller.selector.currentData() == "direct:2"
+    assert controller._selected_key() == "direct:2"
 
 
 def test_open_from_notification_selects_broadcast():
@@ -914,12 +962,12 @@ def test_open_from_notification_selects_broadcast():
     controller.set_enabled(True)
     window.show()
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
 
     controller.open_from_notification({"conversation_key": "broadcast"})
 
     assert not controller.dock.isHidden()
-    assert controller.selector.currentData() == "broadcast"
+    assert controller._selected_key() == "broadcast"
 
 
 def test_open_from_notification_without_key_keeps_selection():
@@ -929,13 +977,13 @@ def test_open_from_notification_without_key_keeps_selection():
     controller.set_enabled(True)
     window.show()
     controller._handle_state_result(NetResult(200, data=_state()))
-    controller.selector.setCurrentIndex(controller.selector.findData("direct:2"))
+    _select(controller, "direct:2")
     controller.dock.hide()
 
     controller.open_from_notification({})
 
     assert not controller.dock.isHidden()
-    assert controller.selector.currentData() == "direct:2"
+    assert controller._selected_key() == "direct:2"
 
 
 def test_open_restores_minimized_window(monkeypatch):
@@ -952,10 +1000,245 @@ def test_open_restores_minimized_window(monkeypatch):
     controller.open_from_notification({"conversation_key": "direct:2"})
 
     assert restored == [True]
-    assert controller.selector.currentData() == "direct:2"
+    assert controller._selected_key() == "direct:2"
 
 
 def test_open_does_nothing_when_feature_is_disabled():
     _window, controller = _controller()      # jamais activée
     controller.open_from_notification({"conversation_key": "direct:2"})
     assert controller.dock is None
+
+
+# --- Onglets de conversation ------------------------------------------------
+
+def test_tabs_follow_active_conversations_broadcast_first():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert [controller.tabs.tabData(i) for i in range(controller.tabs.count())] == [
+        "broadcast", "direct:2"]
+    assert controller.tabs.tabText(0) == "Équipe"
+    assert controller.tabs.tabText(1) == "Bob (1)"
+    # Pastille de présence sur les fils directs, aucune sur « Équipe ».
+    assert controller.tabs.tabIcon(0).isNull()
+    assert not controller.tabs.tabIcon(1).isNull()
+    assert "Bob — Comptoir 2" in controller.tabs.tabToolTip(1)
+
+
+def test_broadcast_tab_is_not_closable():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    # Le bouton de fermeture (posé par tabsClosable) est retiré sur « Équipe ».
+    assert controller.tabs.tabButton(
+        0, QTabBar.ButtonPosition.RightSide) is None
+    direct = _index(controller, "direct:2")
+    assert controller.tabs.tabButton(
+        direct, QTabBar.ButtonPosition.RightSide) is not None
+
+
+def test_incoming_unread_opens_tab_without_stealing_selection():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    state = _state()
+    # Carol écrit sans historique connu : son onglet apparaît grâce aux
+    # non-lus, mais la sélection reste sur le fil suivi.
+    state["conversations"].append(
+        {"key": "direct:3", "kind": "direct", "staff_id": 3,
+         "name": "Carol", "online": True, "unread_count": 1})
+    controller._handle_state_result(NetResult(200, data=state))
+    index = _index(controller, "direct:3")
+    assert index >= 0
+    assert "(1)" in controller.tabs.tabText(index)
+    assert controller._selected_key() == "direct:2"
+
+
+def test_closing_a_manually_opened_tab_forgets_it():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    # Conversation sans activité : onglet uniquement si ouvert à la main.
+    state["conversations"].append(
+        {"key": "direct:9", "kind": "direct", "staff_id": 9,
+         "name": "Zoé Exemple", "online": True, "unread_count": 0})
+    controller._handle_state_result(NetResult(200, data=state))
+    assert _index(controller, "direct:9") == -1
+    controller.open("direct:9")
+    assert "direct:9" in controller._open_tabs
+    index = _index(controller, "direct:9")
+    assert index >= 0
+    controller._close_tab(index)
+    assert _index(controller, "direct:9") == -1
+    assert "direct:9" not in controller._open_tabs
+
+
+def test_open_before_state_arrival_is_consumed_by_next_refresh():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    # La conversation n'est pas encore connue : l'intention est mémorisée.
+    controller.open("direct:2")
+    assert controller._pending_open_key == "direct:2"
+    controller._handle_state_result(NetResult(200, data=_state()))
+    assert controller._pending_open_key is None
+    assert controller._selected_key() == "direct:2"
+
+
+def test_last_selected_conversation_is_restored():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    # Nouvelle session (autre fenêtre/contrôleur, mêmes réglages) : la
+    # dernière conversation consultée est retrouvée à l'état suivant.
+    window2, controller2 = _controller()
+    controller2.set_enabled(True)
+    controller2._handle_state_result(NetResult(200, data=_state()))
+    assert controller2._selected_key() == "direct:2"
+
+
+# --- Recherche de destinataire ----------------------------------------------
+
+def test_recipient_filter_matches_name_fragments_and_initials():
+    model = QStandardItemModel()
+    for name, key in (("Fabien Test", "direct:2"), ("Bob Martin", "direct:3")):
+        item = QStandardItem(f"{name} — Comptoir 1")
+        item.setData(key, Qt.ItemDataRole.UserRole)
+        item.setData(name, _NAME_ROLE)
+        model.appendRow(item)
+    proxy = _RecipientFilterModel()
+    proxy.setSourceModel(model)
+    proxy.set_query("ft")        # préfixe des initiales
+    assert proxy.rowCount() == 1
+    assert proxy.index(0, 0).data() == "Fabien Test — Comptoir 1"
+    proxy.set_query("mar")       # sous-chaîne du nom
+    assert proxy.index(0, 0).data() == "Bob Martin — Comptoir 1"
+    proxy.set_query("bobi")      # ni sous-chaîne, ni initiales
+    assert proxy.rowCount() == 0
+
+
+def test_search_opens_and_selects_the_conversation():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    state["conversations"].append(
+        {"key": "direct:9", "kind": "direct", "staff_id": 9,
+         "name": "Zoé Exemple", "counter_name": "3",
+         "online": True, "unread_count": 0})
+    controller._handle_state_result(NetResult(200, data=state))
+    assert _index(controller, "direct:9") == -1
+    controller.search.setText("zé")
+    assert controller._recipient_proxy.rowCount() == 1
+    controller._activate_first_recipient()
+    assert controller._selected_key() == "direct:9"
+    assert "direct:9" in controller._open_tabs
+    assert controller.search.text() == ""
+
+
+def test_search_enter_without_match_does_not_create_anything():
+    # Régression : l'ancien combo éditable (InsertAtBottom) ajoutait un item
+    # fantôme quand Entrée ne correspondait à rien.
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller.search.setText("personne")
+    assert controller._recipient_proxy.rowCount() == 0
+    controller._activate_first_recipient()
+    assert controller.tabs.count() == 2
+    assert controller.search.text() == "personne"
+
+
+def test_escape_clears_the_search_field():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller.search.setText("bob")
+    event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.NoModifier)
+    controller.search.keyPressEvent(event)
+    assert controller.search.text() == ""
+
+
+# --- Brouillons par conversation ---------------------------------------------
+
+def test_draft_is_kept_per_conversation():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "broadcast")
+    controller.input.setPlainText("Note pour l'équipe")
+    _select(controller, "direct:2")
+    assert controller.input.toPlainText() == ""
+    controller.input.setPlainText("Note pour Bob")
+    _select(controller, "broadcast")
+    assert controller.input.toPlainText() == "Note pour l'équipe"
+    _select(controller, "direct:2")
+    assert controller.input.toPlainText() == "Note pour Bob"
+
+
+def test_successful_send_purges_the_conversation_draft():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    controller.input.setPlainText("Bonjour Bob")
+    controller.send()
+    # Changement d'onglet pendant le vol : le brouillon part quand même.
+    _select(controller, "broadcast")
+    _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
+    _select(controller, "direct:2")
+    assert controller.input.toPlainText() == ""
+
+
+# --- Accusé « Lu » temporisé -------------------------------------------------
+
+def test_mark_read_skipped_while_window_is_inactive(monkeypatch):
+    # Fenêtre affichée mais SANS le focus (autre application, écran
+    # verrouillé) : le garde « premier plan » empêche le « Lu » mensonger —
+    # le dock détaché compte comme fenêtre active à lui seul.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    controller.messages = [{"id": 4, "is_unread": True}]
+    monkeypatch.setattr(QApplication, "activeWindow", lambda: None)
+    controller._mark_visible_read()
+    assert not any(call[0] == "read" for call in window.api.calls)
+    controller.dock.setFloating(True)
+    monkeypatch.setattr(QApplication, "activeWindow", lambda: controller.dock)
+    controller._mark_visible_read()
+    assert any(call[:2] == ("read", [4]) for call in window.api.calls)
+
+
+def test_messages_result_arms_read_timer_instead_of_marking(monkeypatch):
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    _activate_window(monkeypatch, window)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    cb = _last_callback(window.api, "messages", 3)
+    cb(NetResult(200, data={"messages": [
+        {"id": 4, "body": "Salut", "is_unread": True,
+         "sender": {"name": "Bob"}}]}))
+    # L'accusé n'est pas immédiat : la temporisation laisse le temps de lire.
+    assert not any(call[0] == "read" for call in window.api.calls)
+    assert controller._read_timer.isActive()
+    controller._read_timer.timeout.emit()
+    assert any(call[:2] == ("read", [4]) for call in window.api.calls)
+
+
+def test_read_mark_skipped_while_thread_is_scrolled_up(monkeypatch):
+    # Ascenseur remonté dans l'historique : les derniers messages ne sont
+    # pas à l'écran, on ne peut pas les prétendre lus.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller.dock.show()
+    _activate_window(monkeypatch, window)
+    controller.messages = [{"id": 4, "is_unread": True}]
+    bar = controller.thread.verticalScrollBar()
+    bar.setRange(0, 100)
+    bar.setValue(20)
+    controller._mark_visible_read()
+    assert not any(call[0] == "read" for call in window.api.calls)

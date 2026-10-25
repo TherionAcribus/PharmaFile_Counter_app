@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import html
+import json
+import unicodedata
 import uuid
 from datetime import datetime
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QTextCursor
+from PySide6.QtCore import (
+    QEvent, QModelIndex, QObject, QSettings, QSortFilterProxyModel, Qt, QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QAction, QColor, QIcon, QPainter, QPixmap, QStandardItem,
+    QStandardItemModel, QTextCursor,
+)
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDockWidget, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QSizePolicy, QStyle, QTextBrowser, QToolButton, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QCompleter, QDockWidget, QHBoxLayout, QLabel,
+    QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QStyle, QTabBar,
+    QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
 import settings_schema
@@ -30,10 +38,86 @@ class MessageInput(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
-class MessagingController:
+def _normalize(text):
+    """Forme de comparaison tolérante : minuscules, accents retirés — un
+    « hel » tapé retrouve « Hélène »."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return "".join(
+        char for char in decomposed if not unicodedata.combining(char)).lower()
+
+
+def _presence_icon(online):
+    """Pastille de présence ~10 px pour l'onglet d'un fil direct : verte en
+    ligne, grise hors ligne."""
+    pixmap = QPixmap(10, 10)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#22c55e" if online else "#9ca3af"))
+    painter.drawEllipse(0, 0, 9, 9)
+    painter.end()
+    return QIcon(pixmap)
+
+
+#: Rôle modèle portant le nom « brut » d'un destinataire (sans le suffixe
+#: « — Comptoir X » du libellé) : c'est lui, pas le texte affiché, qui sert
+#: au matching de _RecipientFilterModel.
+_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
+
+#: Rôle modèle lu par la passe de filtrage INTERNE de QCompleter (MatchContains
+#: dessus) : nom + initiales, en version affichée ET normalisée. QCompleter
+#: filtre une seconde fois le modèle qu'on lui donne ; réunir ici toutes les
+#: formes cherchées garantit que sa passe n'écarte jamais une ligne que
+#: _RecipientFilterModel a acceptée (« ft », accents…).
+_SEARCH_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class _RecipientFilterModel(QSortFilterProxyModel):
+    """Filtre des destinataires de « Écrire à… » : la requête normalisée est
+    acceptée si elle est sous-chaîne du nom (ce qui couvre le préfixe d'un
+    mot) ou préfixe des initiales (« ft » → « Fabien Test »)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._query = ""
+
+    def set_query(self, text):
+        self._query = _normalize(text)
+        self.invalidate()
+
+    def filterAcceptsRow(self, row, parent):
+        if not self._query:
+            return True
+        name = _normalize(
+            self.sourceModel().index(row, 0, parent).data(_NAME_ROLE) or "")
+        if self._query in name:
+            return True
+        initials = "".join(word[0] for word in name.split())
+        return initials.startswith(self._query)
+
+
+class RecipientSearchEdit(QLineEdit):
+    """Champ de recherche d'un destinataire : Échap vide le champ. Quand le
+    popup du completer est ouvert, c'est lui qui consomme Échap (fermeture)
+    avant que la touche n'arrive ici."""
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.clear()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class MessagingController(QObject):
     HEARTBEAT_MS = 30_000
+    # Délai avant l'envoi de l'accusé « Lu » : laisse à l'équipier le temps
+    # de voir réellement les messages (cf. _schedule_read_mark).
+    READ_DELAY_MS = 1_500
 
     def __init__(self, window, settings_factory=QSettings):
+        super().__init__()
         self.window = window
         self._settings_factory = settings_factory
         self.enabled = False
@@ -56,7 +140,8 @@ class MessagingController:
         self.button = None
         self.menu_action = None
         self.dock = None
-        self.selector = None
+        self.search = None
+        self.tabs = None
         self.thread = None
         self.input = None
         self.send_button = None
@@ -64,6 +149,22 @@ class MessagingController:
         self._online_only = None
         self._icon_layout = None
         self._more_menu = None
+        self._recipient_model = None
+        self._recipient_proxy = None
+        # Brouillons par conversation, et clé du fil dont le texte est
+        # actuellement dans le champ de saisie (cf. _store_draft).
+        self._drafts = {}
+        self._current_key = None
+        self._sent_key = None
+        # Onglets ouverts à la main (recherche, notification) : persistés
+        # d'une session à l'autre. L'intention d'ouverture couvre le cas où
+        # open() arrive avant le premier état serveur.
+        self._open_tabs = self._load_open_tabs()
+        self._pending_open_key = None
+        # Vrai après le premier _refresh_tabs fait sur un état serveur : tant
+        # qu'aucun état n'a été vu, l'onglet affiché n'est qu'un défaut et la
+        # dernière conversation mémorisée reprend la main au premier état.
+        self._tabs_initialized = False
         # Un envoi en vol : Entrée et le bouton peuvent se déclencher pendant
         # la requête (Entrée n'est pas debouncé) — sans verrou, le même message
         # partait en double. _sent_body mémorise le corps envoyé pour ne pas
@@ -106,6 +207,14 @@ class MessagingController:
         self.heartbeat_timer = QTimer(window)
         self.heartbeat_timer.setInterval(self.HEARTBEAT_MS)
         self.heartbeat_timer.timeout.connect(self.heartbeat)
+
+        # L'accusé « Lu » ne part jamais instantanément : ce timer laisse le
+        # temps de voir le fil, puis _mark_visible_read re-vérifie TOUTES les
+        # conditions (premier plan, ascenseur en bas) à l'échéance.
+        self._read_timer = QTimer(self)
+        self._read_timer.setSingleShot(True)
+        self._read_timer.setInterval(self.READ_DELAY_MS)
+        self._read_timer.timeout.connect(self._mark_visible_read)
 
     def set_enabled(self, enabled):
         enabled = bool(enabled)
@@ -194,6 +303,19 @@ class MessagingController:
         # prochaine session (nouvel agent, réactivation) : sa référence repart
         # de zéro.
         self._baseline_known = False
+        # Tout ce qui suivait la session s'arrête avec elle : accusé « Lu » en
+        # cours d'armement, brouillons par conversation, onglets ouverts à la
+        # main et intention d'ouverture en attente.
+        self._read_timer.stop()
+        self._drafts = {}
+        self._current_key = None
+        self._sent_key = None
+        self._pending_open_key = None
+        self._open_tabs = set()
+        self._save_open_tabs()
+        # Nouvel agent : son premier état restaurera à nouveau la dernière
+        # conversation mémorisée.
+        self._tabs_initialized = False
 
     def _clear_displayed_data(self):
         """Vide immédiatement ce qui est affiché quand l'agent change alors
@@ -201,12 +323,17 @@ class MessagingController:
         précédent ne doivent pas rester visibles le temps des premières
         réponses du nouvel agent. Le dock, son placement et sa visibilité
         ne sont pas touchés."""
-        if self.selector is not None:
-            # currentIndexChanged déclencherait _conversation_changed : la
-            # purge faite ici suffit.
-            self.selector.blockSignals(True)
-            self.selector.clear()
-            self.selector.blockSignals(False)
+        if self.tabs is not None:
+            # currentChanged déclencherait _tab_changed : la purge faite ici
+            # suffit. QTabBar n'a pas de clear() : on retire un à un.
+            self.tabs.blockSignals(True)
+            while self.tabs.count():
+                self.tabs.removeTab(0)
+            self.tabs.blockSignals(False)
+        if self._recipient_model is not None:
+            self._recipient_model.clear()
+        if self.search is not None:
+            self.search.clear()
         if self.thread is not None:
             self.thread.clear()
         if self.input is not None:
@@ -302,28 +429,56 @@ class MessagingController:
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        self.selector = QComboBox(container)
-        self.selector.setEditable(True)
-        self.selector.setMinimumContentsLength(8)
-        self.selector.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
-        )
-        self.selector.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.selector.setAccessibleName("Conversation")
-        self.selector.setToolTip("Rechercher ou choisir une conversation")
-        self.selector.lineEdit().setPlaceholderText("Rechercher une personne…")
-        completer = self.selector.completer()
-        if completer is not None:
-            completer.setFilterMode(Qt.MatchContains)
-            completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self.selector.currentIndexChanged.connect(self._conversation_changed)
-        layout.addWidget(self.selector)
+        # Recherche d'un destinataire : complétion par nom ou initiales ;
+        # l'activation ouvre l'onglet de la conversation. Pas de combo
+        # éditable : Entrée y insérait un item fantôme (InsertAtBottom) quand
+        # le texte ne correspondait à rien.
+        self.search = RecipientSearchEdit(container)
+        self.search.setPlaceholderText("Écrire à… (prénom ou initiales)")
+        self.search.setAccessibleName("Nouvelle conversation")
+        self.search.setToolTip(
+            "Écrire à un équipier : nom ou initiales, Entrée ouvre le fil")
+        self.search.setMinimumWidth(0)
+        self.search.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._recipient_model = QStandardItemModel(self.search)
+        self._recipient_proxy = _RecipientFilterModel(self.search)
+        self._recipient_proxy.setSourceModel(self._recipient_model)
+        self._recipient_proxy.setFilterKeyColumn(0)
+        completer = QCompleter(self._recipient_proxy, self.search)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        # Le completer filtre lui-même par-dessus le proxy : _SEARCH_ROLE
+        # réunit toutes les formes cherchées pour que sa passe n'écarte rien.
+        completer.setCompletionRole(_SEARCH_ROLE)
+        self.search.setCompleter(completer)
+        self.search.textChanged.connect(self._recipient_proxy.set_query)
+        self.search.returnPressed.connect(self._activate_first_recipient)
+        completer.activated[QModelIndex].connect(self._recipient_activated)
+        layout.addWidget(self.search)
+
+        # Conversations en cours : « Équipe » permanente, un onglet par fil
+        # direct actif ou choisi — plusieurs échanges restent visibles d'un
+        # coup d'œil, dans un encombrement vertical minimal.
+        self.tabs = QTabBar(container)
+        self.tabs.setExpanding(False)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.setDrawBase(False)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+        self.tabs.setAccessibleName("Conversations en cours")
+        self.tabs.currentChanged.connect(self._tab_changed)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        layout.addWidget(self.tabs)
 
         self.status_label = QLabel("", container)
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumWidth(0)
         self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_label.setAccessibleName("État de la conversation")
+        # Vide par défaut : sans texte, le libellé ne réserve pas de ligne.
+        self.status_label.hide()
         layout.addWidget(self.status_label)
 
         self.thread = QTextBrowser(container)
@@ -332,6 +487,10 @@ class MessagingController:
         self.thread.setMinimumWidth(0)
         self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         layout.addWidget(self.thread, 1)
+        # Ascenseur arrivé en bas (défilement manuel ou suivi du dernier
+        # message) : point d'armement de l'accusé « Lu ».
+        self.thread.verticalScrollBar().valueChanged.connect(
+            self._thread_reached_bottom)
 
         # Portée d'un message « équipe » : tous les équipiers actifs (défaut)
         # ou les connectés seulement. Cachée hors conversation broadcast —
@@ -382,7 +541,15 @@ class MessagingController:
             self._arranging = False
         self.arranger.apply()
         self.dock.visibilityChanged.connect(self._visibility_changed)
+        # Points d'armement de l'accusé « Lu » : retour au premier plan de la
+        # fenêtre (ou du dock détaché), prise de focus du champ de saisie.
+        self.window.installEventFilter(self)
+        self.dock.installEventFilter(self)
+        self.input.installEventFilter(self)
         self.dock.setVisible(settings.value("messaging_dock_visible", False, type=bool))
+        # Un état peut déjà être connu si le panneau est (re)créé après le
+        # premier résultat : onglets et complétion se remplissent tout de suite.
+        self._refresh_tabs()
         self._update_composer()
 
     def _destroy_ui(self):
@@ -403,13 +570,25 @@ class MessagingController:
                             self.window.removeDockWidget(obj)
                         finally:
                             self._arranging = False
+                        # Filtres d'événements posés à la création : retirés
+                        # AVANT la destruction, sinon un événement livré
+                        # après deleteLater rappellerait un objet mort.
+                        for watched in (self.window, obj, self.input):
+                            if watched is None:
+                                continue
+                            try:
+                                watched.removeEventFilter(self)
+                            except RuntimeError:
+                                pass
                     obj.deleteLater()
                 except RuntimeError:
                     pass
             setattr(self, obj_name, None)
-        self.selector = self.thread = self.input = self.send_button = None
+        self.search = self.tabs = self.thread = None
+        self.input = self.send_button = None
         self.status_label = None
         self._online_only = None
+        self._recipient_model = self._recipient_proxy = None
         self._icon_layout = None
         self._more_menu = None
 
@@ -435,12 +614,23 @@ class MessagingController:
         # un panneau déjà au premier plan.
         self.dock.show()
         self.dock.raise_()
-        if conversation_key and self.selector is not None:
-            index = self.selector.findData(conversation_key)
-            if index >= 0:
-                self.selector.setCurrentIndex(index)
-        # _visibility_changed/_conversation_changed déclenchent déjà
-        # request_state/mark_read ; cet appel couvre le cas « dock déjà
+        if conversation_key:
+            known = next((item for item in self.conversations
+                          if item.get("key") == conversation_key), None)
+            if known is None:
+                # État pas encore chargé (panneau jamais ouvert) : l'intention
+                # est consommée par le prochain _refresh_tabs.
+                self._pending_open_key = conversation_key
+            else:
+                if known.get("kind") == "direct":
+                    self._open_tabs.add(conversation_key)
+                    self._save_open_tabs()
+                self._refresh_tabs()
+                index = self._tab_index_of(conversation_key)
+                if index >= 0:
+                    self.tabs.setCurrentIndex(index)
+        # _visibility_changed/_tab_changed déclenchent déjà
+        # request_state/armement « Lu » ; cet appel couvre le cas « dock déjà
         # visible et conversation déjà sélectionnée ».
         self.request_state()
 
@@ -460,7 +650,7 @@ class MessagingController:
             "messaging_dock_visible", not self.dock.isHidden())
         if visible:
             self.request_state()
-            self._mark_visible_read()
+            self._schedule_read_mark()
         self._schedule_window_fit()
 
     def arrange_docks(self):
@@ -524,7 +714,7 @@ class MessagingController:
                 previous_unread = self.unread_total
                 self.conversations = result.data.get("conversations") or []
                 self.unread_total = int(result.data.get("unread_total") or 0)
-                self._populate_conversations()
+                self._refresh_tabs()
                 self._update_badge()
                 if self.unread_total > previous_unread and self._pending_event:
                     event = self._pending_event
@@ -588,35 +778,235 @@ class MessagingController:
                 self._state_pending = False
                 self.request_state()
 
-    def _populate_conversations(self):
-        if self.selector is None:
-            return
-        selected = self.selector.currentData()
-        self.selector.blockSignals(True)
-        self.selector.clear()
-        for conversation in self.conversations:
-            name = conversation.get("name") or "Conversation"
-            counter = conversation.get("counter_name")
-            if conversation.get("kind") == "direct" and counter:
-                name = f"{name} — Comptoir {counter}"
-            if not conversation.get("online", True):
-                name += " (hors ligne)"
-            unread = int(conversation.get("unread_count") or 0)
-            if unread:
-                name += f"  [{unread}]"
-            self.selector.addItem(name, conversation.get("key"))
-        index = self.selector.findData(selected)
-        self.selector.setCurrentIndex(index if index >= 0 else 0)
-        self.selector.blockSignals(False)
-        self._update_composer()
+    # --- onglets de conversation --------------------------------------------
+
+    def _load_open_tabs(self):
+        """Onglets ouverts à la main, lus dans QSettings (liste JSON de clés).
+        Tolérant : une valeur corrompue ne doit pas casser la messagerie."""
+        stored = self._settings_factory().value("messaging_open_tabs", "[]")
+        if isinstance(stored, str):
+            try:
+                stored = json.loads(stored)
+            except ValueError:
+                stored = []
+        return {key for key in (stored or []) if isinstance(key, str)}
+
+    def _save_open_tabs(self):
+        self._settings_factory().setValue(
+            "messaging_open_tabs", json.dumps(sorted(self._open_tabs)))
+
+    def _tab_index_of(self, key):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabData(i) == key:
+                return i
+        return -1
+
+    def _selected_key(self):
+        if self.tabs is None:
+            return None
+        index = self.tabs.currentIndex()
+        return self.tabs.tabData(index) if index >= 0 else None
 
     def _selected(self):
-        if self.selector is None:
-            return None
-        key = self.selector.currentData()
-        return next((item for item in self.conversations if item.get("key") == key), None)
+        key = self._selected_key()
+        return next((item for item in self.conversations
+                     if item.get("key") == key), None)
 
-    def _conversation_changed(self, _index):
+    def _update_tab(self, index, conversation):
+        """Libellé court, infobulle complète et pastille d'un onglet."""
+        unread = int(conversation.get("unread_count") or 0)
+        if conversation.get("kind") == "broadcast":
+            short = "Équipe"
+            self.tabs.setTabIcon(index, QIcon())     # pas de pastille
+            tooltip = conversation.get("name") or "Toute l’équipe"
+        else:
+            name = conversation.get("name") or "Conversation"
+            short = name.split()[0]
+            self.tabs.setTabIcon(
+                index, _presence_icon(bool(conversation.get("online"))))
+            tooltip = name
+            counter = conversation.get("counter_name")
+            if counter:
+                tooltip += f" — Comptoir {counter}"
+            if not conversation.get("online", True):
+                tooltip += " (hors ligne)"
+        if unread:
+            short += f" ({unread})"
+        self.tabs.setTabText(index, short)
+        self.tabs.setTabToolTip(index, tooltip)
+        self.tabs.setTabData(index, conversation.get("key"))
+
+    def _refresh_tabs(self):
+        """Fait correspondre les onglets à l'ensemble actif : « Équipe »
+        toujours, puis les fils directs avec de l'activité (non-lus ou
+        historique) ou ouverts à la main — dans l'ordre du serveur. La
+        sélection est préservée par clé ; le modèle de complétion de la
+        recherche est reconstruit dans la foulée."""
+        if self.tabs is None:
+            return
+        previous_key = self._selected_key()
+        had_state = self._tabs_initialized
+        if self.conversations:
+            self._tabs_initialized = True
+        known = {item.get("key"): item for item in self.conversations
+                 if item.get("key")}
+        # Intention d'ouverture (open() avant l'arrivée de l'état) : la
+        # conversation désormais connue est marquée ouverte et sera
+        # sélectionnée ci-dessous ; si l'état chargé ne la contient pas,
+        # l'intention est caduque. État pas encore arrivé : on la garde.
+        pending = None
+        if self._pending_open_key is not None:
+            if self._pending_open_key in known:
+                pending = self._pending_open_key
+                # « Équipe » est permanente : seuls les fils directs entrent
+                # dans les onglets ouverts à la main.
+                if known[pending].get("kind") == "direct":
+                    self._open_tabs.add(pending)
+                    self._save_open_tabs()
+                self._pending_open_key = None
+            elif self.conversations:
+                self._pending_open_key = None
+        # Ensemble actif : un fil direct a un onglet dès qu'il porte des
+        # non-lus, un historique, ou a été ouvert à la main.
+        ordered = ["broadcast"]
+        for conversation in self.conversations:
+            key = conversation.get("key")
+            if not key or conversation.get("kind") == "broadcast":
+                continue
+            if (int(conversation.get("unread_count") or 0) > 0
+                    or conversation.get("last_message_id") is not None
+                    or key in self._open_tabs):
+                ordered.append(key)
+        keep = set(ordered)
+        self.tabs.blockSignals(True)
+        try:
+            for i in range(self.tabs.count() - 1, -1, -1):
+                if self.tabs.tabData(i) not in keep:
+                    self.tabs.removeTab(i)
+            for i, key in enumerate(ordered):
+                index = self._tab_index_of(key)
+                if index < 0:
+                    index = self.tabs.insertTab(i, "")
+                elif index != i:
+                    self.tabs.moveTab(index, i)
+                self._update_tab(i, known.get(key) or {
+                    "key": key, "kind": "broadcast"})
+            # « Équipe » est permanente : retirer le bouton de fermeture posé
+            # automatiquement par tabsClosable sur son onglet.
+            self.tabs.setTabButton(
+                0, QTabBar.ButtonPosition.RightSide, None)
+            # Sélection : intention d'ouverture > onglet courant conservé >
+            # dernière conversation consultée > « Équipe ». La conservation
+            # ne vaut qu'entre états réels : avant le premier, l'onglet
+            # affiché n'est qu'un défaut posé en attendant.
+            target = pending
+            if target is None and had_state and previous_key in keep:
+                target = previous_key
+            if target is None:
+                saved = self._settings_factory().value(
+                    "messaging_last_conversation")
+                if saved in keep:
+                    target = saved
+            if target is None:
+                target = ordered[0]
+            index = self._tab_index_of(target)
+            if index >= 0:
+                self.tabs.setCurrentIndex(index)
+        finally:
+            self.tabs.blockSignals(False)
+        self._rebuild_recipients()
+        if self._selected_key() != previous_key:
+            # Signaux bloqués pendant la mutation : si la sélection a changé
+            # de fait (onglet disparu, restauration, intention honorée), la
+            # logique de changement est rejouée ici.
+            self._tab_changed(self.tabs.currentIndex())
+        self._update_composer()
+
+    def _rebuild_recipients(self):
+        """Source de la complétion « Écrire à… » : un item par conversation
+        directe. « Équipe » est volontairement absente — son onglet est
+        permanent, inutile de la chercher."""
+        if self._recipient_model is None:
+            return
+        self._recipient_model.clear()
+        for conversation in self.conversations:
+            if conversation.get("kind") != "direct":
+                continue
+            name = conversation.get("name") or "Équipier"
+            label = name
+            counter = conversation.get("counter_name")
+            if counter:
+                label += f" — Comptoir {counter}"
+            initials = "".join(word[0] for word in name.split() if word)
+            item = QStandardItem(label)
+            item.setData(conversation.get("key"), Qt.ItemDataRole.UserRole)
+            item.setData(name, _NAME_ROLE)
+            # Texte cherché sous toutes ses formes pour que la passe interne
+            # du completer (MatchContains sur _SEARCH_ROLE) n'écarte rien.
+            item.setData(
+                f"{name} {initials} {_normalize(name)} {_normalize(initials)}",
+                _SEARCH_ROLE)
+            self._recipient_model.appendRow(item)
+
+    def _recipient_activated(self, index):
+        """Choix d'un destinataire dans le popup : ouvre l'onglet de sa
+        conversation et rend la main au champ de message."""
+        # L'index émis par le completer peut être dans son modèle interne ou
+        # dans notre proxy : les deux propagent data(), la clé se lit pareil.
+        key = index.data(Qt.ItemDataRole.UserRole) if index.isValid() else None
+        if not key or self.tabs is None:
+            return
+        self._open_tabs.add(key)
+        self._save_open_tabs()
+        self._refresh_tabs()
+        tab = self._tab_index_of(key)
+        if tab >= 0:
+            self.tabs.setCurrentIndex(tab)
+        self.search.clear()
+        if self.input is not None:
+            self.input.setFocus()
+
+    def _activate_first_recipient(self):
+        """Entrée dans la recherche sans popup ouvert : prend la première
+        ligne filtrée — la meilleure correspondance du modèle."""
+        if self._recipient_proxy is not None and self._recipient_proxy.rowCount():
+            self._recipient_activated(self._recipient_proxy.index(0, 0))
+
+    def _close_tab(self, index):
+        """Fermeture d'un onglet à la main : la clé sort des onglets ouverts
+        manuellement. Un fil avec de l'activité (non-lus, historique)
+        réapparaîtra au prochain état — c'est voulu."""
+        key = self.tabs.tabData(index)
+        if key == "broadcast":
+            return  # « Équipe » est permanente : jamais fermable.
+        self.tabs.removeTab(index)
+        if key in self._open_tabs:
+            self._open_tabs.discard(key)
+            self._save_open_tabs()
+
+    def _store_draft(self):
+        """Mémorise le texte saisi sous la clé de la conversation quittée —
+        ou l'oublie si le brouillon était vide."""
+        if self.input is None or self._current_key is None:
+            return
+        text = self.input.toPlainText()
+        if text.strip():
+            self._drafts[self._current_key] = text
+        else:
+            self._drafts.pop(self._current_key, None)
+
+    def _restore_draft(self):
+        if self.input is None:
+            return
+        self.input.setPlainText(self._drafts.get(self._current_key, ""))
+
+    def _tab_changed(self, index):
+        key = self.tabs.tabData(index) if index >= 0 else None
+        # Le brouillon saisi appartient à la conversation quittée : conservé
+        # par clé, puis celui du fil sélectionné est restauré (ou vide).
+        self._store_draft()
+        self._current_key = key
+        self._restore_draft()
         self.messages = []
         # Consignes/erreurs affichées et confirmation « équipe » éventuellement
         # armée concernaient la conversation quittée : sans objet ici.
@@ -628,6 +1018,13 @@ class MessagingController:
             self._online_only.setChecked(False)
         if self.thread is not None:
             self.thread.clear()
+        # Dernière conversation consultée : retrouvée à la prochaine session.
+        # On ne mémorise qu'une clé réellement connue : la sélection par
+        # défaut (« Équipe » posée avant l'arrivée du premier état) ne doit
+        # pas écraser la préférence à restaurer.
+        if key is not None and any(
+                item.get("key") == key for item in self.conversations):
+            self._settings_factory().setValue("messaging_last_conversation", key)
         self._update_composer()
         self.request_messages()
 
@@ -655,7 +1052,7 @@ class MessagingController:
         if result.status == 200 and isinstance(result.data, dict):
             self.messages = result.data.get("messages") or []
             self._render_messages()
-            self._mark_visible_read()
+            self._schedule_read_mark()
 
     def _render_messages(self):
         if self.thread is None:
@@ -700,6 +1097,44 @@ class MessagingController:
         except (TypeError, ValueError):
             return ""
 
+    def _schedule_read_mark(self):
+        """Arme la temporisation de l'accusé « Lu » si le fil est a priori
+        visible. La décision finale est prise par _mark_visible_read à
+        l'échéance : le délai laisse à l'équipier le temps de voir les
+        messages avant qu'on le prétende lu auprès de l'expéditeur."""
+        if self.dock is None:
+            return
+        try:
+            if not dock_in_front(self.dock):
+                return
+            if not self.window.isVisible() or self.window.isMinimized():
+                return
+        except RuntimeError:
+            return
+        self._read_timer.start()
+
+    def _thread_reached_bottom(self, value):
+        # L'équipier a fait défiler le fil jusqu'en bas : les derniers
+        # messages sont à l'écran — c'est un point d'armement du « Lu ».
+        bar = self.thread.verticalScrollBar() if self.thread is not None else None
+        if bar is not None and value >= bar.maximum():
+            self._schedule_read_mark()
+
+    def eventFilter(self, watched, event):
+        # Focus sur le champ de saisie, fenêtre (ou dock détaché) activée :
+        # le fil attire l'attention — ces événements ne font qu'ARMER la
+        # temporisation, les gardes complètes restent dans
+        # _mark_visible_read, revérifiées à l'échéance.
+        try:
+            kind = event.type()
+            if (watched is self.input and kind == QEvent.Type.FocusIn) or (
+                    watched in (self.window, self.dock)
+                    and kind == QEvent.Type.WindowActivate):
+                self._schedule_read_mark()
+        except RuntimeError:
+            pass
+        return super().eventFilter(watched, event)
+
     def _mark_visible_read(self):
         # Seulement si le fil est réellement lisible : un onglet « Messagerie »
         # resté derrière la liste des patients est « visible » pour Qt, mais
@@ -715,6 +1150,19 @@ class MessagingController:
                 return
         except RuntimeError:
             return  # fenêtre détruite : rien à marquer
+        # La fenêtre doit aussi être AU PREMIER PLAN : sans ce garde, un « Lu »
+        # partait alors que l'équipier travaille dans une autre application ou
+        # que l'écran est verrouillé. Le dock détaché est une fenêtre à part :
+        # il peut être l'activeWindow à lui seul.
+        active = QApplication.activeWindow()
+        if active is not window and active is not self.dock:
+            return
+        # Ascenseur remonté dans l'historique : les derniers messages ne sont
+        # pas à l'écran, on ne peut pas les prétendre lus.
+        if self.thread is not None:
+            bar = self.thread.verticalScrollBar()
+            if bar is not None and bar.value() < bar.maximum():
+                return
         ids = [item.get("id") for item in self.messages if item.get("is_unread")]
         ids = [value for value in ids if value is not None]
         if ids:
@@ -725,8 +1173,9 @@ class MessagingController:
 
     def on_window_restored(self):
         """Fenêtre restaurée (dé-réduite, sortie du systray) : les non-lus
-        affichés pendant l'absence deviennent réellement lisibles."""
-        self._mark_visible_read()
+        affichés pendant l'absence deviennent réellement lisibles — après le
+        délai d'attention, sous les gardes de _mark_visible_read."""
+        self._schedule_read_mark()
 
     def _update_composer(self):
         conversation = self._selected()
@@ -745,7 +1194,10 @@ class MessagingController:
         if self.status_label is not None:
             # Un message transitoire (limite de longueur, consigne de
             # confirmation, erreur d'envoi) prime sur le statut calculé.
-            self.status_label.setText(self._status_message or status)
+            # Sans texte, le libellé se replie : pas de ligne vide permanente.
+            text = self._status_message or status
+            self.status_label.setText(text)
+            self.status_label.setVisible(bool(text))
         if self.input is not None:
             self.input.setEnabled(can_send)
         if self.send_button is not None:
@@ -809,6 +1261,9 @@ class MessagingController:
         client_message_id = str(uuid.uuid4())
         self._send_in_flight = True
         self._sent_body = body
+        # Conversation de l'envoi mémorisée : si l'utilisateur change d'onglet
+        # pendant le vol, le succès saura quel brouillon purger.
+        self._sent_key = conversation.get("key")
         self._update_composer()  # bouton grisé tant que la requête est en vol
         self.window.api.messaging_send(
             client_message_id, kind, body, recipient_id, scope=scope,
@@ -838,6 +1293,10 @@ class MessagingController:
             if (self.input is not None
                     and self.input.toPlainText().strip() == self._sent_body):
                 self.input.clear()
+            # Le brouillon de la conversation expédiée part avec elle, même
+            # si l'utilisateur a changé d'onglet pendant le vol.
+            self._drafts.pop(self._sent_key, None)
+            self._sent_key = None
             self._sent_body = None
             self._status_message = None
             self._broadcast_confirm = False
@@ -845,6 +1304,7 @@ class MessagingController:
             self.request_state()
             self.request_messages()
             return
+        self._sent_key = None
         self._sent_body = None
         error = result.data.get("error") if isinstance(result.data, dict) else None
         messages = {
