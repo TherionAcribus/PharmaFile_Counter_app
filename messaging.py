@@ -13,13 +13,13 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QIcon, QPainter, QPalette, QPixmap, QStandardItem,
-    QStandardItemModel, QTextCursor,
+    QAction, QColor, QIcon, QKeySequence, QPainter, QPalette, QPixmap,
+    QShortcut, QStandardItem, QStandardItemModel, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QCompleter, QDockWidget, QHBoxLayout, QLabel,
-    QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QStyle, QTabBar,
-    QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QLineEdit, QMenu, QPlainTextEdit, QPushButton, QSizePolicy, QStyle,
+    QTabBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
 import settings_schema
@@ -28,11 +28,18 @@ from dock_arrangement import DockArranger, dock_in_front, toggle_dock
 
 class MessageInput(QPlainTextEdit):
     sendRequested = Signal()
+    #: Échap : rien à annuler dans le champ (le brouillon est conservé) —
+    #: le signal rend la main à la fenêtre principale.
+    escapeRequested = Signal()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (
                 event.modifiers() & Qt.ShiftModifier):
             self.sendRequested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            self.escapeRequested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -109,13 +116,20 @@ class _RecipientFilterModel(QSortFilterProxyModel):
 
 
 class RecipientSearchEdit(QLineEdit):
-    """Champ de recherche d'un destinataire : Échap vide le champ. Quand le
-    popup du completer est ouvert, c'est lui qui consomme Échap (fermeture)
-    avant que la touche n'arrive ici."""
+    """Champ de recherche d'un destinataire : Échap vide d'abord le champ ;
+    un second Échap — champ déjà vide — émet escapeRequested (la main
+    revient à la fenêtre principale). Quand le popup du completer est
+    ouvert, c'est lui qui consomme Échap (fermeture) avant que la touche
+    n'arrive ici."""
+
+    escapeRequested = Signal()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.clear()
+            if self.text():
+                self.clear()
+            else:
+                self.escapeRequested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -126,6 +140,11 @@ class MessagingController(QObject):
     # Délai avant l'envoi de l'accusé « Lu » : laisse à l'équipier le temps
     # de voir réellement les messages (cf. _schedule_read_mark).
     READ_DELAY_MS = 1_500
+    #: Phrases du menu « ⚡ » du compositeur : insérées dans le champ de
+    #: saisie, JAMAIS envoyées telles quelles — à éditer librement.
+    QUICK_REPLIES = (
+        "J'arrive", "Occupé(e) 2 min", "En réserve", "Un client m'attend",
+    )
 
     def __init__(self, window, settings_factory=QSettings):
         super().__init__()
@@ -156,6 +175,7 @@ class MessagingController(QObject):
         self.thread = None
         self.input = None
         self.send_button = None
+        self.quick_button = None
         self.status_label = None
         self._online_only = None
         self._icon_layout = None
@@ -477,6 +497,7 @@ class MessagingController(QObject):
         self.search.setCompleter(completer)
         self.search.textChanged.connect(self._recipient_proxy.set_query)
         self.search.returnPressed.connect(self._activate_first_recipient)
+        self.search.escapeRequested.connect(self._release_focus)
         completer.activated[QModelIndex].connect(self._recipient_activated)
         layout.addWidget(self.search)
 
@@ -495,6 +516,16 @@ class MessagingController(QObject):
         self.tabs.currentChanged.connect(self._tab_changed)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         layout.addWidget(self.tabs)
+
+        # Navigation clavier entre conversations, même geste que les
+        # navigateurs : Ctrl+Tab / Ctrl+Maj+Tab, circulaire. Enfants du
+        # dock : détruits et recréés avec lui, jamais en double.
+        for sequence, step in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
+            shortcut = QShortcut(QKeySequence(sequence), self.dock)
+            shortcut.setContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(
+                lambda _step=step: self._cycle_tab(_step))
 
         self.status_label = QLabel("", container)
         self.status_label.setWordWrap(True)
@@ -539,7 +570,27 @@ class MessagingController(QObject):
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._update_composer)
         self.input.sendRequested.connect(self.send)
+        self.input.escapeRequested.connect(self._release_focus)
         composer.addWidget(self.input, 1)
+        # Réponses rapides : le menu insère la phrase dans le champ (elle
+        # reste modifiable, Entrée envoie) — pas d'envoi direct : un envoi
+        # immédiat sous le doigt au comptoir serait une fausse manip.
+        self.quick_button = QToolButton(container)
+        self.quick_button.setText("⚡")
+        self.quick_button.setToolTip("Insérer une réponse rapide")
+        self.quick_button.setAccessibleName("Réponses rapides")
+        self.quick_button.setAutoRaise(True)
+        self.quick_button.setFixedSize(36, 36)
+        self.quick_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        quick_menu = QMenu(self.quick_button)
+        for phrase in self.QUICK_REPLIES:
+            action = quick_menu.addAction(phrase)
+            action.triggered.connect(
+                lambda _checked=False, _text=phrase:
+                    self._insert_quick_reply(_text))
+        self.quick_button.setMenu(quick_menu)
+        composer.addWidget(self.quick_button)
         self.send_button = QPushButton(container)
         self.send_button.setIcon(
             self.window.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
@@ -609,7 +660,7 @@ class MessagingController(QObject):
                     pass
             setattr(self, obj_name, None)
         self.search = self.tabs = self.thread = None
-        self.input = self.send_button = None
+        self.input = self.send_button = self.quick_button = None
         self.status_label = None
         self._online_only = None
         self._recipient_model = self._recipient_proxy = None
@@ -762,6 +813,13 @@ class MessagingController(QObject):
                     if conversation_key is not None:
                         notification["conversation_key"] = conversation_key
                     self.window.show_notification(notification, internal=True)
+                    # Fenêtre en arrière-plan (l'équipier travaille ailleurs)
+                    # : la notification flottante peut passer inaperçue —
+                    # le clignotement de la barre des tâches insiste,
+                    # jusqu'à ce que la fenêtre reprenne le premier plan.
+                    active = QApplication.activeWindow()
+                    if active is not self.window and active is not self.dock:
+                        QApplication.alert(self.window)
                 elif not self._baseline_known and self.unread_total > 0:
                     # Première réponse d'état de la session (connexion ou
                     # reconnexion) : rappeler les non-lus accumulés pendant
@@ -1055,6 +1113,29 @@ class MessagingController(QObject):
         if self._recipient_proxy is not None and self._recipient_proxy.rowCount():
             self._recipient_activated(self._recipient_proxy.index(0, 0))
 
+    def _cycle_tab(self, step):
+        """Ctrl+Tab / Ctrl+Maj+Tab : conversation suivante/précédente,
+        circulaire — on suit l'ordre affiché, qui est réordonnable à la
+        souris."""
+        if self.tabs is None or self.tabs.count() <= 1:
+            return
+        count = self.tabs.count()
+        self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % count)
+
+    def _release_focus(self):
+        """Échap dans le panneau : la main revient à la fenêtre principale,
+        l'équipier enchaîne au clavier sur la file des patients."""
+        self.window.setFocus()
+
+    def _insert_quick_reply(self, text):
+        """Réponse rapide : insérée à la position du curseur (insertion, pas
+        de remplacement), jamais envoyée directement — l'équipier relit,
+        modifie si besoin puis valide par Entrée."""
+        if self.input is None:
+            return
+        self.input.insertPlainText(text)
+        self.input.setFocus()
+
     def _close_tab(self, index):
         """Fermeture d'un onglet à la main : la clé sort des onglets ouverts
         manuellement, et la fermeture elle-même est mémorisée avec le
@@ -1146,6 +1227,11 @@ class MessagingController(QObject):
         if self.thread is None:
             return
         blocks = []
+        separator_done = False
+        # Expéditeur de la bulle précédente (staff_id + kind) : les messages
+        # consécutifs du même expéditeur se regroupent — le nom n'est répété
+        # que sur la première et les suivantes se rapprochent (marge 2 px).
+        previous_bubble = None
         for message in self.messages:
             sender = message.get("sender") or {}
             mine = sender.get("staff_id") == self.staff_id
@@ -1156,13 +1242,38 @@ class MessagingController(QObject):
             name = "Vous" if mine else html.escape(str(sender.get("name") or "Inconnu"))
             timestamp = self._format_time(message.get("created_at"))
             body = html.escape(str(message.get("body") or "")).replace("\n", "<br>")
-            receipt = " · Lu" if mine and message.get("read_at") else ""
+            # « · Lu » en gris discret : utile à l'expéditeur, sans crier.
+            receipt = (' · <span style="color:#6b7280">Lu</span>'
+                       if mine and message.get("read_at") else "")
+            # Repère visuel posé juste avant le PREMIER message entrant non
+            # lu — uniquement si des messages le précèdent : un fil 100 %
+            # non lu se suffit (le repère n'apparaît pas entre les non-lus
+            # non plus — l'occasion est consommée dès le premier rencontré).
+            # Il disparaît naturellement au prochain rendu après l'accusé.
+            if (not mine and message.get("is_unread")
+                    and not separator_done):
+                separator_done = True
+                if blocks:
+                    blocks.append(
+                        '<div style="text-align:center; color:#6b7280; '
+                        'font-size:small; margin:6px 0">'
+                        '—— Nouveaux messages ——</div>')
+                    # Le repère coupe le regroupement : la bulle qui le
+                    # suit réaffiche le nom de l'expéditeur.
+                    previous_bubble = None
+            staff = sender.get("staff_id")
+            bubble_key = ((staff, message.get("kind"))
+                          if staff is not None else None)
+            grouped = bubble_key is not None and bubble_key == previous_bubble
+            margin = "2px 0 5px" if grouped else "5px 0"
+            header = "" if grouped else f"<b>{name}</b> "
             blocks.append(
-                f'<div style="text-align:{align}; margin:5px 0">'
+                f'<div style="text-align:{align}; margin:{margin}">'
                 f'<span style="background:{color}; padding:6px">'
-                f'<b>{name}</b> <small>{timestamp}{receipt}</small><br>{body}'
+                f'{header}<small>{timestamp}{receipt}</small><br>{body}'
                 f'</span></div>'
             )
+            previous_bubble = bubble_key
         # Si l'utilisateur consultait l'historique (ascenseur remonté), un
         # rafraîchissement ne doit pas le ramener brutalement en bas ; sinon on
         # suit normalement le dernier message.
@@ -1288,6 +1399,9 @@ class MessagingController(QObject):
             self.status_label.setVisible(bool(text))
         if self.input is not None:
             self.input.setEnabled(can_send)
+        if self.quick_button is not None:
+            # Pas de conversation : insérer une phrase n'aurait pas de sens.
+            self.quick_button.setEnabled(can_send)
         if self.send_button is not None:
             text = self.input.toPlainText().strip() if self.input is not None else ""
             self.send_button.setEnabled(
@@ -1425,6 +1539,13 @@ class MessagingController(QObject):
             f"{self.unread_total} message(s) non lu(s)" if self.unread_total
             else "Aucun message non lu"
         )
+        if self.dock is not None:
+            # Le titre sert d'étiquette quand le panneau est groupé en
+            # onglets avec la file des patients : les non-lus y restent
+            # visibles sans ouvrir la messagerie.
+            self.dock.setWindowTitle(
+                f"Messagerie ({self.unread_total})" if self.unread_total
+                else "Messagerie")
 
     # --- événements Socket.IO ---------------------------------------------
 

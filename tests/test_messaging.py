@@ -6,7 +6,8 @@ import pytest
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import (
-    QColor, QKeyEvent, QPalette, QStandardItem, QStandardItemModel,
+    QColor, QKeyEvent, QKeySequence, QPalette, QShortcut, QStandardItem,
+    QStandardItemModel,
 )
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QHBoxLayout, QMainWindow, QMenu, QTabBar, QWidget,
@@ -1357,3 +1358,191 @@ def test_unread_colors_tab_text_and_badge_button():
     default = controller.tabs.palette().color(QPalette.ColorRole.WindowText)
     assert controller.tabs.tabTextColor(direct) == default
     assert controller.button.styleSheet() == ""
+
+
+# --- Réponses rapides « ⚡ » ---------------------------------------------------
+
+def test_quick_reply_inserts_text_without_sending():
+    # Le menu insère la phrase au curseur : jamais d'envoi direct — un envoi
+    # immédiat sous le doigt au comptoir serait une fausse manip.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    assert controller.quick_button.accessibleName() == "Réponses rapides"
+    assert [a.text() for a in controller.quick_button.menu().actions()] \
+        == list(controller.QUICK_REPLIES)
+    # Pas de conversation tant que l'état n'est pas arrivé : grisé.
+    assert not controller.quick_button.isEnabled()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    assert controller.quick_button.isEnabled()
+    controller._insert_quick_reply("J'arrive")
+    assert controller.input.toPlainText() == "J'arrive"
+    assert not _sends(window.api)
+    # Insertion au curseur, pas de remplacement du brouillon.
+    controller._insert_quick_reply("En réserve")
+    assert controller.input.toPlainText() == "J'arriveEn réserve"
+
+
+# --- Rendu du fil : repère de non-lus, regroupement, « Lu » -------------------
+
+def _feed(controller, api, messages):
+    """Répond au dernier messaging_messages avec le fil donné."""
+    _last_callback(api, "messages", 3)(
+        NetResult(200, data={"messages": messages}))
+
+
+def test_unread_separator_marks_first_incoming_unread():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "déjà lu",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        {"id": 2, "body": "le nouveau", "is_unread": True,
+         "sender": {"name": "Bob", "staff_id": 2}},
+        {"id": 3, "body": "et celui-ci", "is_unread": True,
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ])
+    html_out = controller.thread.toHtml()
+    # Une seule fois, juste avant le premier non-lu entrant.
+    assert html_out.count("Nouveaux messages") == 1
+    assert html_out.index("déjà lu") < html_out.index("Nouveaux messages")
+    assert html_out.index("Nouveaux messages") < html_out.index("le nouveau")
+
+
+def test_no_unread_separator_when_the_whole_thread_is_new():
+    # Fil 100 % non lu : le contexte est évident, pas de repère en tête.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "un", "is_unread": True,
+         "sender": {"name": "Bob", "staff_id": 2}},
+        {"id": 2, "body": "deux", "is_unread": True,
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ])
+    assert "Nouveaux messages" not in controller.thread.toHtml()
+
+
+def test_consecutive_same_sender_messages_share_one_header():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "premier",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        {"id": 2, "body": "deuxième du même",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        # Un autre expéditeur entre-temps : nouveau nom affiché.
+        {"id": 3, "body": "réponse", "read_at": "2025-01-01T10:00:00",
+         "sender": {"name": "Alice", "staff_id": 1}},
+    ])
+    html_out = controller.thread.toHtml()
+    # Nom affiché une seule fois sur les deux messages consécutifs de Bob
+    # (Qt resérialise <b> en span font-weight, on compte le texte).
+    assert html_out.count("Bob") == 1
+    # Bulle regroupée : marge supérieure réduite, heure conservée.
+    assert "margin-top:2px" in html_out
+
+
+def test_read_receipt_is_discreet_grey():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "vu ?", "read_at": "2025-01-01T10:00:00",
+         "sender": {"name": "Alice", "staff_id": 1}},
+    ])
+    assert "color:#6b7280" in controller.thread.toHtml()
+
+
+# --- Alerte barre des tâches ---------------------------------------------------
+
+def test_new_message_flashes_taskbar_when_window_inactive(monkeypatch):
+    window, controller = _controller()
+    controller.set_enabled(True)
+    alerts = []
+    monkeypatch.setattr(
+        QApplication, "alert", lambda widget, msec=0: alerts.append(widget))
+    monkeypatch.setattr(QApplication, "activeWindow", lambda: None)
+    controller._pending_event = {"sender_name": "Bob"}
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert alerts == [window]
+    assert window.notifications          # la notification reste envoyée
+    # Fenêtre déjà au premier plan : inutile de la faire clignoter.
+    alerts.clear()
+    _activate_window(monkeypatch, window)
+    controller._pending_event = {"sender_name": "Bob"}
+    controller._handle_state_result(NetResult(200, data=_state(unread=2)))
+    assert alerts == []
+
+
+# --- Clavier : Ctrl+Tab, Échap -------------------------------------------------
+
+def test_ctrl_tab_cycles_conversation_tabs():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    state["conversations"].append({
+        "key": "direct:3", "kind": "direct", "staff_id": 3, "name": "Chloé",
+        "counter_id": 3, "counter_name": "3", "online": True,
+        "unread_count": 0, "last_message_id": 5})
+    controller._handle_state_result(NetResult(200, data=state))
+    _select(controller, "broadcast")
+    next_shortcut = next(
+        s for s in controller.dock.findChildren(QShortcut)
+        if s.key() == QKeySequence("Ctrl+Tab"))
+    next_shortcut.activated.emit()
+    assert controller._selected_key() == "direct:2"
+    next_shortcut.activated.emit()
+    assert controller._selected_key() == "direct:3"
+    # Circulaire : au-delà du dernier, retour au premier.
+    next_shortcut.activated.emit()
+    assert controller._selected_key() == "broadcast"
+    # Ctrl+Maj+Tab remonte.
+    previous_shortcut = next(
+        s for s in controller.dock.findChildren(QShortcut)
+        if s.key() == QKeySequence("Ctrl+Shift+Tab"))
+    previous_shortcut.activated.emit()
+    assert controller._selected_key() == "direct:3"
+
+
+def test_escape_gives_focus_back_to_the_main_window(monkeypatch):
+    # Champ de recherche : premier Échap vide, second rend la main.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    focused = []
+    monkeypatch.setattr(window, "setFocus", lambda: focused.append(True))
+    escape = lambda: QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.NoModifier)
+    controller.search.setText("bob")
+    controller.search.keyPressEvent(escape())
+    assert controller.search.text() == "" and not focused
+    controller.search.keyPressEvent(escape())
+    assert focused == [True]
+    # Champ de saisie : Échap rend la main directement (rien à vider).
+    focused.clear()
+    controller.input.keyPressEvent(escape())
+    assert focused == [True]
+    # Le brouillon saisi n'est pas perdu.
+    controller.input.setPlainText("brouillon")
+    controller.input.keyPressEvent(escape())
+    assert controller.input.toPlainText() == "brouillon"
+
+
+# --- Titre du dock -------------------------------------------------------------
+
+def test_dock_title_counts_unread_messages():
+    # Groupé en onglets avec la file des patients, le titre est la seule
+    # étiquette visible : il porte le nombre de non-lus.
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    assert controller.dock.windowTitle() == "Messagerie"
+    controller._handle_state_result(NetResult(200, data=_state(unread=2)))
+    assert controller.dock.windowTitle() == "Messagerie (2)"
+    controller._handle_state_result(NetResult(200, data=_state(unread=0)))
+    assert controller.dock.windowTitle() == "Messagerie"
