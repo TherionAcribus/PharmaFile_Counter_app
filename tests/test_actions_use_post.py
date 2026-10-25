@@ -38,6 +38,7 @@ MODIFYING_ACTIONS = [
     "extend_current_call",
     "call_specific_patient",
     "put_standing",
+    "put_standing_for_staff",
     "delete_patient",
     "login_staff",
     "logout_staff",

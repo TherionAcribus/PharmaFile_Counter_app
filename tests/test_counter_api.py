@@ -267,6 +267,37 @@ def test_on_refused_rappele_l_appelant(api):
     assert refused == ["busy", "duplicate"]
 
 
+def test_refus_messaging_ne_notifie_pas_l_appelant(api):
+    """Une requête de messagerie refusée comme doublon est un non-événement
+    (la requête identique en vol suffit) : elle ne doit JAMAIS remonter la
+    notification « Une action est déjà en cours… » réservée aux actions
+    patient."""
+    refused = []
+    api._on_refused = refused.append
+    assert api.messaging_state() is not None
+    assert api.messaging_state() is None           # même clé déjà en vol
+    assert refused == []
+    assert len(api.network_manager.handles) == 1
+
+
+def test_refus_messaging_silencieux_pendant_l_arret(api):
+    refused = []
+    api._on_refused = refused.append
+    api._is_shutting_down = lambda: True
+    assert api.messaging_state() is None
+    assert refused == []
+
+
+def test_refus_non_silencieux_notifie_toujours(api):
+    """Les actions patient restent bavardes : le refus d'un doublon appelle
+    toujours _on_refused."""
+    refused = []
+    api._on_refused = refused.append
+    api.pause_current_patient(7)
+    api.pause_current_patient(7)                   # duplicate
+    assert refused == ["duplicate"]
+
+
 def test_bouton_occupe_puis_retabli(api):
     bouton = FakeButton()
     handle = api.validate_current_patient(7, busy_button=bouton)

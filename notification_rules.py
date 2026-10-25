@@ -84,6 +84,9 @@ _ORIGIN_CATEGORY = {
     "socket_connection_false": CONNECTION,
     "please_validate": VALIDATION,
     "messaging": MESSAGING,
+    # Échec d'envoi d'un message : même catégorie que la messagerie, mais PAS
+    # « inline » — une erreur mérite une vraie notification flottante.
+    "messaging_error": MESSAGING,
     # Échecs/refus d'actions : catégorie SYSTEM — explicitement PAS connexion,
     # sinon décocher les alertes de connexion masquerait aussi les échecs
     # d'action (valider, appeler…) qui exigent une attention immédiate.

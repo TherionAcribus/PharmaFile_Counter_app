@@ -73,7 +73,7 @@ class CounterApi:
             idempotency_key=idempotency_key)
 
     def _submit(self, url, method, data=None, on_result=None, key=None,
-                busy_button=None, idempotent=False, group=None):
+                busy_button=None, idempotent=False, group=None, silent=False):
         """ Crée, suit et démarre une requête. Retourne le handle, ou None si
         l'action a été refusée (arrêt en cours, action identique déjà active,
         ou groupe d'exclusion déjà occupé — cf. ``PATIENT_ACTION_GROUP``).
@@ -85,18 +85,28 @@ class CounterApi:
         une référence logique fournie par la fenêtre, jamais un widget brut :
         le verrou survit à la reconstruction de l'interface et le nettoyage de
         fin de requête ne touche pas un widget détruit entre-temps.
+
+        ``silent`` : ne PAS appeler ``_on_refused`` quand la requête est
+        refusée. Pour les requêtes de fond dédupliquées par conception
+        (messagerie) : un doublon y est un non-événement (la requête en vol
+        suffit), pas un refus à signaler à l'utilisateur — sinon chaque
+        rafraîchissement refusé ferait apparaître « Une action est déjà en
+        cours… » sans rapport avec une action du comptoir.
         """
         if self._is_shutting_down():
             self.logger.debug("Action ignorée (arrêt en cours) : %s", key)
-            self._on_refused("shutdown")
+            if not silent:
+                self._on_refused("shutdown")
             return None
         if self._tasks.is_active(key):
             self.logger.debug("Action ignorée (déjà en cours) : %s", key)
-            self._on_refused("duplicate")
+            if not silent:
+                self._on_refused("duplicate")
             return None
         if group is not None and self._tasks.is_group_active(group):
             self.logger.info("Action refusée : groupe '%s' occupé (clé=%s)", group, key)
-            self._on_refused("busy")
+            if not silent:
+                self._on_refused("busy")
             return None
 
         # Clé d'idempotence : une nouvelle par action utilisateur. Si la requête
@@ -311,17 +321,25 @@ class CounterApi:
 
     # --- messagerie --------------------------------------------------------
 
+    # Les requêtes de messagerie sont « silencieuses » (silent=True) : elles
+    # sont cycliques (présence, état) ou dédupliquées par conception — un refus
+    # pour doublon n'a rien d'anormal et ne doit JAMAIS remonter la
+    # notification « Une action est déjà en cours… » réservée aux actions
+    # patient du comptoir.
+
     def messaging_presence(self, client_instance_id, on_result=None):
         data = {"counter_id": self._counter_id(),
                 "client_instance_id": client_instance_id}
         return self._post(endpoints.messaging_presence(self._url()), data=data,
-                          on_result=on_result, key="messaging_presence")
+                          on_result=on_result, key="messaging_presence",
+                          silent=True)
 
     def messaging_leave(self, client_instance_id, on_result=None):
         data = {"counter_id": self._counter_id(),
                 "client_instance_id": client_instance_id}
         return self._post(endpoints.messaging_presence_leave(self._url()), data=data,
-                          on_result=on_result, key="messaging_leave")
+                          on_result=on_result, key="messaging_leave",
+                          silent=True)
 
     def messaging_leave_blocking(self, client_instance_id):
         result = self.network_manager.request_blocking(
@@ -335,7 +353,7 @@ class CounterApi:
     def messaging_state(self, on_result=None):
         return self._get(
             endpoints.messaging_state(self._url(), self._counter_id()),
-            on_result=on_result, key="messaging_state")
+            on_result=on_result, key="messaging_state", silent=True)
 
     def messaging_messages(self, kind, peer_staff_id=None, before_id=None,
                            after_id=None, on_result=None):
@@ -344,10 +362,10 @@ class CounterApi:
             before_id=before_id, after_id=after_id,
         )
         key = f"messaging_messages:{kind}:{peer_staff_id or 'all'}"
-        return self._get(url, on_result=on_result, key=key)
+        return self._get(url, on_result=on_result, key=key, silent=True)
 
     def messaging_send(self, client_message_id, kind, body,
-                       recipient_staff_id=None, on_result=None):
+                       recipient_staff_id=None, scope=None, on_result=None):
         data = {
             "counter_id": self._counter_id(),
             "client_message_id": client_message_id,
@@ -356,15 +374,21 @@ class CounterApi:
         }
         if recipient_staff_id is not None:
             data["recipient_staff_id"] = recipient_staff_id
+        # « scope » (all/online) ne concerne que les broadcasts : le
+        # contrôleur le laisse à None pour les messages directs.
+        if scope is not None:
+            data["scope"] = scope
         return self._post(
             endpoints.messaging_send(self._url()), data=data,
-            on_result=on_result, key=f"messaging_send:{client_message_id}")
+            on_result=on_result, key=f"messaging_send:{client_message_id}",
+            silent=True)
 
     def messaging_read(self, message_ids, on_result=None):
         data = {"counter_id": self._counter_id(),
                 "message_ids": json.dumps(list(message_ids))}
         return self._post(endpoints.messaging_read(self._url()), data=data,
-                          on_result=on_result, key="messaging_read")
+                          on_result=on_result, key="messaging_read",
+                          silent=True)
 
     def release_counter_blocking(self, url=None, counter_id=None):
         """ Libère le comptoir et attend (au plus quelques secondes).

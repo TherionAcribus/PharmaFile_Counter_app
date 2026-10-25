@@ -9,7 +9,7 @@ from datetime import datetime
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QDockWidget, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
+    QCheckBox, QComboBox, QDockWidget, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QSizePolicy, QStyle, QTextBrowser, QToolButton, QVBoxLayout,
     QWidget,
 )
@@ -43,6 +43,11 @@ class MessagingController:
         self.messages = []
         self.unread_total = 0
         self._pending_event = None
+        # L'état de référence des non-lus n'est connu qu'après la première
+        # réponse d'état de la session : c'est là (et là seulement) qu'on
+        # annonce « vous avez N message(s) non lu(s) », jamais à chaque
+        # heartbeat. Réarmé par _clear_runtime_data (nouvel agent / reprise).
+        self._baseline_known = False
         # Génération d'identité : incrémentée à chaque purge d'agent. Les
         # requêtes réseau en vol ne sont pas annulables : chaque on_result
         # capture la génération à l'émission et n'applique sa réponse que si
@@ -56,6 +61,7 @@ class MessagingController:
         self.input = None
         self.send_button = None
         self.status_label = None
+        self._online_only = None
         self._icon_layout = None
         self._more_menu = None
         # Un envoi en vol : Entrée et le bouton peuvent se déclencher pendant
@@ -64,6 +70,21 @@ class MessagingController:
         # effacer un nouveau brouillon saisi pendant l'attente.
         self._send_in_flight = False
         self._sent_body = None
+        # Rafraîchissement d'état demandé pendant qu'une lecture identique
+        # était déjà en vol (refusée comme doublon par la couche réseau) : la
+        # réponse de la requête en cours déclenchera la relance — cf.
+        # request_state/_handle_state_result.
+        self._state_pending = False
+        # Message transitoire affiché dans le libellé d'état du compositeur
+        # (limite de longueur, consigne de confirmation « équipe », erreur
+        # d'envoi) : remplace le statut calculé tant qu'il n'est pas effacé.
+        # Jamais de QMessageBox ici : au comptoir, une modale volerait le
+        # focus en pleine saisie.
+        self._status_message = None
+        # Confirmation « envoyer à toute l'équipe » EN LIGNE, à deux temps :
+        # premier Entrée/clic arme ce drapeau (et affiche la consigne), le
+        # second — dans le délai — envoie réellement.
+        self._broadcast_confirm = False
         # Pendant nos propres déplacements/suppressions du dock : les signaux
         # de visibilité émis alors ne sont pas des choix utilisateur à
         # persister (cf. aussi arranger.busy).
@@ -72,13 +93,15 @@ class MessagingController:
         # appliquée à la création, mémorisée après un glisser-déposer.
         self.arranger = DockArranger(window, settings_factory)
 
-        settings = self._settings_factory()
-        value = settings.value("messaging_client_instance_id", "", type=str)
-        try:
-            self.client_instance_id = str(uuid.UUID(value))
-        except (ValueError, TypeError, AttributeError):
-            self.client_instance_id = str(uuid.uuid4())
-            settings.setValue("messaging_client_instance_id", self.client_instance_id)
+        # Identité de présence de CE processus : un UUID neuf à chaque
+        # démarrage, volontairement NON persisté. Le stocker dans QSettings
+        # (clé « messaging_client_instance_id ») faisait que plusieurs postes
+        # partageant le même profil Windows héritaient du MÊME identifiant et
+        # s'écrasaient mutuellement leur ligne de présence (même clé primaire
+        # côté serveur) — les équipiers « disparaissaient » de la liste. Le
+        # TTL serveur (90 s) purge les restes après un crash ; leave/shutdown
+        # suppriment la ligne du processus proprement.
+        self.client_instance_id = str(uuid.uuid4())
 
         self.heartbeat_timer = QTimer(window)
         self.heartbeat_timer.setInterval(self.HEARTBEAT_MS)
@@ -115,7 +138,11 @@ class MessagingController:
         self.staff_name = staff_name or None
         if self.enabled and self.staff_id:
             self.attach_to_interface()
-            self.heartbeat()
+            # update_staff_label est appelé à chaque reconstruction
+            # d'interface : si le heartbeat périodique tourne déjà, il
+            # suffit — pas besoin d'une requête de présence supplémentaire.
+            if not self.heartbeat_timer.isActive():
+                self.heartbeat()
         else:
             self.heartbeat_timer.stop()
 
@@ -157,6 +184,16 @@ class MessagingController:
         # au cycle de vie de la requête.
         self._send_in_flight = False
         self._sent_body = None
+        # Consignes/erreurs et confirmations en cours appartiennent à la
+        # session précédente ; une relance d'état en attente n'a plus de sens
+        # pour le nouvel agent (son heartbeat rafraîchit déjà l'état).
+        self._state_pending = False
+        self._status_message = None
+        self._broadcast_confirm = False
+        # La notification « non-lus à la connexion » pourra se rejouer pour la
+        # prochaine session (nouvel agent, réactivation) : sa référence repart
+        # de zéro.
+        self._baseline_known = False
 
     def _clear_displayed_data(self):
         """Vide immédiatement ce qui est affiché quand l'agent change alors
@@ -296,6 +333,19 @@ class MessagingController:
         self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         layout.addWidget(self.thread, 1)
 
+        # Portée d'un message « équipe » : tous les équipiers actifs (défaut)
+        # ou les connectés seulement. Cachée hors conversation broadcast —
+        # sans intérêt pour un message direct — pour garder le dock compact ;
+        # sa visibilité suit la sélection (cf. _update_composer).
+        self._online_only = QCheckBox("Connectés seulement", container)
+        self._online_only.setMinimumWidth(0)
+        self._online_only.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._online_only.setToolTip(
+            "N'envoyer qu'aux équipiers actuellement connectés")
+        self._online_only.setAccessibleName("Portée du message à l'équipe")
+        self._online_only.hide()
+        layout.addWidget(self._online_only)
+
         composer = QHBoxLayout()
         self.input = MessageInput(container)
         self.input.setPlaceholderText("Écrire un message…")
@@ -359,6 +409,7 @@ class MessagingController:
             setattr(self, obj_name, None)
         self.selector = self.thread = self.input = self.send_button = None
         self.status_label = None
+        self._online_only = None
         self._icon_layout = None
         self._more_menu = None
 
@@ -418,6 +469,9 @@ class MessagingController:
     def heartbeat(self):
         if not self.enabled or not self.staff_id:
             return
+        # Si une présence est déjà en vol, cet appel est refusé comme doublon
+        # (retour None) : rien à faire, la requête en cours la rafraîchit —
+        # mais le timer doit tout de même être armé pour la périodicité.
         self.window.api.messaging_presence(
             self.client_instance_id,
             on_result=self._network_callback(self._handle_state_result))
@@ -426,31 +480,59 @@ class MessagingController:
 
     def request_state(self):
         if self.enabled and self.staff_id:
-            self.window.api.messaging_state(
+            handle = self.window.api.messaging_state(
                 on_result=self._network_callback(self._handle_state_result))
+            if handle is None:
+                # Refusée comme doublon : une lecture d'état est déjà en vol.
+                # On mémorise la demande — la réponse de la requête en cours
+                # relancera une lecture (cf. _handle_state_result), pour ne
+                # pas perdre le rafraîchissement qui motivait cet appel.
+                self._state_pending = True
 
     def _handle_state_result(self, result):
-        if result.status == 200 and isinstance(result.data, dict):
-            if result.data.get("enabled") is False:
-                self.set_enabled(False)
+        try:
+            if result.status == 200 and isinstance(result.data, dict):
+                if result.data.get("enabled") is False:
+                    self.set_enabled(False)
+                    return
+                previous_unread = self.unread_total
+                self.conversations = result.data.get("conversations") or []
+                self.unread_total = int(result.data.get("unread_total") or 0)
+                self._populate_conversations()
+                self._update_badge()
+                if self.unread_total > previous_unread and self._pending_event:
+                    sender = self._pending_event.get("sender_name") or "un professionnel"
+                    self.window.show_notification({
+                        "origin": "messaging",
+                        "message": f"Nouveau message de {sender}.",
+                    }, internal=True)
+                elif not self._baseline_known and self.unread_total > 0:
+                    # Première réponse d'état de la session (connexion ou
+                    # reconnexion) : rappeler les non-lus accumulés pendant
+                    # l'absence — une seule fois. Pas de cumul avec « Nouveau
+                    # message » : un même état n'affiche qu'une alerte.
+                    self.window.show_notification({
+                        "origin": "messaging",
+                        "message": f"Vous avez {self.unread_total} message(s) non lu(s).",
+                    }, internal=True)
+                self._pending_event = None
+                # Qu'une notification soit partie ou non, l'état de
+                # référence est désormais connu pour cette session.
+                self._baseline_known = True
+                if self.dock is not None and self.dock.isVisible():
+                    self.request_messages()
                 return
-            previous_unread = self.unread_total
-            self.conversations = result.data.get("conversations") or []
-            self.unread_total = int(result.data.get("unread_total") or 0)
-            self._populate_conversations()
-            self._update_badge()
-            if self.unread_total > previous_unread and self._pending_event:
-                sender = self._pending_event.get("sender_name") or "un professionnel"
-                self.window.show_notification({
-                    "origin": "messaging",
-                    "message": f"Nouveau message de {sender}.",
-                }, internal=True)
-            self._pending_event = None
-            if self.dock is not None and self.dock.isVisible():
-                self.request_messages()
-            return
-        if isinstance(result.data, dict) and result.data.get("error") == "messaging_disabled":
-            self.set_enabled(False)
+            if isinstance(result.data, dict) and result.data.get("error") == "messaging_disabled":
+                self.set_enabled(False)
+        finally:
+            # Une demande d'état reçue pendant le vol de cette requête
+            # (refusée comme doublon, _state_pending) est honorée maintenant
+            # que la réponse est là — quel que soit le statut de la réponse.
+            # Ce handler sert aussi les réponses de présence : elles
+            # satisfont pareillement la demande en attente.
+            if self._state_pending:
+                self._state_pending = False
+                self.request_state()
 
     def _populate_conversations(self):
         if self.selector is None:
@@ -482,6 +564,14 @@ class MessagingController:
 
     def _conversation_changed(self, _index):
         self.messages = []
+        # Consignes/erreurs affichées et confirmation « équipe » éventuellement
+        # armée concernaient la conversation quittée : sans objet ici.
+        self._status_message = None
+        self._broadcast_confirm = False
+        if self._online_only is not None:
+            # La portée choisie appartenait à la conversation quittée : on
+            # repart sur le périmètre par défaut (« tous »).
+            self._online_only.setChecked(False)
         if self.thread is not None:
             self.thread.clear()
         self._update_composer()
@@ -575,10 +665,19 @@ class MessagingController:
         can_send = bool(conversation and self.enabled and self.staff_id)
         status = ""
         if conversation and conversation.get("kind") == "direct" and not conversation.get("online"):
-            can_send = False
-            status = "Cette personne est actuellement hors ligne. L’historique reste consultable."
+            # Le serveur accepte le message et le livrera à la prochaine
+            # connexion du destinataire : l'envoi reste possible, on
+            # l'annonce simplement.
+            status = "Hors ligne — le message sera affiché à sa prochaine connexion."
+        if self._online_only is not None:
+            # La portée « connectés seulement » ne concerne que les messages
+            # à toute l'équipe.
+            self._online_only.setVisible(
+                bool(conversation and conversation.get("kind") == "broadcast"))
         if self.status_label is not None:
-            self.status_label.setText(status)
+            # Un message transitoire (limite de longueur, consigne de
+            # confirmation, erreur d'envoi) prime sur le statut calculé.
+            self.status_label.setText(self._status_message or status)
         if self.input is not None:
             self.input.setEnabled(can_send)
         if self.send_button is not None:
@@ -599,30 +698,69 @@ class MessagingController:
         if not body:
             return
         if len(body) > 1000:
-            QMessageBox.warning(self.window, "Message trop long", "Le message est limité à 1 000 caractères.")
+            # Pas de modale : le brouillon reste saisi, l'avertissement passe
+            # par le libellé d'état du panneau.
+            self._status_message = "Le message est limité à 1 000 caractères."
+            self._update_composer()
             return
         kind = conversation.get("kind")
+        # Portée serveur du broadcast : « all » (tous les équipiers actifs,
+        # connectés ou non) ou « online » (case cochée). None pour un
+        # message direct — le champ n'a alors pas de sens.
+        scope = None
         if kind == "broadcast":
-            online_count = sum(
-                1 for item in self.conversations
-                if item.get("kind") == "direct" and item.get("online")
-            )
-            answer = QMessageBox.question(
-                self.window, "Message à toute l’équipe",
-                f"Envoyer ce message aux {online_count} personne(s) actuellement connectée(s) ?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if answer != QMessageBox.Yes:
+            scope = ("online" if self._online_only is not None
+                     and self._online_only.isChecked() else "all")
+            if not self._broadcast_confirm:
+                if scope == "online":
+                    count = sum(
+                        1 for item in self.conversations
+                        if item.get("kind") == "direct" and item.get("online")
+                    )
+                    target = f"{count} personne(s) connectée(s)"
+                else:
+                    count = sum(
+                        1 for item in self.conversations
+                        if item.get("kind") == "direct"
+                    )
+                    target = f"{count} équipier(s)"
+                # Confirmation à deux temps, en ligne : un envoi à toute
+                # l'équipe se confirme par un second Entrée/clic dans le
+                # délai — pas par une boîte de dialogue qui vole le focus.
+                self._broadcast_confirm = True
+                QTimer.singleShot(5000, self._disarm_broadcast_confirm)
+                self._status_message = (
+                    "Appuyez de nouveau sur Entrée pour envoyer aux "
+                    f"{target}.")
+                self._update_composer()
                 return
+            # Second Entrée dans le délai : la confirmation est acquise.
+            self._broadcast_confirm = False
+            self._status_message = None
         recipient_id = conversation.get("staff_id") if kind == "direct" else None
         client_message_id = str(uuid.uuid4())
         self._send_in_flight = True
         self._sent_body = body
         self._update_composer()  # bouton grisé tant que la requête est en vol
         self.window.api.messaging_send(
-            client_message_id, kind, body, recipient_id,
+            client_message_id, kind, body, recipient_id, scope=scope,
             on_result=self._network_callback(self._handle_send_result),
         )
+
+    def _disarm_broadcast_confirm(self):
+        """Fin du délai de confirmation « équipe » : l'envoi suivant
+        redemandera accord, et la consigne affichée redevient un statut
+        neutre."""
+        if not self._broadcast_confirm:
+            return
+        self._broadcast_confirm = False
+        self._status_message = None
+        try:
+            self._update_composer()
+        except RuntimeError:
+            # Le timer peut s'écouler après la destruction de l'interface
+            # (fermeture de la fenêtre, panneau détruit) : rien à rafraîchir.
+            pass
 
     def _handle_send_result(self, result):
         self._send_in_flight = False
@@ -633,6 +771,8 @@ class MessagingController:
                     and self.input.toPlainText().strip() == self._sent_body):
                 self.input.clear()
             self._sent_body = None
+            self._status_message = None
+            self._broadcast_confirm = False
             self._update_composer()
             self.request_state()
             self.request_messages()
@@ -640,18 +780,22 @@ class MessagingController:
         self._sent_body = None
         error = result.data.get("error") if isinstance(result.data, dict) else None
         messages = {
-            "recipient_offline": "Le destinataire n’est plus connecté.",
+            # Uniquement un broadcast « connectés seulement » sans personne
+            # en ligne : les directs vers un équipier hors ligne passent.
+            "recipient_offline": "Personne n’est connecté pour recevoir ce message.",
             "messaging_disabled": "La messagerie vient d’être désactivée.",
             "staff_not_connected": "Votre session n’est plus active sur ce comptoir.",
             "invalid_message": "Le message est vide ou invalide.",
         }
-        QMessageBox.warning(
-            self.window, "Message non envoyé",
-            messages.get(error, "Le message n’a pas pu être envoyé."),
-        )
+        text = messages.get(error, "Le message n’a pas pu être envoyé.")
+        # Pas de QMessageBox : le détail reste dans le panneau, et la
+        # notification flottante — non modale — alerte sans voler le focus.
+        self._status_message = text
+        self._update_composer()
+        self.window.show_notification(
+            {"origin": "messaging_error", "message": text}, internal=True)
         if error == "messaging_disabled":
             self.set_enabled(False)
-        self._update_composer()
 
     def _update_badge(self):
         if self.button is None:

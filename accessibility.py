@@ -63,6 +63,7 @@ _ORIGIN_SEVERITY = {
     "printer_error": CRITICAL,
     "low_paper": WARNING,
     "patient_taken": WARNING,
+    "messaging_error": WARNING,
     "paper_ok": SUCCESS,
     "socket_connection_true": SUCCESS,
 }
@@ -138,6 +139,10 @@ _TITLES = {
     "messaging": {
         TONE_SOBER: "Nouveau message",
         TONE_HUMOROUS: "Nouveau message",
+    },
+    "messaging_error": {
+        TONE_SOBER: "Message non envoyé",
+        TONE_HUMOROUS: "Message non envoyé",
     },
     "activity": {
         TONE_SOBER: "Nouvelle mission",
