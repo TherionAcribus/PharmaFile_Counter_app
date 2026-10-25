@@ -72,11 +72,19 @@ _NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 #: _RecipientFilterModel a acceptée (« ft », accents…).
 _SEARCH_ROLE = Qt.ItemDataRole.UserRole + 2
 
+#: Rôle modèle portant les initiales MÉTIER du destinataire
+#: (Pharmacist.initials côté serveur — « BN » pour « Benoit »), différentes
+#: des initiales dérivées des mots du nom quand le nom n'en a qu'un.
+#: None/absent sur un vieux serveur : toléré.
+_INITIALS_ROLE = Qt.ItemDataRole.UserRole + 3
+
 
 class _RecipientFilterModel(QSortFilterProxyModel):
     """Filtre des destinataires de « Écrire à… » : la requête normalisée est
     acceptée si elle est sous-chaîne du nom (ce qui couvre le préfixe d'un
-    mot) ou préfixe des initiales (« ft » → « Fabien Test »)."""
+    mot), préfixe des initiales dérivées des mots (« ft » → « Fabien Test »),
+    ou préfixe des initiales métier (« bn » → « Benoit », rôle
+    _INITIALS_ROLE ; absent sur les vieux serveurs)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,12 +97,15 @@ class _RecipientFilterModel(QSortFilterProxyModel):
     def filterAcceptsRow(self, row, parent):
         if not self._query:
             return True
-        name = _normalize(
-            self.sourceModel().index(row, 0, parent).data(_NAME_ROLE) or "")
+        index = self.sourceModel().index(row, 0, parent)
+        name = _normalize(index.data(_NAME_ROLE) or "")
         if self._query in name:
             return True
         initials = "".join(word[0] for word in name.split())
-        return initials.startswith(self._query)
+        if initials.startswith(self._query):
+            return True
+        business = _normalize(index.data(_INITIALS_ROLE) or "")
+        return bool(business) and business.startswith(self._query)
 
 
 class RecipientSearchEdit(QLineEdit):
@@ -161,6 +172,10 @@ class MessagingController(QObject):
         # open() arrive avant le premier état serveur.
         self._open_tabs = self._load_open_tabs()
         self._pending_open_key = None
+        # Onglets fermés à la main : clé -> last_message_id vu au moment de
+        # la fermeture, persisté pareil. Une fermeture n'est pas un « vu » :
+        # le fil réapparaît dès qu'une activité nouvelle change cet id.
+        self._closed_tabs = self._load_closed_tabs()
         # Vrai après le premier _refresh_tabs fait sur un état serveur : tant
         # qu'aucun état n'a été vu, l'onglet affiché n'est qu'un défaut et la
         # dernière conversation mémorisée reprend la main au premier état.
@@ -282,7 +297,10 @@ class MessagingController(QObject):
 
     def _clear_runtime_data(self):
         # Nouvelle génération : toute réponse d'une requête partie sous
-        # l'identité précédente devient caduque.
+        # l'identité précédente devient caduque. La toute première identité
+        # lue au démarrage n'a pas d'agent « précédent » : elle ne doit pas
+        # effacer les préférences d'onglets restaurées depuis QSettings.
+        startup = self._identity_generation == 0
         self._identity_generation += 1
         self.conversations = []
         self.messages = []
@@ -304,18 +322,24 @@ class MessagingController(QObject):
         # de zéro.
         self._baseline_known = False
         # Tout ce qui suivait la session s'arrête avec elle : accusé « Lu » en
-        # cours d'armement, brouillons par conversation, onglets ouverts à la
-        # main et intention d'ouverture en attente.
+        # cours d'armement, brouillons par conversation, onglets ouverts ou
+        # fermés à la main et intention d'ouverture en attente.
         self._read_timer.stop()
         self._drafts = {}
         self._current_key = None
         self._sent_key = None
         self._pending_open_key = None
-        self._open_tabs = set()
-        self._save_open_tabs()
-        # Nouvel agent : son premier état restaurera à nouveau la dernière
-        # conversation mémorisée.
-        self._tabs_initialized = False
+        if not startup:
+            # Onglets ouverts/fermés à la main : préférences persistées,
+            # restaurées au lancement puis purgées seulement aux changements
+            # de session (nouvel agent, déconnexion, désactivation).
+            self._open_tabs = set()
+            self._save_open_tabs()
+            self._closed_tabs = {}
+            self._save_closed_tabs()
+            # Nouvel agent : son premier état restaurera à nouveau la
+            # dernière conversation mémorisée.
+            self._tabs_initialized = False
 
     def _clear_displayed_data(self):
         """Vide immédiatement ce qui est affiché quand l'agent change alors
@@ -623,8 +647,7 @@ class MessagingController(QObject):
                 self._pending_open_key = conversation_key
             else:
                 if known.get("kind") == "direct":
-                    self._open_tabs.add(conversation_key)
-                    self._save_open_tabs()
+                    self._mark_opened(conversation_key)
                 self._refresh_tabs()
                 index = self._tab_index_of(conversation_key)
                 if index >= 0:
@@ -795,6 +818,35 @@ class MessagingController(QObject):
         self._settings_factory().setValue(
             "messaging_open_tabs", json.dumps(sorted(self._open_tabs)))
 
+    def _load_closed_tabs(self):
+        """Onglets fermés à la main : dict JSON clé → last_message_id vu à la
+        fermeture (int ou None). Tolérant : valeur corrompue → dict vide."""
+        stored = self._settings_factory().value("messaging_closed_tabs", "{}")
+        if isinstance(stored, str):
+            try:
+                stored = json.loads(stored)
+            except ValueError:
+                stored = {}
+        if not isinstance(stored, dict):
+            return {}
+        return {key: value for key, value in stored.items()
+                if isinstance(key, str)
+                and (value is None or isinstance(value, int))}
+
+    def _save_closed_tabs(self):
+        self._settings_factory().setValue(
+            "messaging_closed_tabs", json.dumps(self._closed_tabs))
+
+    def _mark_opened(self, key):
+        """Ouverture explicite d'un fil (recherche, notification, intention
+        consommée) : mémorisée dans _open_tabs, et toute fermeture enregistrée
+        pour cette clé devient caduque."""
+        self._open_tabs.add(key)
+        self._save_open_tabs()
+        if key in self._closed_tabs:
+            del self._closed_tabs[key]
+            self._save_closed_tabs()
+
     def _tab_index_of(self, key):
         for i in range(self.tabs.count()):
             if self.tabs.tabData(i) == key:
@@ -866,22 +918,41 @@ class MessagingController(QObject):
                 # « Équipe » est permanente : seuls les fils directs entrent
                 # dans les onglets ouverts à la main.
                 if known[pending].get("kind") == "direct":
-                    self._open_tabs.add(pending)
-                    self._save_open_tabs()
+                    self._mark_opened(pending)
                 self._pending_open_key = None
             elif self.conversations:
                 self._pending_open_key = None
         # Ensemble actif : un fil direct a un onglet dès qu'il porte des
-        # non-lus, un historique, ou a été ouvert à la main.
+        # non-lus, un historique, ou a été ouvert à la main — sauf s'il a été
+        # fermé à la main et n'a pas eu d'activité depuis (last_message_id
+        # inchangé) : la fermeture est mémorisée, pas un « vu ».
         ordered = ["broadcast"]
+        closed_dirty = False
         for conversation in self.conversations:
             key = conversation.get("key")
             if not key or conversation.get("kind") == "broadcast":
                 continue
-            if (int(conversation.get("unread_count") or 0) > 0
-                    or conversation.get("last_message_id") is not None
-                    or key in self._open_tabs):
+            if key in self._open_tabs:
+                # Ouverture manuelle prioritaire : une fermeture enregistrée
+                # qui traînerait encore est caduque.
+                if key in self._closed_tabs:
+                    del self._closed_tabs[key]
+                    closed_dirty = True
                 ordered.append(key)
+                continue
+            last_id = conversation.get("last_message_id")
+            if key in self._closed_tabs:
+                if self._closed_tabs[key] == last_id:
+                    continue  # fermé à la main, rien de neuf : reste fermé
+                # last_message_id a changé = activité nouvelle (dont les
+                # non-lus entrants) : l'onglet renaît.
+                del self._closed_tabs[key]
+                closed_dirty = True
+            if (int(conversation.get("unread_count") or 0) > 0
+                    or last_id is not None):
+                ordered.append(key)
+        if closed_dirty:
+            self._save_closed_tabs()
         keep = set(ordered)
         self.tabs.blockSignals(True)
         try:
@@ -938,7 +1009,13 @@ class MessagingController(QObject):
             if conversation.get("kind") != "direct":
                 continue
             name = conversation.get("name") or "Équipier"
+            # Initiales métier du serveur (« BN » pour « Benoit ») : affichées
+            # dans le libellé et matchables — « Benoit » seul ne dériverait
+            # que « b » des mots du nom.
+            business_initials = conversation.get("initials") or ""
             label = name
+            if business_initials:
+                label += f" ({business_initials})"
             counter = conversation.get("counter_name")
             if counter:
                 label += f" — Comptoir {counter}"
@@ -946,10 +1023,12 @@ class MessagingController(QObject):
             item = QStandardItem(label)
             item.setData(conversation.get("key"), Qt.ItemDataRole.UserRole)
             item.setData(name, _NAME_ROLE)
+            item.setData(business_initials or None, _INITIALS_ROLE)
             # Texte cherché sous toutes ses formes pour que la passe interne
             # du completer (MatchContains sur _SEARCH_ROLE) n'écarte rien.
             item.setData(
-                f"{name} {initials} {_normalize(name)} {_normalize(initials)}",
+                f"{name} {initials} {business_initials} {_normalize(name)} "
+                f"{_normalize(initials)} {_normalize(business_initials)}",
                 _SEARCH_ROLE)
             self._recipient_model.appendRow(item)
 
@@ -961,8 +1040,7 @@ class MessagingController(QObject):
         key = index.data(Qt.ItemDataRole.UserRole) if index.isValid() else None
         if not key or self.tabs is None:
             return
-        self._open_tabs.add(key)
-        self._save_open_tabs()
+        self._mark_opened(key)
         self._refresh_tabs()
         tab = self._tab_index_of(key)
         if tab >= 0:
@@ -979,11 +1057,16 @@ class MessagingController(QObject):
 
     def _close_tab(self, index):
         """Fermeture d'un onglet à la main : la clé sort des onglets ouverts
-        manuellement. Un fil avec de l'activité (non-lus, historique)
-        réapparaîtra au prochain état — c'est voulu."""
+        manuellement, et la fermeture elle-même est mémorisée avec le
+        last_message_id courant — le fil reste fermé aux états suivants
+        jusqu'à une activité nouvelle (cf. _refresh_tabs)."""
         key = self.tabs.tabData(index)
         if key == "broadcast":
             return  # « Équipe » est permanente : jamais fermable.
+        conversation = next((item for item in self.conversations
+                             if item.get("key") == key), None)
+        self._closed_tabs[key] = (conversation or {}).get("last_message_id")
+        self._save_closed_tabs()
         self.tabs.removeTab(index)
         if key in self._open_tabs:
             self._open_tabs.discard(key)

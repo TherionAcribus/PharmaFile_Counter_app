@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from messaging import (
-    MessagingController, _NAME_ROLE, _RecipientFilterModel,
+    MessagingController, _INITIALS_ROLE, _NAME_ROLE, _RecipientFilterModel,
 )
 from net_result import NetResult
 
@@ -1076,6 +1076,72 @@ def test_closing_a_manually_opened_tab_forgets_it():
     assert "direct:9" not in controller._open_tabs
 
 
+def test_manually_closed_tab_stays_closed_on_next_state():
+    # Fermer un fil « avec historique mais rien de neuf » n'est pas un « vu »
+    # forcé : l'onglet ne renaît pas à chaque état (heartbeat, socket…).
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    index = _index(controller, "direct:2")
+    assert index >= 0                       # historique → onglet présent
+    controller._close_tab(index)
+    assert _index(controller, "direct:2") == -1
+    assert controller._closed_tabs["direct:2"] == 1   # last_message_id mémorisé
+    controller._handle_state_result(NetResult(200, data=_state()))
+    assert _index(controller, "direct:2") == -1       # reste fermé
+
+
+def test_closed_tab_reappears_on_new_activity():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller._close_tab(_index(controller, "direct:2"))
+    state = _state()
+    # Nouveau message dans le fil : last_message_id a changé, l'onglet renaît.
+    state["conversations"][1]["last_message_id"] = 2
+    state["conversations"][1]["unread_count"] = 1
+    controller._handle_state_result(NetResult(200, data=state))
+    assert _index(controller, "direct:2") >= 0
+    assert "direct:2" not in controller._closed_tabs
+
+
+def test_closed_tabs_are_remembered_across_sessions():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller._close_tab(_index(controller, "direct:2"))
+    # Nouvelle session (autre fenêtre/contrôleur, mêmes réglages) : la
+    # fermeture est retrouvée dans QSettings.
+    _window2, controller2 = _controller()
+    controller2.set_enabled(True)
+    controller2._handle_state_result(NetResult(200, data=_state()))
+    assert _index(controller2, "direct:2") == -1
+
+
+def test_search_reopens_a_manually_closed_tab():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller._close_tab(_index(controller, "direct:2"))
+    controller.search.setText("bo")
+    controller._activate_first_recipient()
+    assert _index(controller, "direct:2") >= 0
+    assert "direct:2" not in controller._closed_tabs
+    assert controller._selected_key() == "direct:2"
+
+
+def test_notification_reopens_a_manually_closed_tab():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    window.show()
+    controller._handle_state_result(NetResult(200, data=_state()))
+    controller._close_tab(_index(controller, "direct:2"))
+    controller.open_from_notification({"conversation_key": "direct:2"})
+    assert _index(controller, "direct:2") >= 0
+    assert "direct:2" not in controller._closed_tabs
+    assert controller._selected_key() == "direct:2"
+
+
 def test_open_before_state_arrival_is_consumed_by_next_refresh():
     window, controller = _controller()
     controller.set_enabled(True)
@@ -1118,6 +1184,37 @@ def test_recipient_filter_matches_name_fragments_and_initials():
     proxy.set_query("mar")       # sous-chaîne du nom
     assert proxy.index(0, 0).data() == "Bob Martin — Comptoir 1"
     proxy.set_query("bobi")      # ni sous-chaîne, ni initiales
+    assert proxy.rowCount() == 0
+
+
+def _recipient_item(name, key, initials=None, counter="1"):
+    """Item du modèle de recherche, comme le construit _rebuild_recipients."""
+    label = f"{name} ({initials})" if initials else name
+    item = QStandardItem(f"{label} — Comptoir {counter}")
+    item.setData(key, Qt.ItemDataRole.UserRole)
+    item.setData(name, _NAME_ROLE)
+    item.setData(initials, _INITIALS_ROLE)
+    return item
+
+
+def test_recipient_filter_matches_business_initials():
+    # « Benoit » seul ne dériverait que « b » des mots du nom : c'est la
+    # colonne initials du serveur (« BN », celle de la connexion) qui est
+    # matchée — affichée dans le libellé au passage.
+    model = QStandardItemModel()
+    model.appendRow(_recipient_item("Benoit", "direct:4", initials="BN"))
+    model.appendRow(_recipient_item("Bob Martin", "direct:3"))
+    proxy = _RecipientFilterModel()
+    proxy.setSourceModel(model)
+    proxy.set_query("bn")
+    assert proxy.rowCount() == 1
+    assert proxy.index(0, 0).data() == "Benoit (BN) — Comptoir 1"
+    # Rôle absent (vieux serveur, initials=None) : les critères classiques
+    # continuent de fonctionner, rien ne casse.
+    proxy.set_query("bob")
+    assert proxy.rowCount() == 1
+    assert proxy.index(0, 0).data() == "Bob Martin — Comptoir 1"
+    proxy.set_query("bnz")
     assert proxy.rowCount() == 0
 
 
