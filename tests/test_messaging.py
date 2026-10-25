@@ -5,7 +5,9 @@ import uuid
 import pytest
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+from PySide6.QtGui import (
+    QColor, QKeyEvent, QPalette, QStandardItem, QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QHBoxLayout, QMainWindow, QMenu, QTabBar, QWidget,
 )
@@ -1242,3 +1244,19 @@ def test_read_mark_skipped_while_thread_is_scrolled_up(monkeypatch):
     bar.setValue(20)
     controller._mark_visible_read()
     assert not any(call[0] == "read" for call in window.api.calls)
+
+
+def test_unread_colors_tab_text_and_badge_button():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    direct = _index(controller, "direct:2")
+    # Onglet coloré + bouton 💬 coloré : le signal est visible même si le
+    # fil concerné n'est pas celui affiché.
+    assert controller.tabs.tabTextColor(direct) == QColor("#d97706")
+    assert controller.button.styleSheet()
+    # Plus de non-lu : retour au neutre.
+    controller._handle_state_result(NetResult(200, data=_state(unread=0)))
+    default = controller.tabs.palette().color(QPalette.ColorRole.WindowText)
+    assert controller.tabs.tabTextColor(direct) == default
+    assert controller.button.styleSheet() == ""

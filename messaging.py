@@ -13,7 +13,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QIcon, QPainter, QPixmap, QStandardItem,
+    QAction, QColor, QIcon, QPainter, QPalette, QPixmap, QStandardItem,
     QStandardItemModel, QTextCursor,
 )
 from PySide6.QtWidgets import (
@@ -835,6 +835,11 @@ class MessagingController(QObject):
         self.tabs.setTabText(index, short)
         self.tabs.setTabToolTip(index, tooltip)
         self.tabs.setTabData(index, conversation.get("key"))
+        # Non-lus : l'onglet se colore — un nouveau message se repère d'un
+        # coup d'œil même quand son onglet n'est pas celui sélectionné.
+        self.tabs.setTabTextColor(
+            index, QColor("#d97706") if unread
+            else self.tabs.palette().color(QPalette.ColorRole.WindowText))
 
     def _refresh_tabs(self):
         """Fait correspondre les onglets à l'ensemble actif : « Équipe »
@@ -1329,6 +1334,10 @@ class MessagingController(QObject):
         if self.button is None:
             return
         self.button.setText("💬" if not self.unread_total else f"💬 {self.unread_total}")
+        # Des non-lus : le bouton se colore — le signal reste visible même
+        # quand le panneau de messagerie est fermé.
+        self.button.setStyleSheet(
+            "color: #d97706; font-weight: bold;" if self.unread_total else "")
         self.button.setAccessibleDescription(
             f"{self.unread_total} message(s) non lu(s)" if self.unread_total
             else "Aucun message non lu"
