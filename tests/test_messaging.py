@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -46,16 +47,25 @@ class FakeApi:
 
     def messaging_messages(self, kind, peer_staff_id=None, before_id=None,
                            after_id=None, on_result=None):
-        self.calls.append(("messages", kind, peer_staff_id, on_result))
+        # on_result reste en position 3 (les tests existants appellent
+        # call[3](NetResult(...))) ; before_id rejoint le tuple en
+        # position 4 pour les tests de pagination.
+        self.calls.append(
+            ("messages", kind, peer_staff_id, on_result, before_id))
 
     def messaging_send(self, client_id, kind, body, recipient_id=None,
-                       scope=None, on_result=None):
+                       scope=None, urgent=False, on_result=None):
         # on_result reste en position 4 (les tests existants appellent
-        # call[4](NetResult(...))) ; la portée broadcast est en position 5.
-        self.calls.append(("send", kind, body, recipient_id, on_result, scope))
+        # call[4](NetResult(...))) ; la portée broadcast est en position 5,
+        # « urgent » en position 6.
+        self.calls.append(
+            ("send", kind, body, recipient_id, on_result, scope, urgent))
 
     def messaging_read(self, ids, on_result=None):
         self.calls.append(("read", list(ids), on_result))
+
+    def messaging_delete(self, message_id, on_result=None):
+        self.calls.append(("delete", message_id, on_result))
 
 
 class FakeWindow(QMainWindow):
@@ -1369,8 +1379,13 @@ def test_quick_reply_inserts_text_without_sending():
     window, controller = _controller()
     controller.set_enabled(True)
     assert controller.quick_button.accessibleName() == "Réponses rapides"
-    assert [a.text() for a in controller.quick_button.menu().actions()] \
-        == list(controller.QUICK_REPLIES)
+    # Les phrases restent les premières entrées du menu — l'action
+    # « Retirer mon dernier message » vient après un séparateur.
+    labels = [a.text() for a in controller.quick_button.menu().actions()
+              if not a.isSeparator()]
+    assert labels[:len(controller.QUICK_REPLIES)] == \
+        list(controller.QUICK_REPLIES)
+    assert labels[-1] == "Retirer mon dernier message"
     # Pas de conversation tant que l'état n'est pas arrivé : grisé.
     assert not controller.quick_button.isEnabled()
     controller._handle_state_result(NetResult(200, data=_state()))
@@ -1641,3 +1656,416 @@ def test_known_initials_are_highlighted_in_the_thread():
     assert "background-color:#b45309" in html_out          # @AL (moi)
     assert re.search(r"color:#b45309;[^>]*>@BN", html_out)  # @BN (connu)
     assert not re.search(r"font-weight:\d+[^>]*>@ZZ", html_out)  # inconnu
+
+
+# --- Messages « urgent » -------------------------------------------------------
+
+def test_urgent_button_arms_next_send_and_disarms_on_success():
+    # « ❗ » arme UN envoi : propagé au serveur, désarmé au succès — le
+    # message suivant repart en normal.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    assert controller.urgent_button.accessibleName() == "Message urgent"
+    controller.input.setPlainText("Panne au comptoir 3 !")
+    controller.urgent_button.setChecked(True)
+    controller.send()
+    assert _sends(window.api)[-1][6] is True          # urgent propagé
+    _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
+    assert not controller.urgent_button.isChecked()
+    controller.input.setPlainText("C'est réparé")
+    controller.send()
+    assert _sends(window.api)[-1][6] is False
+
+
+def test_urgent_button_resets_on_conversation_change():
+    # Armé dans un fil, désarmé en changeant d'onglet : l'urgence ne se
+    # transporte pas dans la conversation suivante.
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    controller.urgent_button.setChecked(True)
+    _select(controller, "broadcast")
+    assert not controller.urgent_button.isChecked()
+
+
+def test_urgent_notification_uses_sticky_origin():
+    import notification_rules
+    window, controller = _controller()
+    controller.set_enabled(True)
+    assert notification_rules.is_sticky("messaging_urgent") is True
+    controller._pending_event = {"sender_name": "Bob", "urgent": True}
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    data, _kwargs = window.notifications[0]
+    assert data["origin"] == "messaging_urgent"
+    assert "urgent" in data["message"]
+
+
+def test_mention_takes_priority_over_urgent():
+    # Mentionné ET urgent : la mention nomme l'équipier — elle prime.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._pending_event = {
+        "sender_name": "Bob", "kind": "broadcast",
+        "mentioned_staff_ids": [1], "urgent": True}
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert window.notifications[0][0]["origin"] == "messaging_mention"
+
+
+def test_baseline_unread_urgent_notifies_with_urgent_origin():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state(unread=2)
+    state["unread_urgent"] = 2
+    controller._handle_state_result(NetResult(200, data=state))
+    data, _kwargs = window.notifications[0]
+    assert data["origin"] == "messaging_urgent"
+    assert "2 message(s) urgent(s)" in data["message"]
+    # Mentions + urgents : l'origine mention prime, les urgents sont cumulés.
+    window.notifications.clear()
+    controller._baseline_known = False
+    state["unread_mentions"] = 1
+    controller._handle_state_result(NetResult(200, data=state))
+    data, _kwargs = window.notifications[0]
+    assert data["origin"] == "messaging_mention"
+    assert "2 urgent(s)" in data["message"]
+
+
+def test_urgent_message_renders_with_red_bubble_and_marker():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "Panne !", "urgent": True,
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ])
+    html_out = controller.thread.toHtml()
+    assert "#fee2e2" in html_out
+    assert "❗" in html_out
+
+
+# --- Indicateur « … écrit » ----------------------------------------------------
+
+class _FakeWs:
+    """Client websocket factice : mémorise les émissions send_typing."""
+    def __init__(self):
+        self.typing = []
+
+    def send_typing(self, payload):
+        self.typing.append(payload)
+
+
+def test_typing_signal_is_emitted_throttled():
+    window, controller = _controller()
+    ws = _FakeWs()
+    window.socket_io_client = ws
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    controller.input.setPlainText("B")
+    controller.input.setPlainText("Bo")   # < 3 s après : pas de second envoi
+    assert len(ws.typing) == 1
+    payload = ws.typing[0]
+    assert payload["kind"] == "direct"
+    assert payload["staff_id"] == 1
+    assert payload["peer_staff_id"] == 2
+    assert payload["peer_counter_id"] == 2
+    assert payload["counter_id"] is not None or "counter_id" in payload
+    # Intervalle écoulé : un nouveau signal part.
+    controller._last_typing_emit -= controller.TYPING_EMIT_INTERVAL
+    controller.input.setPlainText("Bon")
+    assert len(ws.typing) == 2
+
+
+def test_typing_indicator_shows_and_expires_for_current_conversation():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    controller.socket_typing({"kind": "direct", "staff_id": 2,
+                              "peer_staff_id": 1, "name": "Bob"})
+    assert controller.status_label.text() == "Bob écrit…"
+    # Pas de signal « arrêté d'écrire » : l'expiration l'efface toute seule.
+    controller._typing_timer.timeout.emit()
+    assert controller.status_label.text() == ""
+    # Un nouveau signal réarme puis expire de nouveau.
+    controller.socket_typing({"kind": "direct", "staff_id": 2,
+                              "peer_staff_id": 1, "name": "Bob"})
+    assert "écrit" in controller.status_label.text()
+    controller.socket_typing({"kind": "direct", "staff_id": 2,
+                              "peer_staff_id": 1, "name": "Bob"})
+    controller._typing_timer.timeout.emit()
+    assert controller.status_label.text() == ""
+
+
+def test_typing_indicator_ignores_irrelevant_signals():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    # Moi-même (autre poste du même agent) : ignoré.
+    controller.socket_typing({"kind": "direct", "staff_id": 1,
+                              "peer_staff_id": 1, "name": "Alice"})
+    assert controller.status_label.text() == ""
+    # Un autre interlocuteur que celui du fil affiché : ignoré.
+    controller.socket_typing({"kind": "direct", "staff_id": 3,
+                              "peer_staff_id": 1, "name": "Chloé"})
+    assert controller.status_label.text() == ""
+    # Typing « équipe » dans le fil direct : ignoré.
+    controller.socket_typing({"kind": "broadcast", "staff_id": 2,
+                              "name": "Bob"})
+    assert controller.status_label.text() == ""
+    # … mais affiché dans le fil « Équipe ».
+    _select(controller, "broadcast")
+    controller.socket_typing({"kind": "broadcast", "staff_id": 2,
+                              "name": "Bob"})
+    assert controller.status_label.text() == "Bob écrit…"
+
+
+# --- Retrait d'un message (« Retirer mon dernier message ») -----------------
+
+def _my_message(message_id=30, created_at=None):
+    """Un message envoyé par moi (staff_id=1), récent par défaut."""
+    return {
+        "id": message_id, "kind": "direct", "body": "envoyé par erreur",
+        "sender": {"name": "Alice", "staff_id": 1},
+        "created_at": (
+            created_at or datetime.now(timezone.utc)).isoformat(),
+    }
+
+
+def _feed_with(controller, api, messages, has_more=None):
+    """Répond au dernier messaging_messages avec un contrôle de has_more."""
+    data = {"messages": messages}
+    if has_more is not None:
+        data["has_more"] = has_more
+    _last_callback(api, "messages", 3)(NetResult(200, data=data))
+
+
+def test_delete_action_is_only_enabled_on_my_recent_last_message():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+
+    # Dernier message de Bob, pas de moi : action grisée.
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "de Bob",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ])
+    controller._refresh_delete_action()
+    assert not controller._delete_action.isEnabled()
+
+    # Mon message mais hors de la fenêtre de 15 min : grisé pareil.
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "de Bob",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        _my_message(message_id=11, created_at=(
+            datetime.now(timezone.utc) - timedelta(minutes=20))),
+    ])
+    controller._refresh_delete_action()
+    assert not controller._delete_action.isEnabled()
+
+    # Mon message récent en fin de fil : activé.
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "de Bob",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        _my_message(message_id=11),
+    ])
+    controller._refresh_delete_action()
+    assert controller._delete_action.isEnabled()
+
+
+def test_delete_requires_a_second_click_then_calls_the_api():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [_my_message()])
+
+    # Premier clic : consigne affichée, aucune requête.
+    controller._request_delete()
+    assert controller._delete_confirm
+    assert controller._status_message == (
+        "Cliquez encore pour retirer le message")
+    assert not [c for c in window.api.calls if c[0] == "delete"]
+
+    # Second clic dans le délai : la suppression part.
+    controller._request_delete()
+    delete_calls = [c for c in window.api.calls if c[0] == "delete"]
+    assert len(delete_calls) == 1 and delete_calls[0][1] == 30
+    assert not controller._delete_confirm
+    assert controller._status_message is None
+
+
+def test_delete_success_reloads_state_and_thread():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [_my_message()])
+    window.api.calls.clear()
+
+    controller._request_delete()
+    controller._request_delete()
+    _last_callback(window.api, "delete", 2)(
+        NetResult(200, data={"deleted": True, "message_id": 30}))
+    names = [c[0] for c in window.api.calls]
+    assert "state" in names and "messages" in names
+    assert controller._status_message is None
+
+
+def test_delete_expired_window_is_reported_inline():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [_my_message()])
+    controller._request_delete()
+    controller._request_delete()
+    _last_callback(window.api, "delete", 2)(
+        NetResult(409, data={"error": "delete_window_expired"}))
+    assert controller._status_message == "Délai dépassé (15 min)."
+
+
+def test_delete_other_errors_are_reported_inline():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [_my_message()])
+    controller._request_delete()
+    controller._request_delete()
+    _last_callback(window.api, "delete", 2)(
+        NetResult(400, data={"error": "invalid_message"}))
+    assert controller._status_message == (
+        "Le message n'a pas pu être retiré.")
+
+
+def test_delete_intent_is_disarmed_on_tab_change():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [_my_message()])
+    controller._request_delete()
+    assert controller._delete_confirm
+    _select(controller, "broadcast")
+    assert not controller._delete_confirm
+    assert controller._status_message is None
+
+
+# --- Pagination « charger plus ancien » -------------------------------------
+
+def test_scrolling_to_top_requests_older_messages_with_before_id():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "dix",
+         "sender": {"name": "Bob", "staff_id": 2}},
+        {"id": 11, "body": "onze",
+         "sender": {"name": "Alice", "staff_id": 1}},
+    ], has_more=True)
+    calls_before = len([c for c in window.api.calls if c[0] == "messages"])
+
+    controller._maybe_load_older(0)
+    calls = [c for c in window.api.calls if c[0] == "messages"]
+    assert len(calls) == calls_before + 1
+    # before_id = id du plus ancien message chargé.
+    assert calls[-1][4] == 10
+
+    # Descente de l'ascenseur : pas de chargement.
+    controller._older_in_flight = False
+    controller._maybe_load_older(50)
+    assert len([c for c in window.api.calls if c[0] == "messages"]) == \
+        calls_before + 1
+
+
+def test_older_response_prepends_and_preserves_bottom_distance():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "dix",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ], has_more=True)
+    controller._load_older()
+
+    # Position de lecture mémorisée : 20 px au-dessus du bas (l'ascenseur
+    # hors-écran n'a pas de plage réelle, on simule sa géométrie).
+    bar = controller.thread.verticalScrollBar()
+    set_values = []
+    original = bar.setValue
+    def _spy(value):
+        set_values.append(value)
+        original(value)
+    bar.setValue = _spy
+    bar.value = lambda: 20
+    bar.maximum = lambda: 100
+
+    _last_callback(window.api, "messages", 3)(NetResult(200, data={
+        "has_more": False,
+        "messages": [{"id": 5, "body": "cinq",
+                      "sender": {"name": "Bob", "staff_id": 2}}]}))
+    bar.setValue = original
+
+    assert [m["id"] for m in controller.messages] == [5, 10]
+    assert not controller._has_more
+    # Distance au bas conservée : 100 - (100 - 20) = 20… la formule rend
+    # la même valeur quand le maximum simulé ne bouge pas.
+    assert set_values[-1] == bar.maximum() - (100 - 20)
+    # Le contenu plus ancien est rendu AVANT le message déjà affiché.
+    html_out = controller.thread.toHtml()
+    assert html_out.index("cinq") < html_out.index("dix")
+
+
+def test_no_older_request_when_has_more_is_false():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "dix",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ], has_more=False)
+    calls_before = len([c for c in window.api.calls if c[0] == "messages"])
+    controller._maybe_load_older(0)
+    assert len([c for c in window.api.calls if c[0] == "messages"]) == \
+        calls_before
+
+
+def test_older_loading_is_locked_while_in_flight():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "dix",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ], has_more=True)
+    calls_before = len([c for c in window.api.calls if c[0] == "messages"])
+    controller._load_older()
+    controller._load_older()  # doublon : la page est déjà en vol
+    assert len([c for c in window.api.calls if c[0] == "messages"]) == \
+        calls_before + 1
+
+
+def test_older_state_resets_on_tab_change():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, window.api, [
+        {"id": 10, "body": "dix",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ], has_more=True)
+    assert controller._has_more
+    _select(controller, "broadcast")
+    assert not controller._has_more
+    assert not controller._older_in_flight

@@ -344,8 +344,11 @@ class CustomNotification(QDialog):
         title = notification_title(self.origin, tone, fallback=self.origin)
         self.title = decorate_title(title, severity)
 
-        # Son : « ding » par défaut, son spécifique pour l'appel à validation.
-        self.sound = "please_validate" if self.origin == "please_validate" else "ding"
+        # Son : « ding » par défaut ; le son distinct de l'appel à validation
+        # sert aussi aux messages « urgent » — même exigence d'attention.
+        self.sound = ("please_validate"
+                      if self.origin in ("please_validate", "messaging_urgent")
+                      else "ding")
 
     def show_without_activating(self):
         """Affiche la notification sans lui donner le focus (le progiciel de

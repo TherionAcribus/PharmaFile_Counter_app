@@ -207,6 +207,10 @@ def messaging_read(web_url):
     return f"{_base(web_url)}/api/messaging/read"
 
 
+def messaging_delete(web_url):
+    return f"{_base(web_url)}/api/messaging/delete"
+
+
 # --- Temps réel ------------------------------------------------------------
 
 def socket_url(web_url):

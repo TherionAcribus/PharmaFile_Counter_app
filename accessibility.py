@@ -148,6 +148,10 @@ _TITLES = {
         TONE_SOBER: "Mention",
         TONE_HUMOROUS: "Mention",
     },
+    "messaging_urgent": {
+        TONE_SOBER: "Message urgent",
+        TONE_HUMOROUS: "Message urgent",
+    },
     "activity": {
         TONE_SOBER: "Nouvelle mission",
         TONE_HUMOROUS: "Une nouvelle mission arrive !",

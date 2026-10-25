@@ -5,9 +5,10 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from PySide6.QtCore import (
     QEvent, QModelIndex, QObject, QSettings, QSortFilterProxyModel, Qt, QTimer,
@@ -151,6 +152,14 @@ class MessagingController(QObject):
     QUICK_REPLIES = (
         "J'arrive", "Occupé(e) 2 min", "En réserve", "Un client m'attend",
     )
+    #: Intervalle minimal entre deux signaux « en train d'écrire » (s) :
+    #: l'indicateur est éphémère, inutile d'en envoyer à chaque frappe.
+    TYPING_EMIT_INTERVAL = 3.0
+    #: Durée d'affichage de « … écrit » sans nouveau signal (s).
+    TYPING_DISPLAY_MS = 4_000
+    #: Fenêtre de retrait d'un de mes messages (s) : garde miroir de
+    #: DELETE_WINDOW_SECONDS côté serveur, qui reste le seul juge.
+    DELETE_WINDOW_SECONDS = 15 * 60
 
     def __init__(self, window, settings_factory=QSettings):
         super().__init__()
@@ -187,6 +196,7 @@ class MessagingController(QObject):
         self.input = None
         self.send_button = None
         self.quick_button = None
+        self.urgent_button = None
         self.status_label = None
         self._online_only = None
         self._icon_layout = None
@@ -217,6 +227,10 @@ class MessagingController(QObject):
         # effacer un nouveau brouillon saisi pendant l'attente.
         self._send_in_flight = False
         self._sent_body = None
+        # « … écrit » affiché dans le libellé d'état : texte courant et
+        # expiration (le signal ne se répète pas de lui-même).
+        self._typing_text = None
+        self._last_typing_emit = 0.0
         # Rafraîchissement d'état demandé pendant qu'une lecture identique
         # était déjà en vol (refusée comme doublon par la couche réseau) : la
         # réponse de la requête en cours déclenchera la relance — cf.
@@ -232,6 +246,16 @@ class MessagingController(QObject):
         # premier Entrée/clic arme ce drapeau (et affiche la consigne), le
         # second — dans le délai — envoie réellement.
         self._broadcast_confirm = False
+        # « Retirer mon dernier message » suit le même deux temps : premier
+        # clic sur l'action = consigne affichée, second clic dans le délai
+        # = requête de suppression réelle.
+        self._delete_confirm = False
+        self._delete_action = None
+        # Pagination « charger plus ancien » : has_more de la dernière
+        # réponse messages du fil courant seulement (réinitialisé au
+        # changement de fil), et verrou pendant qu'une page remonte.
+        self._has_more = False
+        self._older_in_flight = False
         # Pendant nos propres déplacements/suppressions du dock : les signaux
         # de visibilité émis alors ne sont pas des choix utilisateur à
         # persister (cf. aussi arranger.busy).
@@ -261,6 +285,13 @@ class MessagingController(QObject):
         self._read_timer.setSingleShot(True)
         self._read_timer.setInterval(self.READ_DELAY_MS)
         self._read_timer.timeout.connect(self._mark_visible_read)
+
+        # « … écrit » s'efface tout seul : pas de signal « arrêté d'écrire »
+        # dans le protocole, l'expiration le tue.
+        self._typing_timer = QTimer(self)
+        self._typing_timer.setSingleShot(True)
+        self._typing_timer.setInterval(self.TYPING_DISPLAY_MS)
+        self._typing_timer.timeout.connect(self._clear_typing)
 
     def set_enabled(self, enabled):
         enabled = bool(enabled)
@@ -348,6 +379,13 @@ class MessagingController(QObject):
         self._state_pending = False
         self._status_message = None
         self._broadcast_confirm = False
+        self._delete_confirm = False
+        self._has_more = False
+        self._older_in_flight = False
+        # « … écrit » n'a de sens que dans la session qui l'a affiché.
+        self._typing_timer.stop()
+        self._typing_text = None
+        self._last_typing_emit = 0.0
         # La notification « non-lus à la connexion » pourra se rejouer pour la
         # prochaine session (nouvel agent, réactivation) : sa référence repart
         # de zéro.
@@ -561,6 +599,10 @@ class MessagingController(QObject):
         # message) : point d'armement de l'accusé « Lu ».
         self.thread.verticalScrollBar().valueChanged.connect(
             self._thread_reached_bottom)
+        # Arrivé tout en haut : les messages plus anciens se chargent à la
+        # demande (« charger plus ancien » sans bouton).
+        self.thread.verticalScrollBar().valueChanged.connect(
+            self._maybe_load_older)
 
         # Portée d'un message « équipe » : tous les équipiers actifs (défaut)
         # ou les connectés seulement. Cachée hors conversation broadcast —
@@ -584,9 +626,25 @@ class MessagingController(QObject):
         self.input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._update_composer)
+        self.input.textChanged.connect(self._maybe_emit_typing)
         self.input.sendRequested.connect(self.send)
         self.input.escapeRequested.connect(self._release_focus)
         composer.addWidget(self.input, 1)
+        # « ❗ » : arme le PROCHAIN envoi en urgent — notification
+        # persistante chez le destinataire. Un seul message concerné : le
+        # bouton se désarme tout seul après l'envoi réussi (et repart
+        # désarmé à chaque changement de conversation).
+        self.urgent_button = QToolButton(container)
+        self.urgent_button.setText("❗")
+        self.urgent_button.setCheckable(True)
+        self.urgent_button.setAutoRaise(True)
+        self.urgent_button.setFixedSize(36, 36)
+        self.urgent_button.setToolTip(
+            "Envoyer en urgent — notification persistante chez le destinataire")
+        self.urgent_button.setAccessibleName("Message urgent")
+        self.urgent_button.setStyleSheet(
+            "QToolButton:checked { color:#dc2626; font-weight:bold; }")
+        composer.addWidget(self.urgent_button)
         # Réponses rapides : le menu insère la phrase dans le champ (elle
         # reste modifiable, Entrée envoie) — pas d'envoi direct : un envoi
         # immédiat sous le doigt au comptoir serait une fausse manip.
@@ -604,6 +662,16 @@ class MessagingController(QObject):
             action.triggered.connect(
                 lambda _checked=False, _text=phrase:
                     self._insert_quick_reply(_text))
+        # Retrait du dernier message envoyé par erreur : séparé des
+        # insertions de texte — c'est une autre nature d'action, confirmée
+        # en deux temps en ligne (même logique que l'envoi « équipe »).
+        quick_menu.addSeparator()
+        self._delete_action = quick_menu.addAction(
+            "Retirer mon dernier message")
+        self._delete_action.triggered.connect(self._request_delete)
+        # Son état « activé » dépend du dernier message chargé : réévalué à
+        # l'ouverture du menu plutôt qu'à chaque rendu du fil.
+        quick_menu.aboutToShow.connect(self._refresh_delete_action)
         self.quick_button.setMenu(quick_menu)
         composer.addWidget(self.quick_button)
         self.send_button = QPushButton(container)
@@ -675,7 +743,9 @@ class MessagingController(QObject):
                     pass
             setattr(self, obj_name, None)
         self.search = self.tabs = self.thread = None
-        self.input = self.send_button = self.quick_button = None
+        self.input = self.send_button = None
+        self.quick_button = self.urgent_button = None
+        self._delete_action = None
         self.status_label = None
         self._online_only = None
         self._recipient_model = self._recipient_proxy = None
@@ -814,12 +884,21 @@ class MessagingController(QObject):
                             event.get("mentioned_staff_ids") or []):
                         # Mention « @initiales » : alerte dédiée, persistante
                         # jusqu'à fermeture explicite (origine sticky, cf.
-                        # notification_rules.STICKY_ORIGINS).
+                        # notification_rules.STICKY_ORIGINS). La mention
+                        # prime sur « urgent » : elle nomme l'équipier.
                         notification = {
                             "origin": "messaging_mention",
                             "message": (
                                 f"{sender} vous a mentionné." if sender
                                 else "Vous avez été mentionné."),
+                        }
+                    elif event.get("urgent"):
+                        # Message prioritaire : persistant pareil — l'alerte
+                        # ne doit pas s'effacer toute seule au comptoir.
+                        notification = {
+                            "origin": "messaging_urgent",
+                            "message": (f"Message urgent de {sender}."
+                                        if sender else "Message urgent."),
                         }
                     else:
                         notification = {
@@ -855,16 +934,31 @@ class MessagingController(QObject):
                     # l'absence — une seule fois. Pas de cumul avec « Nouveau
                     # message » : un même état n'affiche qu'une alerte.
                     mentions = int(result.data.get("unread_mentions") or 0)
+                    urgents = int(result.data.get("unread_urgent") or 0)
                     if mentions:
                         # Des mentions non lues mènent l'alerte : plus
                         # insistante (origine sticky) qu'un décompte de
                         # non-lus — l'équipier est nommément attendu dessus.
+                        # S'il y a AUSSI des urgents, ils sont cumulés dans
+                        # le texte : une seule notification, la plus forte.
+                        text = (
+                            f"Vous avez {self.unread_total} message(s) "
+                            f"non lu(s), dont {mentions} mention(s) "
+                            "vous concernant")
+                        if urgents:
+                            text += f" et {urgents} urgent(s)"
                         self.window.show_notification({
                             "origin": "messaging_mention",
+                            "message": text + ".",
+                        }, internal=True)
+                    elif urgents:
+                        # Pas de mention mais du prioritaire : l'alerte
+                        # « urgent » reste persistante pareil.
+                        self.window.show_notification({
+                            "origin": "messaging_urgent",
                             "message": (
-                                f"Vous avez {self.unread_total} message(s) "
-                                f"non lu(s), dont {mentions} mention(s) "
-                                "vous concernant."),
+                                f"Vous avez {urgents} message(s) urgent(s) "
+                                "non lu(s)."),
                         }, internal=True)
                     else:
                         self.window.show_notification({
@@ -1188,6 +1282,82 @@ class MessagingController(QObject):
         self.input.insertPlainText(text)
         self.input.setFocus()
 
+    def _can_delete_last_message(self):
+        """L'action « Retirer mon dernier message » ne vise que le dernier
+        message du fil affiché : il doit être de moi et dans la fenêtre de
+        retrait — la fenêtre exacte est aussi contrôlée côté serveur
+        (DELETE_WINDOW_SECONDS, seul juge si les horloges divergent)."""
+        if not self.enabled or not self.messages:
+            return False
+        last = self.messages[-1]
+        if (last.get("sender") or {}).get("staff_id") != self.staff_id:
+            return False
+        try:
+            created = datetime.fromisoformat(
+                str(last.get("created_at") or ""))
+        except (TypeError, ValueError):
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - created).total_seconds()
+        return age < self.DELETE_WINDOW_SECONDS
+
+    def _refresh_delete_action(self):
+        if self._delete_action is not None:
+            self._delete_action.setEnabled(self._can_delete_last_message())
+
+    def _request_delete(self):
+        """Retrait du dernier message du fil : confirmation à deux temps en
+        ligne, comme l'envoi « équipe » — premier clic = consigne affichée
+        5 s, second clic dans le délai = requête réelle. Pas de modale qui
+        volerait le focus en pleine saisie."""
+        if not self._can_delete_last_message():
+            return
+        if not self._delete_confirm:
+            self._delete_confirm = True
+            QTimer.singleShot(5000, self._disarm_delete_confirm)
+            self._status_message = "Cliquez encore pour retirer le message"
+            self._update_composer()
+            return
+        self._delete_confirm = False
+        self._status_message = None
+        self._update_composer()
+        self.window.api.messaging_delete(
+            self.messages[-1].get("id"),
+            on_result=self._network_callback(self._handle_delete_result))
+
+    def _disarm_delete_confirm(self):
+        """Fin du délai de confirmation « retirer » : le clic suivant
+        redemandera accord, et la consigne affichée redevient un statut
+        neutre."""
+        if not self._delete_confirm:
+            return
+        self._delete_confirm = False
+        self._status_message = None
+        try:
+            self._update_composer()
+        except RuntimeError:
+            # Le timer peut s'écouler après la destruction de l'interface.
+            pass
+
+    def _handle_delete_result(self, result):
+        if (result.status == 200 and isinstance(result.data, dict)
+                and result.data.get("deleted")):
+            self._status_message = None
+            self._update_composer()
+            # Le message a disparu partout : état et fil se rechargent chez
+            # moi, le signal « messaging_changed » fait de même chez le
+            # destinataire côté serveur.
+            self.request_state()
+            self.request_messages()
+            return
+        error = (result.data.get("error")
+                 if isinstance(result.data, dict) else None)
+        self._status_message = (
+            "Délai dépassé (15 min)." if error == "delete_window_expired"
+            else "Le message n'a pas pu être retiré.")
+        self._update_composer()
+
     def _close_tab(self, index):
         """Fermeture d'un onglet à la main : la clé sort des onglets ouverts
         manuellement, et la fermeture elle-même est mémorisée avec le
@@ -1229,14 +1399,29 @@ class MessagingController(QObject):
         self._current_key = key
         self._restore_draft()
         self.messages = []
-        # Consignes/erreurs affichées et confirmation « équipe » éventuellement
-        # armée concernaient la conversation quittée : sans objet ici.
+        # Consignes/erreurs affichées, confirmation « équipe » et consigne
+        # « retirer » éventuellement armées concernaient la conversation
+        # quittée : sans objet ici.
         self._status_message = None
         self._broadcast_confirm = False
+        self._delete_confirm = False
+        # « Il reste des messages plus anciens » appartenait au fil quitté ;
+        # la page récente du nouveau fil le recalculera. Le verrou de
+        # chargement se relâche : une réponse en vol pour l'ancien fil sera
+        # de toute façon ignorée au retour (clé différente).
+        self._has_more = False
+        self._older_in_flight = False
         if self._online_only is not None:
             # La portée choisie appartenait à la conversation quittée : on
             # repart sur le périmètre par défaut (« tous »).
             self._online_only.setChecked(False)
+        if self.urgent_button is not None:
+            # « Urgent » armé dans le fil quitté : on ne le transporte pas
+            # dans la conversation suivante.
+            self.urgent_button.setChecked(False)
+        # « … écrit » concernait l'interlocuteur du fil quitté.
+        self._typing_timer.stop()
+        self._typing_text = None
         if self.thread is not None:
             self.thread.clear()
         # Dernière conversation consultée : retrouvée à la prochaine session.
@@ -1262,7 +1447,39 @@ class MessagingController(QObject):
                 lambda result, _key=key:
                     self._handle_messages_result(result, _key)))
 
-    def _handle_messages_result(self, result, key=None):
+    def _maybe_load_older(self, value):
+        """Ascenseur arrivé tout en haut du fil : les messages plus anciens
+        se chargent à la demande — seulement s'il en reste (has_more de la
+        dernière réponse) et jamais deux pages à la fois."""
+        if value != 0:
+            return
+        self._load_older()
+
+    def _load_older(self):
+        if (not self._has_more or self._older_in_flight
+                or not self.messages):
+            return
+        conversation = self._selected()
+        if not conversation or not self.enabled:
+            return
+        oldest = self.messages[0].get("id")
+        if oldest is None:
+            return
+        self._older_in_flight = True
+        kind = conversation.get("kind")
+        key = conversation.get("key")
+        peer_id = conversation.get("staff_id") if kind == "direct" else None
+        self.window.api.messaging_messages(
+            kind, peer_staff_id=peer_id, before_id=oldest,
+            on_result=self._network_callback(
+                lambda result, _key=key:
+                    self._handle_messages_result(result, _key, prepend=True)))
+
+    def _handle_messages_result(self, result, key=None, prepend=False):
+        # Chargement d'une page plus ancienne terminé (appliquée ou non) :
+        # le verrou anti-doublon se relâche.
+        if prepend:
+            self._older_in_flight = False
         # Réponse tardive d'une conversation quittée entretemps : on l'ignore
         # au lieu d'afficher l'ancien fil dans la conversation désormais
         # sélectionnée (les requêtes sont asynchrones, sans annulation).
@@ -1271,11 +1488,22 @@ class MessagingController(QObject):
             if not current or current.get("key") != key:
                 return
         if result.status == 200 and isinstance(result.data, dict):
-            self.messages = result.data.get("messages") or []
-            self._render_messages()
-            self._schedule_read_mark()
+            self._has_more = bool(result.data.get("has_more"))
+            messages = result.data.get("messages") or []
+            if prepend:
+                if messages:
+                    self.messages = messages + self.messages
+                    # Insertion EN TÊTE : l'écran doit rester calé sur le
+                    # même contenu (keep_position, cf. _render_messages).
+                    self._render_messages(keep_position=True)
+            else:
+                # Rafraîchissement ordinaire : la page récente remplace le
+                # fil — simple à suivre, les anciens se rechargeront pareil.
+                self.messages = messages
+                self._render_messages()
+                self._schedule_read_mark()
 
-    def _render_messages(self):
+    def _render_messages(self, keep_position=False):
         if self.thread is None:
             return
         blocks = []
@@ -1291,7 +1519,15 @@ class MessagingController(QObject):
             color = "#dbeafe" if mine else "#f1f3f5"
             if message.get("kind") == "broadcast":
                 color = "#fff3cd"
+            urgent = bool(message.get("urgent"))
+            if urgent:
+                # Prioritaire : fond rouge pâle et « ❗ » devant le nom —
+                # repérable quelle que soit la bulle (direct, équipe,
+                # sortante).
+                color = "#fee2e2"
             name = "Vous" if mine else html.escape(str(sender.get("name") or "Inconnu"))
+            if urgent:
+                name = "❗ " + name
             timestamp = self._format_time(message.get("created_at"))
             body = html.escape(str(message.get("body") or "")).replace("\n", "<br>")
             # Mentions « @initiales » sur le corps DÉJÀ échappé (@ et
@@ -1340,9 +1576,16 @@ class MessagingController(QObject):
         # suit normalement le dernier message.
         bar = self.thread.verticalScrollBar()
         previous = bar.value() if bar is not None else 0
-        stick_to_bottom = bar is None or bar.value() >= bar.maximum()
+        previous_max = bar.maximum() if bar is not None else 0
+        stick_to_bottom = (not keep_position
+                           and (bar is None or bar.value() >= bar.maximum()))
         self.thread.setHtml("".join(blocks) or "<p>Aucun message aujourd’hui.</p>")
-        if stick_to_bottom or bar is None:
+        if keep_position and bar is not None:
+            # Prépend d'anciens messages : le contenu a poussé vers le bas.
+            # Garder la même DISTANCE au bas de l'ascenseur cale l'écran sur
+            # le même message qu'avant le chargement.
+            bar.setValue(bar.maximum() - (previous_max - previous))
+        elif stick_to_bottom or bar is None:
             self.thread.moveCursor(QTextCursor.End)
         else:
             bar.setValue(min(previous, bar.maximum()))
@@ -1464,10 +1707,10 @@ class MessagingController(QObject):
             self._online_only.setVisible(
                 bool(conversation and conversation.get("kind") == "broadcast"))
         if self.status_label is not None:
-            # Un message transitoire (limite de longueur, consigne de
-            # confirmation, erreur d'envoi) prime sur le statut calculé.
-            # Sans texte, le libellé se replie : pas de ligne vide permanente.
-            text = self._status_message or status
+            # Priorité : message transitoire (limite, consigne, erreur) >
+            # « … écrit » en cours > statut calculé. Sans texte, le libellé
+            # se replie : pas de ligne vide permanente.
+            text = self._status_message or self._typing_text or status
             self.status_label.setText(text)
             self.status_label.setVisible(bool(text))
         if self.input is not None:
@@ -1475,6 +1718,9 @@ class MessagingController(QObject):
         if self.quick_button is not None:
             # Pas de conversation : insérer une phrase n'aurait pas de sens.
             self.quick_button.setEnabled(can_send)
+        if self.urgent_button is not None:
+            # Même règle : pas de conversation, rien à envoyer.
+            self.urgent_button.setEnabled(can_send)
         if self.send_button is not None:
             text = self.input.toPlainText().strip() if self.input is not None else ""
             self.send_button.setEnabled(
@@ -1540,8 +1786,13 @@ class MessagingController(QObject):
         # pendant le vol, le succès saura quel brouillon purger.
         self._sent_key = conversation.get("key")
         self._update_composer()  # bouton grisé tant que la requête est en vol
+        # « ❗ » armé : le message part urgent (notification persistante
+        # chez le destinataire) ; le bouton se désarme au succès.
+        urgent = (self.urgent_button is not None
+                  and self.urgent_button.isChecked())
         self.window.api.messaging_send(
             client_message_id, kind, body, recipient_id, scope=scope,
+            urgent=urgent,
             on_result=self._network_callback(self._handle_send_result),
         )
 
@@ -1575,6 +1826,9 @@ class MessagingController(QObject):
             self._sent_body = None
             self._status_message = None
             self._broadcast_confirm = False
+            if self.urgent_button is not None:
+                # Un seul message urgent par armement : désarmé au succès.
+                self.urgent_button.setChecked(False)
             self._update_composer()
             self.request_state()
             self.request_messages()
@@ -1627,6 +1881,69 @@ class MessagingController(QObject):
             return
         self._pending_event = payload if isinstance(payload, dict) else {}
         self.request_state()
+
+    def socket_typing(self, payload):
+        """« … écrit » affiché dans le libellé d'état — seulement si le
+        signal concerne la conversation affichée : un typing d'un autre
+        fil (ou le mien depuis un autre poste) est ignoré sans bruit."""
+        if not isinstance(payload, dict) or not self.enabled:
+            return
+        if payload.get("staff_id") == self.staff_id:
+            return  # mon propre signal depuis un autre poste : ignoré
+        conversation = self._selected()
+        if not conversation:
+            return
+        kind = payload.get("kind")
+        if kind == "broadcast":
+            relevant = conversation.get("kind") == "broadcast"
+        elif kind == "direct":
+            relevant = (
+                conversation.get("kind") == "direct"
+                and conversation.get("staff_id") == payload.get("staff_id")
+                and payload.get("peer_staff_id") == self.staff_id)
+        else:
+            relevant = False
+        if not relevant:
+            return
+        self._typing_text = f"{payload.get('name') or 'Quelqu\u2019un'} écrit…"
+        # Chaque nouveau signal réarme l'expiration (le timer est déjà
+        # singleShot : start() le relance depuis zéro).
+        self._typing_timer.start()
+        self._update_composer()
+
+    def _clear_typing(self):
+        """Expiration du « … écrit » — pas de signal d'arrêt dans le
+        protocole : l'indicateur s'éteint tout seul."""
+        self._typing_text = None
+        self._update_composer()
+
+    def _maybe_emit_typing(self):
+        """Signale « en train d'écrire » au destinataire courant — au plus
+        une fois par TYPING_EMIT_INTERVAL, et seulement s'il y a du texte :
+        un champ vidé n'a plus rien à signaler."""
+        if not self.enabled or not self.staff_id or self.input is None:
+            return
+        conversation = self._selected()
+        if not conversation or not self.input.toPlainText().strip():
+            return
+        now = time.monotonic()
+        if now - self._last_typing_emit < self.TYPING_EMIT_INTERVAL:
+            return
+        client = getattr(self.window, "socket_io_client", None)
+        send = getattr(client, "send_typing", None)
+        if not callable(send):
+            return
+        self._last_typing_emit = now
+        payload = {
+            "kind": conversation.get("kind"),
+            "staff_id": self.staff_id,
+            "name": self.staff_name,
+            "counter_id": getattr(self.window, "counter_id", None),
+            "peer_counter_id": conversation.get("counter_id"),
+        }
+        if conversation.get("kind") == "direct":
+            payload["peer_staff_id"] = conversation.get("staff_id")
+        send(payload)
 
     def socket_presence_changed(self):
         self.request_state()

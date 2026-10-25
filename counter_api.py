@@ -365,7 +365,8 @@ class CounterApi:
         return self._get(url, on_result=on_result, key=key, silent=True)
 
     def messaging_send(self, client_message_id, kind, body,
-                       recipient_staff_id=None, scope=None, on_result=None):
+                       recipient_staff_id=None, scope=None, urgent=False,
+                       on_result=None):
         data = {
             "counter_id": self._counter_id(),
             "client_message_id": client_message_id,
@@ -378,6 +379,9 @@ class CounterApi:
         # contrôleur le laisse à None pour les messages directs.
         if scope is not None:
             data["scope"] = scope
+        # « urgent » : notification persistante chez le destinataire.
+        if urgent:
+            data["urgent"] = True
         return self._post(
             endpoints.messaging_send(self._url()), data=data,
             on_result=on_result, key=f"messaging_send:{client_message_id}",
@@ -388,6 +392,13 @@ class CounterApi:
                 "message_ids": json.dumps(list(message_ids))}
         return self._post(endpoints.messaging_read(self._url()), data=data,
                           on_result=on_result, key="messaging_read",
+                          silent=True)
+
+    def messaging_delete(self, message_id, on_result=None):
+        data = {"counter_id": self._counter_id(),
+                "message_id": message_id}
+        return self._post(endpoints.messaging_delete(self._url()), data=data,
+                          on_result=on_result, key="messaging_delete",
                           silent=True)
 
     def release_counter_blocking(self, url=None, counter_id=None):

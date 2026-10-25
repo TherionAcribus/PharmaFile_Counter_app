@@ -90,6 +90,8 @@ _ORIGIN_CATEGORY = {
     # Mention « @initiales » dans un message d'équipe : même catégorie,
     # origine propre pour la rendre persistante (cf. STICKY_ORIGINS).
     "messaging_mention": MESSAGING,
+    # Message « urgent » : idem — persistant jusqu'à fermeture explicite.
+    "messaging_urgent": MESSAGING,
     # Échecs/refus d'actions : catégorie SYSTEM — explicitement PAS connexion,
     # sinon décocher les alertes de connexion masquerait aussi les échecs
     # d'action (valider, appeler…) qui exigent une attention immédiate.
@@ -104,10 +106,11 @@ _ORIGIN_CATEGORY = {
 INLINE_ORIGINS = frozenset({"action_busy", "action_refused"})
 
 #: Origines dont la notification doit RESTER affichée jusqu'à ce que
-#: l'utilisateur la ferme explicitement (clic/Échap) — une erreur d'action ou
-#: une mention « @initiales » ne doivent pas disparaître avant d'avoir été
-#: vues : l'équipier est nommément attendu dessus.
-STICKY_ORIGINS = frozenset({"action_error", "messaging_mention"})
+#: l'utilisateur la ferme explicitement (clic/Échap) — une erreur d'action,
+#: une mention « @initiales » ou un message « urgent » ne doivent pas
+#: disparaître avant d'avoir été vus : l'équipier est attendu dessus.
+STICKY_ORIGINS = frozenset({
+    "action_error", "messaging_mention", "messaging_urgent"})
 
 # --- Clés de préférences --------------------------------------------------
 

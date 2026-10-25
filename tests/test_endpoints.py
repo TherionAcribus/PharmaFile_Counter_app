@@ -46,6 +46,14 @@ CASES = [
      "/app/counter/extend_patient_call/3/12"),
     (endpoints.update_staff, (), "/app/counter/update_staff"),
     (endpoints.remove_staff, (), "/app/counter/remove_staff"),
+    (endpoints.messaging_presence, (), "/api/messaging/presence"),
+    (endpoints.messaging_presence_leave, (), "/api/messaging/presence/leave"),
+    (endpoints.messaging_state, (3,), "/api/messaging/state?counter_id=3"),
+    (endpoints.messaging_messages, (3, "direct"),
+     "/api/messaging/messages?counter_id=3&kind=direct&limit=50"),
+    (endpoints.messaging_send, (), "/api/messaging/messages"),
+    (endpoints.messaging_read, (), "/api/messaging/read"),
+    (endpoints.messaging_delete, (), "/api/messaging/delete"),
     (endpoints.socket_url, (), "/socket_app_counter"),
 ]
 

@@ -1190,6 +1190,7 @@ class MainWindow(QMainWindow):
         self.socket_io_client.messaging_changed.connect(self.messaging.socket_changed)
         self.socket_io_client.messaging_presence_changed.connect(self.messaging.socket_presence_changed)
         self.socket_io_client.messaging_config_changed.connect(self.messaging.socket_config_changed)
+        self.socket_io_client.messaging_typing_received.connect(self.messaging.socket_typing)
         self.socket_io_client.counter_state_changed.connect(
             self._on_counter_state_changed)
         self.socket_io_client.start()

@@ -46,6 +46,7 @@ MODIFYING_ACTIONS = [
     "messaging_leave",
     "messaging_send",
     "messaging_read",
+    "messaging_delete",
     "report_realtime_health",
 ]
 

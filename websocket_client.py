@@ -71,6 +71,9 @@ class WebSocketClient(QThread):
     messaging_changed = Signal(object)
     messaging_presence_changed = Signal()
     messaging_config_changed = Signal(bool)
+    #: « … est en train d'écrire » — signal éphémère relayé par le serveur,
+    #: jamais persisté (contrairement à messaging_changed qui invalide).
+    messaging_typing_received = Signal(object)
     counter_state_changed = Signal(object)
 
     def __init__(self, parent, username="Counter App"):
@@ -113,6 +116,7 @@ class WebSocketClient(QThread):
         self.sio.on('messaging_changed', self.on_messaging_changed, namespace='/socket_app_counter')
         self.sio.on('messaging_presence_changed', self.on_messaging_presence_changed, namespace='/socket_app_counter')
         self.sio.on('messaging_config_changed', self.on_messaging_config_changed, namespace='/socket_app_counter')
+        self.sio.on('messaging_typing', self.on_messaging_typing, namespace='/socket_app_counter')
         self.sio.on('counter_state_changed', self.on_counter_state_changed, namespace='/socket_app_counter')
 
     def _current_token(self):
@@ -277,6 +281,18 @@ class WebSocketClient(QThread):
     def on_messaging_config_changed(self, data):
         payload = self._payload(data)
         self.messaging_config_changed.emit(bool(payload.get("enabled")))
+
+    def on_messaging_typing(self, data):
+        self.messaging_typing_received.emit(self._payload(data))
+
+    def send_typing(self, payload):
+        """Signale « en train d'écrire » au serveur — pur relais éphémère :
+        un échec (déconnexion) se perd sans conséquence."""
+        try:
+            self.sio.emit("messaging_typing", payload,
+                          namespace='/socket_app_counter')
+        except Exception as e:
+            logger.debug("Émission « typing » impossible : %s", e)
 
     def on_counter_state_changed(self, data):
         payload = self._payload(data)
