@@ -316,19 +316,14 @@ def _create_label_patient(window):
     # Créer un menu d'actions
     window.patient_menu = QMenu(window)  # Stocké comme attribut de classe
     window.action_wait = window.patient_menu.addAction("Remettre en attente")
-    
-    # on ne crée le sous-menu que si on a défini des "activités Staff"
-    if hasattr(window, 'activities_staff') and window.activities_staff:
-        # Créer un sous-menu pour "Remettre en attente pour..."
-        window.wait_for_submenu = QMenu("Remettre en attente pour...", window.patient_menu)
-        
-        # Ajouter chaque activité staff comme une action dans le sous-menu
-        for activity in window.activities_staff:
-            action = window.wait_for_submenu.addAction(activity['name'])
-            action.triggered.connect(lambda checked, a=activity: window.on_action_wait_for(a))
-        
-        # Ajouter le sous-menu au menu principal
-        window.patient_menu.addMenu(window.wait_for_submenu)
+
+    # Le sous-menu « Remettre en attente pour... » existe TOUJOURS ; son
+    # contenu et sa visibilité sont (re)calculés par refresh_wait_for_submenu()
+    # à chaque application d'état — des activités staff arrivées après la
+    # construction de l'interface (resync) ne restent ainsi plus invisibles.
+    window.wait_for_submenu = QMenu("Remettre en attente pour...", window.patient_menu)
+    window.patient_menu.addMenu(window.wait_for_submenu)
+    window.refresh_wait_for_submenu()
 
     window.action_delete = window.patient_menu.addAction("Supprimer")
 

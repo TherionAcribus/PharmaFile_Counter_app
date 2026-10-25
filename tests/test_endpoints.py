@@ -31,6 +31,8 @@ CASES = [
     (endpoints.patients_list, (), "/api/patients_list_for_pyside"),
     (endpoints.put_standing_list, (12,), "/api/counter/put_standing_list/12"),
     (endpoints.put_standing_list, (12, 4), "/api/counter/put_standing_list/12/4"),
+    (endpoints.put_standing_list_for_staff, (12, 4),
+     "/api/counter/put_standing_list/12/for_staff/4"),
     (endpoints.api_validate_patient, (12,), "/api/counter/validate_patient/12"),
     (endpoints.delete_patient, (12,), "/api/counter/delete_patient/12"),
     (endpoints.validate_and_call_next, (3,), "/validate_and_call_next/3"),

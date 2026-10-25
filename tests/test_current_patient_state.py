@@ -64,6 +64,10 @@ class FakeApi:
                      busy_button=None, group=None):
         self._record("put_standing", on_result, patient_id, activity_id, group)
 
+    def put_standing_for_staff(self, patient_id, staff_id, on_result=None,
+                               busy_button=None, group=None):
+        self._record("put_standing_for_staff", on_result, patient_id, staff_id, group)
+
     def delete_patient(self, patient_id, on_result=None, busy_button=None, group=None):
         self._record("delete", on_result, patient_id, group)
 
@@ -103,6 +107,7 @@ class FakeWindow:
             "handle_queue_result", "_patient_result_handler", "_patient_action_group",
             "validate_my_patient", "call_web_function_validate",
             "on_action_validate", "on_action_wait_for", "on_action_delete",
+            "on_action_wait_for_staff", "_wait_for_targets",
             "_notify_network_error", "_patient_action_ready", "_busy_ref",
             "_set_busy_widgets", "_apply_busy_widgets", "_on_patient_action_refused",
             "_resync_if_uncertain", "_request_resync", "_set_patient_label",
@@ -219,6 +224,59 @@ def test_201_sur_le_patient_courant_vide_laffichage():
     assert w.patient_id is None
     assert w.my_patient is None
     assert w.label_patient.text == "Pas de patient"
+
+
+# --- « Adresser à un équipier » (staff_targets) --------------------------------
+
+
+def test_wait_for_staff_patient_courant():
+    """La voie découplée envoie l'identifiant d'ÉQUIPIER (le serveur résout la
+    nominative) ; sur le patient courant, l'action reste dans le groupe
+    exclusif qui verrouille les boutons."""
+    w = FakeWindow()
+    w.update_my_patient(_patient())
+    w.on_action_wait_for_staff(11)
+    assert w.api.calls[-1] == ("put_standing_for_staff", 42, 11, "patient_action")
+
+
+def test_wait_for_staff_patient_de_la_file():
+    w = FakeWindow()
+    w.update_my_patient(_patient())
+    w.on_action_wait_for_staff(11, patient_id=7)
+    assert w.api.calls[-1] == ("put_standing_for_staff", 7, 11, None)
+
+
+def test_wait_for_targets_prefere_les_equipiers():
+    """staff_targets prime sur activities_staff : le menu propose les noms des
+    équipiers quand le serveur les fournit, et envoie leur identifiant."""
+    w = FakeWindow()
+    w.staff_targets = [{"id": 11, "name": "Marie"}, {"id": 12, "name": "Bob"}]
+    w.activities_staff = [{"id": 9, "name": "Voir Caro"}]
+    targets = w._wait_for_targets(patient_id=7)
+    assert [label for label, _ in targets] == ["Marie", "Bob"]
+
+    targets[0][1]()  # slot de « Marie »
+    assert w.api.calls[-1] == ("put_standing_for_staff", 7, 11, None)
+
+
+def test_wait_for_targets_repli_demandes_nominatives():
+    """Serveur sans staff_targets : repli sur les demandes nominatives, en
+    envoyant l'identifiant d'ACTIVITÉ comme historiquement."""
+    w = FakeWindow()
+    w.staff_targets = None
+    w.activities_staff = [{"id": 9, "name": "Voir Caro"}]
+    targets = w._wait_for_targets(patient_id=7)
+    assert [label for label, _ in targets] == ["Voir Caro"]
+
+    targets[0][1]()
+    assert w.api.calls[-1] == ("put_standing", 7, 9, None)
+
+
+def test_wait_for_targets_vide():
+    w = FakeWindow()
+    w.staff_targets = None
+    w.activities_staff = None
+    assert w._wait_for_targets() == []
 
 
 def test_423_sur_la_file_ne_touche_pas_le_libelle_courant():

@@ -88,6 +88,14 @@ def put_standing_list(web_url, patient_id, activity_id=None):
     return url
 
 
+def put_standing_list_for_staff(web_url, patient_id, staff_id):
+    """POST — remise en attente « adressée » à un équipier : le serveur résout
+    ou crée sa demande nominative
+    (routes/counter.py:.../put_standing_list/<pid>/for_staff/<sid>)."""
+    return (f"{_base(web_url)}/api/counter/put_standing_list/"
+            f"{_seg(patient_id)}/for_staff/{_seg(staff_id)}")
+
+
 def api_validate_patient(web_url, patient_id):
     """POST — validation d'un patient désigné (routes/counter.py)."""
     return f"{_base(web_url)}/api/counter/validate_patient/{_seg(patient_id)}"

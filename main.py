@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
     staff_id = None
     staff_name = None  # nom de l'équipier courant : sert à repeupler label_staff après chaque reconstruction d'interface
     activities_staff = None  # les activités "Staff" pour renvoyer un patient vers quelqu'un
+    staff_targets = None  # les équipiers eux-mêmes comme destinataires (voie découplée, prioritaire sur activities_staff)
     connected = False  # permet de savoir si on a réussi à se connecter
     add_paper = "waiting"
     autocalling = "waiting"
@@ -167,6 +168,7 @@ class MainWindow(QMainWindow):
         self.logger.info("Initialisation de la session...")
 
         self.activities_staff = None  # pour être en global
+        self.staff_targets = None  # idem : destinataires « équipier » du sous-menu
         # Gestionnaire de notifications (créé paresseusement au premier affichage).
         self.notification_manager = None
         self.call_auto_validation = {"enabled": False}
@@ -486,6 +488,66 @@ class MainWindow(QMainWindow):
         self.api.put_standing(self.patient_id, on_result=self.handle_result,
                               busy_button=self._busy_ref(),
                               group=PATIENT_ACTION_GROUP)
+
+    def _wait_for_targets(self, patient_id=None):
+        """Destinataires de « Remettre en attente pour... » sous la forme de
+        couples ``(libellé, slot)``.
+
+        Les ÉQUIPIERS (``staff_targets``) sont proposés quand le serveur les
+        fournit — l'envoi ne dépend alors d'aucune demande nominative
+        préconfigurée (le serveur résout/crée la nominative à la volée).
+        Repli sur les demandes nominatives (``activities_staff``) pour les
+        serveurs qui n'envoient pas encore ``staff_targets``. ``patient_id``
+        vise un patient de la file (menu contextuel) ; ``None`` = patient
+        courant du comptoir."""
+        if getattr(self, "staff_targets", None):
+            return [
+                (target["name"],
+                 (lambda checked=False, t=target, p=patient_id:
+                  self.on_action_wait_for_staff(t["id"], patient_id=p)))
+                for target in self.staff_targets
+            ]
+        if getattr(self, "activities_staff", None):
+            return [
+                (activity["name"],
+                 (lambda checked=False, a=activity, p=patient_id:
+                  self.on_action_wait_for(a, patient_id=p)))
+                for activity in self.activities_staff
+            ]
+        return []
+
+    def refresh_wait_for_submenu(self):
+        """(Re)peuple le sous-menu « Remettre en attente pour... » du patient
+        courant et le masque quand il n'y a aucun destinataire. Le sous-menu
+        existe toujours (créé à chaque create_interface) : cette méthode est
+        donc appelable à chaque application d'état, y compris quand les
+        destinataires arrivent après la construction de l'interface ou
+        disparaissent du serveur."""
+        submenu = getattr(self, "wait_for_submenu", None)
+        if submenu is None:
+            return
+        submenu.clear()
+        targets = self._wait_for_targets()
+        for label, slot in targets:
+            action = submenu.addAction(label)
+            action.triggered.connect(slot)
+        submenu.menuAction().setVisible(bool(targets))
+
+    def on_action_wait_for_staff(self, staff_id, patient_id=None):
+        """Variante « équipier » de on_action_wait_for : le serveur résout (ou
+        crée à la volée) la demande nominative du destinataire."""
+        if not self._patient_action_ready("wait_for"):
+            return
+        target_id = patient_id if patient_id is not None else self.patient_id
+        if target_id is None:
+            return
+        group = self._patient_action_group(target_id)
+        self.logger.debug("Patient remis en attente pour l'équipier id=%s", staff_id)
+        self.api.put_standing_for_staff(
+            target_id, staff_id,
+            on_result=self._patient_result_handler(target_id),
+            busy_button=self._busy_ref() if group else None,
+            group=group)
 
     def on_action_wait_for(self, activity, patient_id=None):
         """
@@ -890,13 +952,14 @@ class MainWindow(QMainWindow):
         action_delete.triggered.connect(
             lambda checked=False, pid=patient_id: self.on_action_delete(pid))
 
-        if getattr(self, 'activities_staff', None):
+        # Mêmes destinataires que le sous-menu du patient courant : équipiers
+        # si le serveur les fournit, demandes nominatives sinon.
+        targets = self._wait_for_targets(patient_id)
+        if targets:
             assign_submenu = QMenu("Assigner à...", menu)
-            for activity in self.activities_staff:
-                action = assign_submenu.addAction(activity['name'])
-                action.triggered.connect(
-                    lambda checked=False, a=activity, pid=patient_id:
-                    self.on_action_wait_for(a, pid))
+            for label, slot in targets:
+                action = assign_submenu.addAction(label)
+                action.triggered.connect(slot)
             menu.addMenu(assign_submenu)
 
         menu.exec(self.patient_list_view.viewport().mapToGlobal(position))
@@ -1129,8 +1192,18 @@ class MainWindow(QMainWindow):
             config if isinstance(config, dict) else {"enabled": False})
         if state.get("counter_name"):
             self.counter_name = state.get("counter_name")
-        if state.get("activities_staff"):
-            self.activities_staff = state["activities_staff"]
+        if "activities_staff" in state:
+            # Assignation inconditionnelle : une liste vide doit PURGER les
+            # cibles d'un précédent état (comptoir changé, demandes nominatives
+            # supprimées) plutôt que conserver des destinataires périmés.
+            self.activities_staff = state["activities_staff"] or None
+        if "staff_targets" in state:
+            self.staff_targets = state["staff_targets"] or None
+        if "activities_staff" in state or "staff_targets" in state:
+            # Le sous-menu du patient courant est recréé par create_interface,
+            # mais une resync peut faire évoluer les destinataires SANS
+            # reconstruction d'interface : on resynchronise à la demande.
+            self._safe_widget(self.refresh_wait_for_submenu)
 
     def _report_realtime_health(self):
         """ Envoie les mesures de livraison temps réel de la fenêtre écoulée.
@@ -1943,6 +2016,10 @@ class MainWindow(QMainWindow):
         self.queue_revision = -1
         self.my_patient = None
         self.list_patients = []
+        # Les destinataires « Remettre en attente pour... » de l'ANCIEN serveur
+        # ne valent pas sur le nouveau : purgés comme le reste de l'état local.
+        self.activities_staff = None
+        self.staff_targets = None
         self.socket_was_disconnected = False
         # L'alerte de déconnexion de l'ANCIENNE liaison n'a plus lieu d'être :
         # minuteur arrêté, drapeau relâché, état temps réel reparti à

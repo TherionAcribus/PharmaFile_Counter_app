@@ -248,6 +248,15 @@ class CounterApi:
                           on_result=on_result, key=f"put_standing:{patient_id}",
                           busy_button=busy_button, group=group)
 
+    def put_standing_for_staff(self, patient_id, staff_id, on_result=None,
+                               busy_button=None, group=None):
+        """Remet un patient en attente « adressé » à un équipier : le serveur
+        résout (ou crée à la volée) sa demande nominative."""
+        return self._post(
+            endpoints.put_standing_list_for_staff(self._url(), patient_id, staff_id),
+            on_result=on_result, key=f"put_standing:{patient_id}",
+            busy_button=busy_button, group=group)
+
     def delete_patient(self, patient_id, on_result=None, busy_button=None,
                        group=None):
         return self._post(endpoints.delete_patient(self._url(), patient_id),

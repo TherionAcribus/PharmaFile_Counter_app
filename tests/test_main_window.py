@@ -187,6 +187,26 @@ def test_patient_actions_button_tracks_patient_state(window):
     assert "\n" in window.label_patient.text()
 
 
+def test_wait_for_submenu_suit_les_destinataires(window):
+    """Le sous-menu « Remettre en attente pour... » existe toujours : masqué
+    sans destinataire, il se peuple et s'affiche dès que l'état fournit des
+    équipiers — sans reconstruction d'interface."""
+    assert window.wait_for_submenu is not None
+    assert not window.wait_for_submenu.menuAction().isVisible()
+
+    window.staff_targets = [{"id": 11, "name": "Marie"}, {"id": 12, "name": "Bob"}]
+    window.refresh_wait_for_submenu()
+    assert window.wait_for_submenu.menuAction().isVisible()
+    assert [a.text() for a in window.wait_for_submenu.actions()] == ["Marie", "Bob"]
+
+    # Liste redevenue vide : le sous-menu se masque à nouveau (pas de cible
+    # périmée laissée affichée).
+    window.staff_targets = None
+    window.refresh_wait_for_submenu()
+    assert not window.wait_for_submenu.menuAction().isVisible()
+    assert window.wait_for_submenu.actions() == []
+
+
 def test_create_interface_builds_action_buttons(window):
     # Les trois boutons d'action sont créés avec les noms actuels et sont bien
     # des DebounceButton, avec le bon nom accessible (point 28).
