@@ -246,9 +246,11 @@ class MessagingController(QObject):
         # premier Entrée/clic arme ce drapeau (et affiche la consigne), le
         # second — dans le délai — envoie réellement.
         self._broadcast_confirm = False
-        # « Retirer mon dernier message » suit le même deux temps : premier
-        # clic sur l'action = consigne affichée, second clic dans le délai
-        # = requête de suppression réelle.
+        # « Retirer mon dernier message » se confirme en deux temps : le
+        # menu se referme à chaque clic sur une action — au premier, on le
+        # rouvre aussitôt avec l'action renommée « confirmer » ; le second
+        # clic, au même endroit, lance la requête. Jamais de modale au
+        # comptoir (elle volerait le focus en pleine saisie).
         self._delete_confirm = False
         self._delete_action = None
         # Pagination « charger plus ancien » : has_more de la dernière
@@ -1307,35 +1309,45 @@ class MessagingController(QObject):
             self._delete_action.setEnabled(self._can_delete_last_message())
 
     def _request_delete(self):
-        """Retrait du dernier message du fil : confirmation à deux temps en
-        ligne, comme l'envoi « équipe » — premier clic = consigne affichée
-        5 s, second clic dans le délai = requête réelle. Pas de modale qui
-        volerait le focus en pleine saisie."""
+        """Retrait du dernier message du fil : confirmation à deux temps
+        dans le menu lui-même. Un menu se referme au clic sur une action :
+        au premier clic on le rouvre donc aussitôt avec l'action renommée
+        « ⚠ Confirmer le retrait » — le second clic, à la même place et
+        visible, déclenche la requête. Passé le délai (ou changement de
+        fil), l'intention retombe."""
         if not self._can_delete_last_message():
             return
         if not self._delete_confirm:
             self._delete_confirm = True
+            self._delete_action.setText("⚠ Confirmer le retrait")
             QTimer.singleShot(5000, self._disarm_delete_confirm)
-            self._status_message = "Cliquez encore pour retirer le message"
-            self._update_composer()
+            # Le menu vient de se refermer sur ce premier clic : on le
+            # rouvre pour que la confirmation reste sous le doigt.
+            QTimer.singleShot(0, self._reopen_quick_menu)
             return
-        self._delete_confirm = False
-        self._status_message = None
-        self._update_composer()
+        self._disarm_delete_confirm()
         self.window.api.messaging_delete(
             self.messages[-1].get("id"),
             on_result=self._network_callback(self._handle_delete_result))
 
+    def _reopen_quick_menu(self):
+        try:
+            if (self._delete_confirm and self.quick_button is not None
+                    and self.quick_button.isEnabled()):
+                self.quick_button.showMenu()
+        except RuntimeError:
+            # Le délai nul peut s'écouler après la destruction du panneau.
+            pass
+
     def _disarm_delete_confirm(self):
-        """Fin du délai de confirmation « retirer » : le clic suivant
-        redemandera accord, et la consigne affichée redevient un statut
-        neutre."""
+        """Fin du délai (ou fil quitté) : l'intention « retirer » retombe
+        et l'action retrouve son libellé."""
         if not self._delete_confirm:
             return
         self._delete_confirm = False
-        self._status_message = None
         try:
-            self._update_composer()
+            if self._delete_action is not None:
+                self._delete_action.setText("Retirer mon dernier message")
         except RuntimeError:
             # Le timer peut s'écouler après la destruction de l'interface.
             pass
@@ -1404,7 +1416,7 @@ class MessagingController(QObject):
         # quittée : sans objet ici.
         self._status_message = None
         self._broadcast_confirm = False
-        self._delete_confirm = False
+        self._disarm_delete_confirm()
         # « Il reste des messages plus anciens » appartenait au fil quitté ;
         # la page récente du nouveau fil le recalculera. Le verrou de
         # chargement se relâche : une réponse en vol pour l'ancien fil sera

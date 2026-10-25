@@ -1879,34 +1879,41 @@ def test_delete_action_is_only_enabled_on_my_recent_last_message():
     assert controller._delete_action.isEnabled()
 
 
-def test_delete_requires_a_second_click_then_calls_the_api():
+def _disarm_menu_reopen(monkeypatch, controller):
+    """Le premier clic rouvre le menu via un singleShot(0) — neutralisé
+    dans les tests (pas de popup réel hors de la boucle d'évènements)."""
+    monkeypatch.setattr(controller, "_reopen_quick_menu", lambda: None)
+
+
+def test_delete_requires_a_second_click_then_calls_the_api(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
     _feed_with(controller, window.api, [_my_message()])
+    _disarm_menu_reopen(monkeypatch, controller)
 
-    # Premier clic : consigne affichée, aucune requête.
+    # Premier clic : l'action se renomme en « confirmer », aucune requête.
     controller._request_delete()
     assert controller._delete_confirm
-    assert controller._status_message == (
-        "Cliquez encore pour retirer le message")
+    assert controller._delete_action.text() == "⚠ Confirmer le retrait"
     assert not [c for c in window.api.calls if c[0] == "delete"]
 
-    # Second clic dans le délai : la suppression part.
+    # Second clic : la suppression part, le libellé est restauré.
     controller._request_delete()
     delete_calls = [c for c in window.api.calls if c[0] == "delete"]
     assert len(delete_calls) == 1 and delete_calls[0][1] == 30
     assert not controller._delete_confirm
-    assert controller._status_message is None
+    assert controller._delete_action.text() == "Retirer mon dernier message"
 
 
-def test_delete_success_reloads_state_and_thread():
+def test_delete_success_reloads_state_and_thread(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
     _feed_with(controller, window.api, [_my_message()])
+    _disarm_menu_reopen(monkeypatch, controller)
     window.api.calls.clear()
 
     controller._request_delete()
@@ -1918,12 +1925,13 @@ def test_delete_success_reloads_state_and_thread():
     assert controller._status_message is None
 
 
-def test_delete_expired_window_is_reported_inline():
+def test_delete_expired_window_is_reported_inline(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
     _feed_with(controller, window.api, [_my_message()])
+    _disarm_menu_reopen(monkeypatch, controller)
     controller._request_delete()
     controller._request_delete()
     _last_callback(window.api, "delete", 2)(
@@ -1931,12 +1939,13 @@ def test_delete_expired_window_is_reported_inline():
     assert controller._status_message == "Délai dépassé (15 min)."
 
 
-def test_delete_other_errors_are_reported_inline():
+def test_delete_other_errors_are_reported_inline(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
     _feed_with(controller, window.api, [_my_message()])
+    _disarm_menu_reopen(monkeypatch, controller)
     controller._request_delete()
     controller._request_delete()
     _last_callback(window.api, "delete", 2)(
@@ -1945,17 +1954,18 @@ def test_delete_other_errors_are_reported_inline():
         "Le message n'a pas pu être retiré.")
 
 
-def test_delete_intent_is_disarmed_on_tab_change():
+def test_delete_intent_is_disarmed_on_tab_change(monkeypatch):
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
     _feed_with(controller, window.api, [_my_message()])
+    _disarm_menu_reopen(monkeypatch, controller)
     controller._request_delete()
     assert controller._delete_confirm
     _select(controller, "broadcast")
     assert not controller._delete_confirm
-    assert controller._status_message is None
+    assert controller._delete_action.text() == "Retirer mon dernier message"
 
 
 # --- Pagination « charger plus ancien » -------------------------------------
