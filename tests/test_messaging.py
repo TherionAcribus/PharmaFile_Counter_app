@@ -1,5 +1,6 @@
 """Interface et cycle de vie de la messagerie PySide."""
 
+import re
 import uuid
 
 import pytest
@@ -1569,3 +1570,74 @@ def test_dock_title_counts_unread_messages():
     assert controller.dock.windowTitle() == "Messagerie (2)"
     controller._handle_state_result(NetResult(200, data=_state(unread=0)))
     assert controller.dock.windowTitle() == "Messagerie"
+
+
+# --- Mentions « @initiales » ---------------------------------------------------
+
+def test_mentioned_broadcast_notifies_with_dedicated_origin():
+    # Un broadcast qui cite mes initiales déclenche l'alerte « mention »
+    # (origine dédiée, persistante) plutôt que l'alerte générique.
+    import notification_rules
+    window, controller = _controller()
+    controller.set_enabled(True)
+    assert notification_rules.is_sticky("messaging_mention") is True
+    controller._pending_event = {
+        "sender_name": "Bob", "kind": "broadcast",
+        "mentioned_staff_ids": [1],   # agent courant (set_identity(1, ...))
+    }
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    data, _kwargs = window.notifications[0]
+    assert data["origin"] == "messaging_mention"
+    assert data["conversation_key"] == "broadcast"
+    assert "mentionné" in data["message"]
+
+
+def test_unmentioned_broadcast_keeps_generic_origin():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._pending_event = {
+        "sender_name": "Bob", "kind": "broadcast",
+        "mentioned_staff_ids": [2],   # quelqu'un d'autre est cité
+    }
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    assert window.notifications[0][0]["origin"] == "messaging"
+
+
+def test_baseline_notification_leads_with_unread_mentions():
+    # Non-lus à la connexion dont des mentions : l'alerte les met en avant.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state(unread=2)
+    state["unread_mentions"] = 1
+    controller._handle_state_result(NetResult(200, data=state))
+    data, _kwargs = window.notifications[0]
+    assert data["origin"] == "messaging_mention"
+    assert "1 mention(s)" in data["message"]
+    # Sans mention : l'alerte reste l'origine générique.
+    window.notifications.clear()
+    controller._baseline_known = False
+    controller._handle_state_result(NetResult(200, data=_state(unread=3)))
+    assert window.notifications[0][0]["origin"] == "messaging"
+
+
+def test_known_initials_are_highlighted_in_the_thread():
+    # « @XX » n'est surligné que si c'est une initiale connue : fond orange
+    # pour la mienne, gras orange pour les autres, texte ordinaire sinon.
+    window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    state["self"] = {"staff_id": 1, "initials": "AL"}
+    state["conversations"][1]["initials"] = "BN"
+    controller._handle_state_result(NetResult(200, data=state))
+    # « Équipe » est déjà l'onglet sélectionné par défaut : l'aller-retour
+    # force la requête du fil broadcast (request_messages).
+    _select(controller, "direct:2")
+    _select(controller, "broadcast")
+    _feed(controller, window.api, [
+        {"id": 1, "body": "@AL et @BN, réunion à @ZZ",
+         "sender": {"name": "Bob", "staff_id": 2}},
+    ])
+    html_out = controller.thread.toHtml()
+    assert "background-color:#b45309" in html_out          # @AL (moi)
+    assert re.search(r"color:#b45309;[^>]*>@BN", html_out)  # @BN (connu)
+    assert not re.search(r"font-weight:\d+[^>]*>@ZZ", html_out)  # inconnu

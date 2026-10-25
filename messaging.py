@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import unicodedata
 import uuid
 from datetime import datetime
@@ -85,6 +86,11 @@ _SEARCH_ROLE = Qt.ItemDataRole.UserRole + 2
 #: None/absent sur un vieux serveur : toléré.
 _INITIALS_ROLE = Qt.ItemDataRole.UserRole + 3
 
+#: Token de mention « @XX » dans un corps de message : initiales métier
+#: (1 à 10 caractères de mot), match insensible à la casse — la même
+#: forme que l'extraction côté serveur.
+_MENTION_PATTERN = re.compile(r"@(\w{1,10})\b", re.IGNORECASE)
+
 
 class _RecipientFilterModel(QSortFilterProxyModel):
     """Filtre des destinataires de « Écrire à… » : la requête normalisée est
@@ -153,6 +159,11 @@ class MessagingController(QObject):
         self.enabled = False
         self.staff_id = None
         self.staff_name = None
+        # Mes initiales métier (état « self » du serveur) et l'ensemble des
+        # initiales connues normalisées (annuaire + moi, reconstruit par
+        # _rebuild_recipients) — servant au surlignage des mentions « @XX ».
+        self.self_initials = None
+        self._known_initials = set()
         self.conversations = []
         self.messages = []
         self.unread_total = 0
@@ -341,6 +352,10 @@ class MessagingController(QObject):
         # prochaine session (nouvel agent, réactivation) : sa référence repart
         # de zéro.
         self._baseline_known = False
+        # Les initiales de l'agent précédent n'ont plus cours : ni pour les
+        # notifications de mention ni pour le surlignage du fil.
+        self.self_initials = None
+        self._known_initials = set()
         # Tout ce qui suivait la session s'arrête avec elle : accusé « Lu » en
         # cours d'armement, brouillons par conversation, onglets ouverts ou
         # fermés à la main et intention d'ouverture en attente.
@@ -788,19 +803,33 @@ class MessagingController(QObject):
                 previous_unread = self.unread_total
                 self.conversations = result.data.get("conversations") or []
                 self.unread_total = int(result.data.get("unread_total") or 0)
+                self.self_initials = (
+                    result.data.get("self") or {}).get("initials")
                 self._refresh_tabs()
                 self._update_badge()
                 if self.unread_total > previous_unread and self._pending_event:
                     event = self._pending_event
                     sender = event.get("sender_name")
-                    notification = {
-                        "origin": "messaging",
-                        # Événement sans expéditeur (accusé de lecture, par
-                        # exemple un payload {"read": True}) : pas de nom à
-                        # afficher, texte de repli neutre.
-                        "message": (f"Nouveau message de {sender}." if sender
-                                    else "Nouveau message."),
-                    }
+                    if self.staff_id in (
+                            event.get("mentioned_staff_ids") or []):
+                        # Mention « @initiales » : alerte dédiée, persistante
+                        # jusqu'à fermeture explicite (origine sticky, cf.
+                        # notification_rules.STICKY_ORIGINS).
+                        notification = {
+                            "origin": "messaging_mention",
+                            "message": (
+                                f"{sender} vous a mentionné." if sender
+                                else "Vous avez été mentionné."),
+                        }
+                    else:
+                        notification = {
+                            "origin": "messaging",
+                            # Événement sans expéditeur (accusé de lecture, par
+                            # exemple un payload {"read": True}) : pas de nom à
+                            # afficher, texte de repli neutre.
+                            "message": (f"Nouveau message de {sender}." if sender
+                                        else "Nouveau message."),
+                        }
                     # Un clic sur la notification ouvre le panneau sur la
                     # conversation concernée : on transporte la clé du fil
                     # (cf. open_from_notification).
@@ -825,10 +854,23 @@ class MessagingController(QObject):
                     # reconnexion) : rappeler les non-lus accumulés pendant
                     # l'absence — une seule fois. Pas de cumul avec « Nouveau
                     # message » : un même état n'affiche qu'une alerte.
-                    self.window.show_notification({
-                        "origin": "messaging",
-                        "message": f"Vous avez {self.unread_total} message(s) non lu(s).",
-                    }, internal=True)
+                    mentions = int(result.data.get("unread_mentions") or 0)
+                    if mentions:
+                        # Des mentions non lues mènent l'alerte : plus
+                        # insistante (origine sticky) qu'un décompte de
+                        # non-lus — l'équipier est nommément attendu dessus.
+                        self.window.show_notification({
+                            "origin": "messaging_mention",
+                            "message": (
+                                f"Vous avez {self.unread_total} message(s) "
+                                f"non lu(s), dont {mentions} mention(s) "
+                                "vous concernant."),
+                        }, internal=True)
+                    else:
+                        self.window.show_notification({
+                            "origin": "messaging",
+                            "message": f"Vous avez {self.unread_total} message(s) non lu(s).",
+                        }, internal=True)
                 self._pending_event = None
                 # Qu'une notification soit partie ou non, l'état de
                 # référence est désormais connu pour cette session.
@@ -1089,6 +1131,16 @@ class MessagingController(QObject):
                 f"{_normalize(initials)} {_normalize(business_initials)}",
                 _SEARCH_ROLE)
             self._recipient_model.appendRow(item)
+        # Surlignage des mentions : toutes les initiales connues, normalisées
+        # comme les tokens extraits du texte — la mienne comprise (absente
+        # de l'annuaire des destinataires, ajoutée depuis l'état « self »).
+        self._known_initials = {
+            _normalize(conversation.get("initials"))
+            for conversation in self.conversations
+            if conversation.get("initials")
+        }
+        if self.self_initials:
+            self._known_initials.add(_normalize(self.self_initials))
 
     def _recipient_activated(self, index):
         """Choix d'un destinataire dans le popup : ouvre l'onglet de sa
@@ -1242,6 +1294,11 @@ class MessagingController(QObject):
             name = "Vous" if mine else html.escape(str(sender.get("name") or "Inconnu"))
             timestamp = self._format_time(message.get("created_at"))
             body = html.escape(str(message.get("body") or "")).replace("\n", "<br>")
+            # Mentions « @initiales » sur le corps DÉJÀ échappé (@ et
+            # lettres ne sont jamais réécrits par html.escape) : seules les
+            # initiales connues sont mises en valeur, un « @xx » quelconque
+            # reste du texte ordinaire.
+            body = _MENTION_PATTERN.sub(self._highlight_mention, body)
             # Accusés en gris discret : « Lu » (consultation réelle) prime,
             # sinon « Remis » (l'app du destinataire a récupéré le message).
             receipt = ""
@@ -1289,6 +1346,18 @@ class MessagingController(QObject):
             self.thread.moveCursor(QTextCursor.End)
         else:
             bar.setValue(min(previous, bar.maximum()))
+
+    def _highlight_mention(self, match):
+        """Mise en valeur d'un token « @XX » si c'est une initiale connue :
+        fond orange quand il s'agit de la mienne — elle doit sauter aux
+        yeux dans un fil d'équipe — simple gras orange pour les autres."""
+        token = _normalize(match.group(1))
+        if token not in self._known_initials:
+            return match.group(0)
+        if token == _normalize(self.self_initials or ""):
+            return (f'<b style="color:#fff;background:#b45309">'
+                    f'{match.group(0)}</b>')
+        return f'<b style="color:#b45309">{match.group(0)}</b>'
 
     @staticmethod
     def _format_time(value):

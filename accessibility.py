@@ -144,6 +144,10 @@ _TITLES = {
         TONE_SOBER: "Message non envoyé",
         TONE_HUMOROUS: "Message non envoyé",
     },
+    "messaging_mention": {
+        TONE_SOBER: "Mention",
+        TONE_HUMOROUS: "Mention",
+    },
     "activity": {
         TONE_SOBER: "Nouvelle mission",
         TONE_HUMOROUS: "Une nouvelle mission arrive !",
