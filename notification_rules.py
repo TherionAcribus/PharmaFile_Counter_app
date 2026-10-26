@@ -99,6 +99,10 @@ _ORIGIN_CATEGORY = {
     "action_busy": SYSTEM,
     "action_refused": SYSTEM,
     "patient_taken": SYSTEM,
+    # Bornes d'accueil : une borne injoignable est une alerte système qui
+    # exige une intervention — persistante jusqu'à fermeture explicite.
+    "kiosk_offline": SYSTEM,
+    "kiosk_online": SYSTEM,
 }
 
 #: Origines « confirmation courante » : affichées dans le bandeau discret
@@ -110,7 +114,7 @@ INLINE_ORIGINS = frozenset({"action_busy", "action_refused"})
 #: une mention « @initiales » ou un message « urgent » ne doivent pas
 #: disparaître avant d'avoir été vus : l'équipier est attendu dessus.
 STICKY_ORIGINS = frozenset({
-    "action_error", "messaging_mention", "messaging_urgent"})
+    "action_error", "messaging_mention", "messaging_urgent", "kiosk_offline"})
 
 # --- Clés de préférences --------------------------------------------------
 
