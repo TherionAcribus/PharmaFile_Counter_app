@@ -42,6 +42,11 @@ def test_notification_severity_mapping():
     assert a.notification_severity("low_paper") == a.WARNING
     assert a.notification_severity("paper_ok") == a.SUCCESS
     assert a.notification_severity("new_patient") == a.INFO
+    # Point 13 : alertes borne — un patient qui attend ou une borne morte
+    # sont des urgences visuelles ; le retour en ligne est une bonne nouvelle.
+    assert a.notification_severity("patient_waiting") == a.CRITICAL
+    assert a.notification_severity("kiosk_offline") == a.CRITICAL
+    assert a.notification_severity("kiosk_online") == a.SUCCESS
     # origin inconnu -> info par défaut
     assert a.notification_severity("origine_bidon") == a.INFO
 

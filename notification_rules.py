@@ -103,6 +103,10 @@ _ORIGIN_CATEGORY = {
     # exige une intervention — persistante jusqu'à fermeture explicite.
     "kiosk_offline": SYSTEM,
     "kiosk_online": SYSTEM,
+    # Patient qui attend physiquement devant la borne (« Appeler le
+    # personnel » après un échec d'impression) : alerte système exigeant une
+    # intervention — persistante, cf. STICKY_ORIGINS.
+    "patient_waiting": SYSTEM,
 }
 
 #: Origines « confirmation courante » : affichées dans le bandeau discret
@@ -112,9 +116,29 @@ INLINE_ORIGINS = frozenset({"action_busy", "action_refused"})
 #: Origines dont la notification doit RESTER affichée jusqu'à ce que
 #: l'utilisateur la ferme explicitement (clic/Échap) — une erreur d'action,
 #: une mention « @initiales » ou un message « urgent » ne doivent pas
-#: disparaître avant d'avoir été vus : l'équipier est attendu dessus.
+#: disparaître avant d'avoir été vus : l'équipier est attendu dessus. Idem
+#: pour un patient qui attend devant la borne ou une borne morte : ces
+#: alertes exigent une intervention, pas une auto-fermeture.
 STICKY_ORIGINS = frozenset({
-    "action_error", "messaging_mention", "messaging_urgent", "kiosk_offline"})
+    "action_error", "messaging_mention", "messaging_urgent", "kiosk_offline",
+    "patient_waiting"})
+
+#: Son distinctif par origine quand un simple « ding » ne suffit pas :
+#: « please_validate » est la voix d'attention immédiate déjà réutilisée par
+#: les messages urgents — un patient qui attend à la borne ou une borne
+#: morte réclament la même attention. Source unique : notification.py lit
+#: ce mapping via ``sound_for_origin``.
+ORIGIN_SOUNDS = {
+    "please_validate": "please_validate",
+    "messaging_urgent": "please_validate",
+    "patient_waiting": "please_validate",
+    "kiosk_offline": "please_validate",
+}
+
+
+def sound_for_origin(origin):
+    """Son à jouer pour cette origine (``ding`` par défaut)."""
+    return ORIGIN_SOUNDS.get(origin, "ding")
 
 # --- Clés de préférences --------------------------------------------------
 

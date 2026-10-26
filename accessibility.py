@@ -61,6 +61,12 @@ _ORIGIN_SEVERITY = {
     "connection": CRITICAL,
     "socket_connection_false": CRITICAL,
     "printer_error": CRITICAL,
+    # Un patient qui attend devant la borne = même gravité qu'un échec
+    # d'impression ; une borne hors ligne est une alerte ; son retour en
+    # ligne, une information positive.
+    "patient_waiting": CRITICAL,
+    "kiosk_offline": CRITICAL,
+    "kiosk_online": SUCCESS,
     "low_paper": WARNING,
     "patient_taken": WARNING,
     "messaging_error": WARNING,

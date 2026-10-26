@@ -299,6 +299,20 @@ def test_sticky_and_inline_classification():
     assert rules.is_sticky("connection") is False
 
 
+def test_alertes_borne_sont_visibles_et_sonores():
+    """Point 13 : « un patient attend à la borne » et « borne hors ligne »
+    doivent se distinguer d'un banal ding — alerte SYSTÈME persistante avec
+    le son d'attention immédiate « please_validate »."""
+    # Patient qui attend physiquement devant la borne.
+    assert rules.category_for_origin("patient_waiting") == rules.SYSTEM
+    assert rules.is_sticky("patient_waiting") is True
+    assert rules.sound_for_origin("patient_waiting") == "please_validate"
+    # Borne injoignable : même exigence d'intervention.
+    assert rules.sound_for_origin("kiosk_offline") == "please_validate"
+    # Le banal « ding » reste le défaut des origines sans exigence particulière.
+    assert rules.sound_for_origin("origine_bidon") == "ding"
+
+
 def test_show_notification_marks_action_errors_sticky():
     w = _window()
     _notify(w, "action_error")

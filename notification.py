@@ -6,6 +6,7 @@ from PySide6.QtGui import QGuiApplication
 import json
 import logging
 
+import notification_rules
 from notification_layout import (
     DEFAULT_MAX_VISIBLE,
     DEFAULT_MARGIN,
@@ -344,11 +345,11 @@ class CustomNotification(QDialog):
         title = notification_title(self.origin, tone, fallback=self.origin)
         self.title = decorate_title(title, severity)
 
-        # Son : « ding » par défaut ; le son distinct de l'appel à validation
-        # sert aussi aux messages « urgent » — même exigence d'attention.
-        self.sound = ("please_validate"
-                      if self.origin in ("please_validate", "messaging_urgent")
-                      else "ding")
+        # Son : « ding » par défaut ; les origines d'attention immédiate
+        # (validation, message urgent, patient qui attend à la borne, borne
+        # hors ligne) jouent la voix « please_validate » — mapping unique
+        # dans notification_rules.ORIGIN_SOUNDS.
+        self.sound = notification_rules.sound_for_origin(self.origin)
 
     def show_without_activating(self):
         """Affiche la notification sans lui donner le focus (le progiciel de
