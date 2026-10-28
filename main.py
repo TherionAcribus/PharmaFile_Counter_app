@@ -15,6 +15,7 @@ from button_state import (
 )
 from patient_list_model import PatientListModel
 import notification_rules
+import notification_texts
 from notification import NotificationManager, extract_origin_message
 from connections import NetworkManager
 from counter_api import CounterApi, PATIENT_ACTION_GROUP
@@ -107,6 +108,18 @@ class _BusyButtonRef:
 
     def set_busy(self, busy):
         self._window._set_busy_widgets(self._attrs, busy)
+
+
+def _notification_text(window, message_id, **values):
+    """Texte d'une notification de l'App : celui réglé dans l'administration
+    du serveur (état du comptoir), sinon le texte d'origine."""
+    return notification_texts.render(
+        getattr(window, "notification_texts", None), message_id, **values)
+
+
+def _current_call_number(window):
+    patient = getattr(window, "my_patient", None)
+    return patient.get("call_number", "") if isinstance(patient, dict) else ""
 
 
 class MainWindow(QMainWindow):
@@ -202,6 +215,9 @@ class MainWindow(QMainWindow):
         # Gestionnaire de notifications (créé paresseusement au premier affichage).
         self.notification_manager = None
         self.call_auto_validation = {"enabled": False}
+        # Textes des notifications réglés dans l'administration du serveur
+        # (vide = textes d'origine, cf. notification_texts).
+        self.notification_texts = {}
         self._auto_warning_active = False
         self._auto_warning_key = None
         self._expired_resync_at = None
@@ -718,13 +734,13 @@ class MainWindow(QMainWindow):
             # se passe — sinon l'action semble ignorée.
             self.show_notification(
                 {"origin": "action_refused",
-                 "message": "Identifiez-vous sur un comptoir pour agir sur la file."},
+                 "message": _notification_text(self, "not_identified")},
                 internal=True)
             return False
         if self._tasks.is_group_active(PATIENT_ACTION_GROUP):
             self.logger.info("Action '%s' refusée : une action patient est déjà en cours", action)
             self.show_notification(
-                {"origin": "action_busy", "message": "Une action est déjà en cours…"},
+                {"origin": "action_busy", "message": _notification_text(self, "action_busy")},
                 internal=True)
             return False
         return True
@@ -742,7 +758,7 @@ class MainWindow(QMainWindow):
             return
         self.logger.info("Action refusée par la couche d'accès : %s", reason)
         self.show_notification(
-            {"origin": "action_busy", "message": "Une action est déjà en cours…"},
+            {"origin": "action_busy", "message": _notification_text(self, "action_busy")},
             internal=True)
 
     def _resync_if_uncertain(self, result):
@@ -1060,7 +1076,8 @@ class MainWindow(QMainWindow):
                 self.update_my_patient(data)
                 self.update_my_buttons(data)
                 if data.get("call_number"):
-                    message = f"Nouveau patient : {data['call_number']} pour '{data.get('activity', '')}'"
+                    message = _notification_text(self,
+                        "new_patient", N=data["call_number"], A=data.get("activity", ""))
                     self.show_notification({"origin": "new_patient", "message": message}, internal=True)
             else:
                 self.logger.warning("Réponse 200 sans JSON exploitable")
@@ -1104,7 +1121,7 @@ class MainWindow(QMainWindow):
             self.play_notification_sound("patient_taken", "patient_taken")
             self.show_notification(
                 {"origin": "patient_taken",
-                 "message": "Patient déjà pris en charge par un autre comptoir."},
+                 "message": _notification_text(self, "patient_taken_queue")},
                 internal=True)
             return
         self._notify_network_error(result)
@@ -1241,6 +1258,9 @@ class MainWindow(QMainWindow):
         config = state.get("call_auto_validation")
         self.call_auto_validation = (
             config if isinstance(config, dict) else {"enabled": False})
+        # Absent (serveur ancien) ou illisible : textes d'origine.
+        texts = state.get("notification_texts")
+        self.notification_texts = texts if isinstance(texts, dict) else {}
         if state.get("counter_name"):
             self.counter_name = state.get("counter_name")
         if "activities_staff" in state:
@@ -1332,7 +1352,7 @@ class MainWindow(QMainWindow):
             if self.disconnect_notification_shown and display_notification:
                 self.show_notification({
                     "origin": "socket_connection_true",
-                    "message": "La connexion temps réel est (r)établie !"
+                    "message": _notification_text(self, "realtime_restored")
                 }, internal=True)
             # Coupure effectivement terminée : le minuteur d'alerte doit être
             # arrêté et le drapeau relâché. Sinon un timeout déjà armé affichait
@@ -1356,7 +1376,7 @@ class MainWindow(QMainWindow):
                 self.disconnect_notification_shown = True
                 self.show_notification({
                     "origin": "socket_connection_false",
-                    "message": "La connexion temps réel a été perdue. Tentative de reconnexion... La liste des patients ne s'affichera plus en temps réél, mais les boutons fonctionnent toujours."
+                    "message": _notification_text(self, "realtime_lost")
                 }, internal=True)
             self._set_rt_status("disconnected", reconnection_attempts)
 
@@ -2459,8 +2479,8 @@ class MainWindow(QMainWindow):
     def change_paper(self, data):
         self.add_paper = "active" if data["data"]["add_paper"] else "inactive"
         self.btn_paper.update_button_icon(self.add_paper)
-        message = ("On est quasiment au bout du rouleau" if self.add_paper == "active"
-                   else "Une gentille personne a remis du papier")
+        message = _notification_text(self,
+            "low_paper" if self.add_paper == "active" else "paper_ok")
         self.show_notification({"origin": "low_paper", "message": message}, internal=True)
         
     def change_paper_button(self, origin):
@@ -2486,12 +2506,14 @@ class MainWindow(QMainWindow):
         #patient["counter_id"] = self.counter_id
         self.update_my_patient(patient)
         self.update_my_buttons(patient)
-        message = f"Appel automatique du patient {patient['call_number']} pour '{patient['activity']}'"
+        message = _notification_text(self,
+            "autocalling", N=patient["call_number"], A=patient["activity"])
         self.show_notification({"origin": "autocalling", "message": message}, internal=True)
 
     def disconnect_user(self, data):
         self.logger.info("Déconnexion du comptoir demandée par un autre poste")
-        message = f'Vous avez déconnecté par {data["data"]["staff"]}'
+        message = _notification_text(self,
+            "disconnected_by_user", M=data["data"]["staff"])
         self.show_notification({"origin": "disconnect_by_user", "message": message}, internal=True)
         self.deconnexion_interface()
 
@@ -2526,7 +2548,7 @@ class MainWindow(QMainWindow):
     def alert_if_not_connected(self):
         """ Affiche une alerte si le serveur n'est pas accessible"""
         if not self.connected:
-            self.show_notification({"origin": "connection", "message": "Le serveur est inaccessible."}, internal=True)
+            self.show_notification({"origin": "connection", "message": _notification_text(self, "server_unreachable")}, internal=True)
 
     def call_timer_delay_expired(self):
         if hasattr(self, "my_patient"):
@@ -2538,8 +2560,11 @@ class MainWindow(QMainWindow):
             if self.my_patient.get("status") != "calling":
                 return
         self._set_validate_alert(True)
-        self.show_notification({"origin": "please_validate", "message": "Pensez à valider votre patient afin de vider l'écran d'affichage."},
-                               internal=True, patient_id=self.patient_id)
+        self.show_notification(
+            {"origin": "please_validate",
+             "message": _notification_text(self,
+                 "please_validate", N=_current_call_number(self))},
+            internal=True, patient_id=self.patient_id)
 
     def _sync_call_timers(self):
         state = resolve_call_auto_validation(
@@ -2604,11 +2629,9 @@ class MainWindow(QMainWindow):
             self._auto_warning_key = warning_key
             self.show_notification({
                 "origin": "please_validate",
-                "message": (
-                    "Le patient sera retiré automatiquement de l'écran "
-                    f"d'appel dans {state.remaining_seconds} secondes. "
-                    "Validez-le ou prolongez l'appel."
-                ),
+                "message": _notification_text(self,
+                    "auto_release_warning", S=state.remaining_seconds,
+                    N=_current_call_number(self)),
             }, internal=True, patient_id=self.patient_id)
 
     def _set_extend_button(self, remaining_seconds):
