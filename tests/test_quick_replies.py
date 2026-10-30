@@ -54,8 +54,13 @@ def _saves(api):
 # --- concordance ----------------------------------------------------------------
 
 def test_default_phrases_match_the_server():
+    # Le dépôt GitHub de l'App est publié SEUL (sans le dossier Serveur
+    # voisin) : la concordance n'est vérifiable que dans la copie complète.
+    if not SERVEUR_QUICK_REPLIES.exists():
+        import pytest
+        pytest.skip("fichier serveur quick_replies.py absent de cette copie")
     from messaging import MessagingController
-    tree = ast.parse(SERVEUR_QUICK_REPLIES.read_text(encoding="utf-8"))
+    tree =ast.parse(SERVEUR_QUICK_REPLIES.read_text(encoding="utf-8"))
     for node in tree.body:
         if (isinstance(node, ast.Assign)
                 and getattr(node.targets[0], "id", None) == "DEFAULT_TEAM"):
