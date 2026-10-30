@@ -13,6 +13,8 @@ from shortcut_edit import ShortcutEdit
 import notification_rules
 import profile_sync
 import settings_schema
+import ui_scale
+from screen_fit import fit_on_show
 from counter_id_utils import coerce_counter_id
 from panel_layout import DEFAULT_PANEL_THICKNESS
 from shortcut_config import (
@@ -87,7 +89,6 @@ class PreferencesDialog(QDialog):
         self.main_layout.addLayout(self.content_layout)
 
         self.navigation_list = QListWidget()
-        self.navigation_list.setFixedWidth(150)
         # currentItemChanged (et non itemClicked) : les flèches du clavier et le
         # Tab changent aussi de page, pas seulement un clic souris.
         self.navigation_list.currentItemChanged.connect(self.change_page)
@@ -107,6 +108,12 @@ class PreferencesDialog(QDialog):
                             self.station_item]
         for item in self._page_items:
             self.navigation_list.addItem(item)
+        # Largeur calée sur le texte (et non 150 px figés) : suit la police et
+        # la taille de l'interface, sans gaspiller la place d'un petit écran.
+        metrics = self.navigation_list.fontMetrics()
+        widest = max(metrics.horizontalAdvance(item.text())
+                     for item in self._page_items)
+        self.navigation_list.setFixedWidth(widest + 6 * metrics.averageCharWidth())
 
         self.content_layout.addWidget(self.navigation_list)
 
@@ -151,6 +158,11 @@ class PreferencesDialog(QDialog):
         # setCurrentItem coche l'entrée de la liste ; change_page rejoue le clic.
         self.navigation_list.setCurrentItem(self.general_item)
         self.change_page(self.general_item)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Petit écran : la fenêtre est ramenée dans la zone utile (screen_fit).
+        fit_on_show(self)
 
     def _build_general_page(self):
         """Page « Général » : fenêtre, panneau compact, icônes, liste, thème, journal."""
@@ -314,11 +326,12 @@ class PreferencesDialog(QDialog):
 
         # --- Apparence ---
         appearance_box = QGroupBox("Apparence", self.general_page)
-        appearance_box_layout = QHBoxLayout(appearance_box)
+        appearance_box_layout = QGridLayout(appearance_box)
+        appearance_box_layout.setColumnStretch(1, 1)
         self.general_layout.addWidget(appearance_box)
 
         self.skin_label = QLabel("Thème :", appearance_box)
-        appearance_box_layout.addWidget(self.skin_label)
+        appearance_box_layout.addWidget(self.skin_label, 0, 0)
 
         # L'aperçu n'est branché qu'APRÈS le chargement des préférences (fin de
         # __init__) : remplir la liste ou y sélectionner le skin enregistré ne
@@ -327,7 +340,30 @@ class PreferencesDialog(QDialog):
         self.skin_combo = QComboBox(appearance_box)
         self.skin_combo.setToolTip("Aperçu immédiat ; annulé si vous fermez sans enregistrer.")
         self.skin_label.setBuddy(self.skin_combo)
-        appearance_box_layout.addWidget(self.skin_combo, 1)
+        appearance_box_layout.addWidget(self.skin_combo, 0, 1)
+
+        # Taille de l'interface (zoom global du poste, cf. ui_scale) : appliquée
+        # au démarrage, la fenêtre principale propose de redémarrer.
+        self.ui_scale_label = QLabel("Taille de l'interface :", appearance_box)
+        appearance_box_layout.addWidget(self.ui_scale_label, 1, 0)
+        self.ui_scale_combo = QComboBox(appearance_box)
+        self.ui_scale_combo.addItem("Automatique (selon l'écran)", ui_scale.AUTO)
+        for percent in ui_scale.PRESETS:
+            self.ui_scale_combo.addItem(ui_scale.format_percent(percent / 100), percent)
+        self.ui_scale_combo.setToolTip(
+            "Agrandit ou réduit toute l'App (texte, boutons, panneaux), en plus "
+            "du zoom de Windows. « Automatique » réduit l'interface sur les "
+            "petits écrans. Prend effet au redémarrage de l'App. Réglage propre "
+            "à ce poste.")
+        self.ui_scale_label.setBuddy(self.ui_scale_combo)
+        appearance_box_layout.addWidget(self.ui_scale_combo, 1, 1)
+        decision = ui_scale.current()
+        self.ui_scale_status = QLabel(
+            decision.describe() if decision else "", appearance_box)
+        self.ui_scale_status.setWordWrap(True)
+        self.ui_scale_status.setEnabled(False)
+        self.ui_scale_status.setVisible(decision is not None)
+        appearance_box_layout.addWidget(self.ui_scale_status, 2, 0, 1, 2)
 
         # --- Journal ---
         log_box = QGroupBox("Journal", self.general_page)
@@ -1031,6 +1067,7 @@ class PreferencesDialog(QDialog):
             ("patient_list_font_size", self.patient_list_font_size_spinbox, general),
             ("messaging_dock_area", self.messaging_position, general),
             ("selected_skin", self.skin_combo, general),
+            ("ui_scale", self.ui_scale_combo, general),
             ("debug_window", self.debug_window, general),
             # --- Session ---
             ("reconnect_last_user", self.reconnect_last_user_checkbox, session),

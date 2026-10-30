@@ -109,6 +109,33 @@ def normalize_skin_name(value):
     return NO_SKIN if value == LEGACY_NO_SKIN_LABEL else value
 
 
+#: Nom d'objet du widget central du mode comptoir (main_window_ui) : cible des
+#: règles de ``PANEL_OVERRIDES_QSS``.
+COUNTER_PANEL_OBJECT_NAME = "counterPanel"
+
+#: Ajouté après chaque skin. Plusieurs skins imposent une largeur minimale à
+#: TOUS les boutons (« QPushButton { min-width: 80px } ») : dans le panneau du
+#: comptoir, cela empêchait l'interface de rétrécir et la faisait déborder des
+#: petits écrans (mode horizontal surtout). Les dialogues gardent le style du
+#: skin ; seul le panneau est concerné (sélecteur par nom d'objet, prioritaire
+#: sur le sélecteur de type du skin).
+PANEL_OVERRIDES_QSS = (
+    "\n/* Ajouts de l'App : le panneau du comptoir doit pouvoir rétrécir. */\n"
+    f"#{COUNTER_PANEL_OBJECT_NAME} QPushButton, "
+    f"#{COUNTER_PANEL_OBJECT_NAME} QToolButton {{ min-width: 0px; }}\n"
+)
+
+
+def skin_stylesheet(name):
+    """Feuille de style complète du skin ``name`` (fichier + ajouts de l'App),
+    ``""`` pour « aucun », None si le fichier est introuvable ou illisible."""
+    name = normalize_skin_name(name)
+    if not name:
+        return ""
+    qss = read_skin(name)
+    return None if qss is None else qss + PANEL_OVERRIDES_QSS
+
+
 def apply_skin(name, window=None, app=None):
     """Applique le skin ``name`` à la fenêtre ET à toute l'application, ou retire
     tout skin si ``name`` désigne « aucun ».
@@ -119,13 +146,9 @@ def apply_skin(name, window=None, app=None):
 
     Renvoie False — sans rien modifier — si le fichier du skin est introuvable ou
     illisible. ``window``/``app`` : tout objet exposant ``setStyleSheet``."""
-    name = normalize_skin_name(name)
-    if name:
-        qss = read_skin(name)
-        if qss is None:
-            return False
-    else:
-        qss = ""
+    qss = skin_stylesheet(name)
+    if qss is None:
+        return False
     for target in (window, app):
         if target is not None:
             target.setStyleSheet(qss)

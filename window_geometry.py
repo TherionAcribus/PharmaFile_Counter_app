@@ -91,14 +91,42 @@ def centered_geometry(window_size, screen_avail):
     return (x, y, ww, wh)
 
 
+def fit_inside(window, area):
+    """Rectangle ``window`` ramené DANS ``area`` : taille bornée à la zone, puis
+    position décalée juste assez pour que la fenêtre soit entièrement visible."""
+    wx, wy, ww, wh = window
+    sx, sy, sw, sh = area
+    ww = max(1, min(ww, sw))
+    wh = max(1, min(wh, sh))
+    x = min(max(wx, sx), sx + sw - ww)
+    y = min(max(wy, sy), sy + sh - wh)
+    return (x, y, ww, wh)
+
+
+def host_screen(window, screens):
+    """Écran qui porte la plus grande partie de la fenêtre (None si aucun)."""
+    best, best_area = None, 0
+    for screen in screens:
+        area = _intersection_area(window, screen)
+        if area > best_area:
+            best, best_area = screen, area
+    return best
+
+
 def resolve_target_geometry(window, screens, primary_avail,
                             stored_screen_name=None, available_screen_names=None,
                             **visible_kwargs):
     """Décide où placer la fenêtre au démarrage / après un changement d'écran.
 
-    Retourne ``None`` si la position actuelle convient (fenêtre visible et son
-    moniteur d'origine toujours présent), sinon un rectangle recentré sur l'écran
-    principal.
+    Retourne ``None`` si la position actuelle convient (fenêtre visible, son
+    moniteur d'origine toujours présent, et pas plus grande que l'écran qui la
+    porte), sinon le rectangle cible :
+
+    * fenêtre perdue (moniteur disparu, hors zone) : recentrée sur l'écran
+      principal ;
+    * fenêtre visible mais plus grande que son écran (taille mémorisée sur un
+      grand écran, résolution réduite depuis) : ramenée à la taille de cet
+      écran et entièrement dedans — sinon ses bords restaient inaccessibles.
     """
     monitor_gone = (
         stored_screen_name is not None
@@ -106,5 +134,8 @@ def resolve_target_geometry(window, screens, primary_avail,
         and stored_screen_name not in available_screen_names
     )
     if not monitor_gone and is_window_visible(window, screens, **visible_kwargs):
+        host = host_screen(window, screens)
+        if host is not None and (window[2] > host[2] or window[3] > host[3]):
+            return fit_inside(window, host)
         return None
     return centered_geometry((window[2], window[3]), primary_avail)

@@ -41,6 +41,9 @@ from panel_layout import (
 )
 from resources import NO_SKIN, normalize_skin_name
 from shortcut_config import DEFAULT_MODE, normalize_mode
+from ui_scale import CHOICES as UI_SCALE_CHOICES
+from ui_scale import DEFAULT as DEFAULT_UI_SCALE
+from ui_scale import normalize_ui_scale
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,14 @@ SETTINGS = {
     # = les trois actions + la file) au lieu des trois icônes d'action —
     # moins d'encombrement quand l'app vit en panneau latéral.
     "tray_single_icon": Setting(default=False, kind=bool),
+
+    # --- Taille de l'interface ------------------------------------------------
+    # Zoom global du POSTE (0 = automatique selon l'écran, sinon 80…125 %).
+    # Appliqué au démarrage (QT_SCALE_FACTOR), cf. ui_scale. Jamais dans le
+    # profil de l'équipier : il dépend de l'écran de ce poste.
+    "ui_scale": Setting(default=DEFAULT_UI_SCALE, kind=int,
+                        coerce=normalize_ui_scale,
+                        bounds=(UI_SCALE_CHOICES[0], UI_SCALE_CHOICES[-1])),
 
     # --- Divers --------------------------------------------------------------
     "debug_window": Setting(default=False, kind=bool),

@@ -116,6 +116,11 @@ class WindowPlacement:
         principal."""
         if self.window.shutting_down or not self.window.isVisible():
             return
+        # Maximisée / plein écran : c'est le système qui la garde dans l'écran
+        # (et sous Windows, le cadre d'une fenêtre maximisée déborde de
+        # quelques pixels par construction — à ne pas « corriger »).
+        if self.window.isMaximized() or self.window.isFullScreen():
+            return
         primary = QGuiApplication.primaryScreen()
         if primary is None:
             return
@@ -129,9 +134,18 @@ class WindowPlacement:
             available_screen_names=[s.name() for s in QGuiApplication.screens()],
         )
         if target is not None:
-            self.logger.info("Fenêtre hors zone visible : recentrage sur l'écran principal")
+            self.logger.info(
+                "Fenêtre hors zone visible ou plus grande que l'écran : "
+                "replacée en %s", target)
             x, y, w, h = target
-            self.window.resize(w, h)
+            # ``target`` décrit le CADRE (barre de titre comprise) ; resize()
+            # attend la zone intérieure : on retire l'épaisseur du cadre, sinon
+            # la fenêtre redépasserait de l'écran de la hauteur de son titre.
+            frame = self.window.frameGeometry()
+            inner = self.window.geometry()
+            dw = max(0, frame.width() - inner.width())
+            dh = max(0, frame.height() - inner.height())
+            self.window.resize(max(1, w - dw), max(1, h - dh))
             self.window.move(x, y)
 
     # --- changements d'écran ------------------------------------------------

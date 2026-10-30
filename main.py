@@ -41,6 +41,7 @@ import endpoints
 import profile_sync
 import resources
 import settings_schema
+import ui_scale
 from accessibility import (
     validate_alert_text,
 )
@@ -134,6 +135,11 @@ class MainWindow(QMainWindow):
     # (évite les doubles déclenchements ; l'UI n'est finalisée qu'après la réponse).
     _disconnect_in_progress = False
 
+    # Vrai quand l'utilisateur a demandé à redémarrer l'App (nouvelle taille
+    # d'interface) : lu après app.exec() pour lancer la nouvelle instance APRÈS
+    # l'arrêt propre (comptoir libéré).
+    restart_requested = False
+
     patient_id = None
     staff_id = None
     staff_name = None  # nom de l'équipier courant : sert à repeupler label_staff après chaque reconstruction d'interface
@@ -168,6 +174,9 @@ class MainWindow(QMainWindow):
 
         self.app_logger = AppLogger.get_instance()
         self.logger = self.app_logger.get_logger()
+        scale_decision = ui_scale.current()
+        if scale_decision is not None:
+            self.logger.info("Taille de l'interface : %s", scale_decision.describe())
 
         # pour gérer le délai avant d'indiquer une erreur de connexion
         self.disconnect_timer = QTimer(self)  # Timer créé dans le thread principal
@@ -476,6 +485,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "app_logger"):
             self.app_logger.enable_debug(self.debug_window)
         self.selected_skin = settings_schema.read(settings, "selected_skin")
+        self.ui_scale = settings_schema.read(settings, "ui_scale")
 
     def setup_ui(self):
         self.logger.info("Initialisation de l'interface...")
@@ -2007,6 +2017,7 @@ class MainWindow(QMainWindow):
         old_on_top = getattr(self, "always_on_top", False)
         old_tray_single = getattr(self, "tray_single_icon", False)
         old_skin = getattr(self, "selected_skin", "")
+        old_ui_scale = getattr(self, "ui_scale", ui_scale.DEFAULT)
         self.load_preferences()
 
         # « Toujours au premier plan » : appliqué ICI (plus dans le dialogue, qui ne
@@ -2053,6 +2064,12 @@ class MainWindow(QMainWindow):
         # gardaient l'ancien skin jusqu'au redémarrage.
         if getattr(self, "selected_skin", "") != old_skin:
             self.load_skin()
+        # Taille de l'interface : ne s'applique qu'au démarrage (QT_SCALE_FACTOR)
+        # — on propose de redémarrer, après la fermeture des préférences.
+        new_ui_scale = getattr(self, "ui_scale", old_ui_scale)
+        if (new_ui_scale != old_ui_scale
+                and ui_scale.needs_restart(ui_scale.current(), new_ui_scale)):
+            QTimer.singleShot(0, self._offer_restart_for_ui_scale)
 
         if needs_service_reconnect(old, new):
             self.logger.info("Serveur/secret/comptoir modifiés : reconnexion des services.")
@@ -2156,6 +2173,35 @@ class MainWindow(QMainWindow):
 
         if not connected:
             self._warn_reconnect_failed()
+
+    def _offer_restart_for_ui_scale(self):
+        """Propose de redémarrer pour appliquer la nouvelle taille d'interface."""
+        if self.shutting_down:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Taille de l'interface")
+        box.setText("La nouvelle taille d'interface s'appliquera au "
+                    "redémarrage de l'App.")
+        box.setInformativeText(
+            "Redémarrer maintenant ? Le comptoir est libéré puis repris "
+            "automatiquement au redémarrage.")
+        restart = box.addButton("Redémarrer maintenant", QMessageBox.AcceptRole)
+        box.addButton("Plus tard", QMessageBox.RejectRole)
+        box.setDefaultButton(restart)
+        box.exec()
+        if box.clickedButton() is restart:
+            self.request_restart()
+
+    def request_restart(self):
+        """Arrêt propre puis relance (cf. ``__main__``) : la nouvelle instance
+        n'est démarrée qu'une fois celle-ci entièrement fermée."""
+        self.logger.info("Redémarrage demandé (taille de l'interface)")
+        self.restart_requested = True
+        if self.close():
+            QApplication.instance().quit()
+        else:
+            self.restart_requested = False
 
     def _warn_reconnect_failed(self):
         """ Avertit que la nouvelle connexion a échoué (jeton non obtenu) et propose
@@ -2707,10 +2753,16 @@ def setup_application(app):
 
 
 if __name__ == "__main__":
+    # Zoom global (taille de l'interface) : DOIT précéder QApplication, Qt ne
+    # lit QT_SCALE_FACTOR qu'à sa création.
+    ui_scale.configure_before_app()
     app = setup_application(QApplication(sys.argv))
 
     # MainWindow.show() est appelé en interne une fois l'initialisation
     # asynchrone terminée (_on_startup_ready), pas ici : l'appeler tout de
     # suite afficherait une fenêtre encore vide pendant le chargement.
     window = MainWindow()
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    if window.restart_requested:
+        ui_scale.relaunch()
+    sys.exit(exit_code)

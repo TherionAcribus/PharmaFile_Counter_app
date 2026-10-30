@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from screen_fit import fit_on_show
+
 #: Limites de repli (serveur ancien) — les vraies viennent de l'état de
 #: messagerie (``quick_replies.max_personal`` / ``max_length``).
 DEFAULT_MAX_COUNT = 12
@@ -164,6 +166,11 @@ class QuickRepliesDialog(QDialog):
         self._update_buttons()
 
     # --- liste ------------------------------------------------------------
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Petit écran : la fenêtre est ramenée dans la zone utile (screen_fit).
+        fit_on_show(self)
 
     def _append_item(self, phrase):
         item = QListWidgetItem(phrase)

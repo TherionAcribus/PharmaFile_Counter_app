@@ -34,6 +34,8 @@ PROFILE_LOCAL_KEYS = frozenset({
     "app_secret",
     "last_staff_initials",
     "reconnect_last_user",
+    # Zoom de l'interface : dépend de l'écran du poste, pas de la personne.
+    "ui_scale",
 })
 
 #: Politiques de récupération du profil. « ask » = proposer au moment de la

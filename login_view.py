@@ -21,7 +21,10 @@ def create_login_widget(window):
     window.label_connexion = QLabel("Connectez-vous")
     window.label_connexion.setAlignment(Qt.AlignCenter)  # Centre le texte
     font = window.label_connexion.font()
-    font.setPointSize(16)  # Augmente la taille de la police (ajustez selon vos besoins)
+    # Titre ~1,8× la police de base (≈ 16 pt pour 9 pt) : suit la police du
+    # système et la taille de l'interface au lieu d'une valeur figée.
+    base = font.pointSizeF()
+    font.setPointSizeF(base * 1.8 if base > 0 else 16)
     font.setBold(True)  # Met le texte en gras
     window.label_connexion.setFont(font)
     login_layout.addWidget(window.label_connexion)

@@ -21,11 +21,12 @@ import requests
 from PySide6.QtCore import QSettings, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
+    QLineEdit, QMessageBox, QPushButton,
 )
 
 import endpoints
 import settings_schema
+from screen_fit import fit_on_show, scrollable_body
 from connections import DEFAULT_TIMEOUT
 from counter_id_utils import coerce_counter_id
 from secret_store import (
@@ -194,6 +195,7 @@ class StationDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configuration du poste")
+        # Largeur confortable, plafonnée à l'écran par fit_to_screen (showEvent).
         self.setMinimumWidth(460)
 
         # Registre des workers de test en cours (point 9), indexés par « kind »
@@ -219,7 +221,9 @@ class StationDialog(QDialog):
         # serait persisté sans avoir été vérifié.
         self._pending_save = None
 
-        layout = QVBoxLayout(self)
+        # Corps défilant : sur un petit écran, les champs défilent et la barre
+        # « Enregistrer / Annuler » reste visible (screen_fit).
+        outer_layout, layout = scrollable_body(self)
 
         intro = QLabel(
             "Réglages propres à ce poste, fixés à l'installation. Les modifier "
@@ -298,7 +302,7 @@ class StationDialog(QDialog):
         # clicked(bool checked) transmettrait « False » : handler dédié.
         self.save_button.clicked.connect(lambda _checked=False: self.save_preferences())
         self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
+        outer_layout.addWidget(self.button_box)
 
         self.load_preferences()
         self.counters_loaded.connect(self.update_counters)
@@ -355,6 +359,11 @@ class StationDialog(QDialog):
         super().done(result)
 
     # --- Chargement / secret -------------------------------------------------
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Petit écran : la fenêtre est ramenée dans la zone utile (screen_fit).
+        fit_on_show(self)
 
     def load_preferences(self):
         settings = QSettings()

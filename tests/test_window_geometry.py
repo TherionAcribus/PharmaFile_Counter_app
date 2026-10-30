@@ -123,3 +123,39 @@ def test_resolve_ignores_monitor_name_when_not_provided():
     assert wg.resolve_target_geometry(
         (9000, 9000, 800, 600), SCREENS, PRIMARY) == wg.centered_geometry(
             (800, 600), PRIMARY)
+
+
+# --- Fenêtre plus grande que l'écran (petites résolutions) --------------------
+
+def test_fit_inside_reduit_et_decale():
+    assert wg.fit_inside((100, 50, 2000, 1200), (0, 0, 1366, 728)) == (0, 0, 1366, 728)
+    # Taille correcte mais déborde à droite / en bas : simplement décalée.
+    assert wg.fit_inside((1200, 600, 400, 300), (0, 0, 1366, 728)) == (966, 428, 400, 300)
+    # Déjà dedans : inchangée.
+    assert wg.fit_inside((10, 10, 400, 300), (0, 0, 1366, 728)) == (10, 10, 400, 300)
+    # Écran décalé (second moniteur).
+    assert wg.fit_inside((1300, -20, 400, 900), (1366, 0, 1920, 800)) == (1366, 0, 400, 800)
+
+
+def test_host_screen_retient_l_ecran_qui_porte_le_plus_la_fenetre():
+    left, right = (0, 0, 1366, 728), (1366, 0, 1920, 1040)
+    assert wg.host_screen((1000, 0, 400, 300), [left, right]) == left
+    assert wg.host_screen((1300, 0, 400, 300), [left, right]) == right
+    assert wg.host_screen((9000, 9000, 10, 10), [left, right]) is None
+
+
+def test_resolve_reduit_une_fenetre_plus_grande_que_son_ecran():
+    """Taille mémorisée sur un grand écran, poste passé en 1366×768 : la
+    fenêtre est visible mais ses bords (et ses boutons) sortaient de l'écran."""
+    screen = (0, 0, 1366, 728)
+    target = wg.resolve_target_geometry(
+        (50, 20, 1600, 1000), [screen], screen,
+        stored_screen_name="A", available_screen_names=["A"])
+    assert target == (0, 0, 1366, 728)
+
+
+def test_resolve_laisse_une_fenetre_qui_tient_dans_son_ecran():
+    screen = (0, 0, 1366, 728)
+    assert wg.resolve_target_geometry(
+        (50, 20, 400, 700), [screen], screen,
+        stored_screen_name="A", available_screen_names=["A"]) is None

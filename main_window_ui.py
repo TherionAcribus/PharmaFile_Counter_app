@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 import dock_arrangement
 import endpoints
+import resources
 from buttons import DebounceButton, IconeButton
 from patient_list_model import PatientListModel
 from resources import resource_path
@@ -180,6 +181,8 @@ def create_interface(window):
     if window.centralWidget():
         window.centralWidget().deleteLater()
     window.central_widget = QWidget()
+    # Cible des ajustements de skin (resources.PANEL_OVERRIDES_QSS).
+    window.central_widget.setObjectName(resources.COUNTER_PANEL_OBJECT_NAME)
     window.setCentralWidget(window.central_widget)
 
     window.main_layout = QHBoxLayout(window.central_widget) if window.horizontal_mode else QVBoxLayout(window.central_widget)

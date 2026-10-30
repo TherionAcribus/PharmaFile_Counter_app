@@ -79,7 +79,7 @@ def test_ouvrir_le_dialogue_n_applique_aucun_skin(isolated_settings):
 def test_apercu_applique_le_skin_a_toute_l_application(isolated_settings):
     dialog, parent = _dialog()
     _select(dialog, "Darkeum")
-    qss = resources.read_skin("Darkeum")
+    qss = resources.skin_stylesheet("Darkeum")
     assert QApplication.instance().styleSheet() == qss
     assert parent.styleSheet() == qss
 
@@ -99,7 +99,7 @@ def test_annuler_rend_le_skin_enregistre(isolated_settings):
     _select(dialog, resources.NO_SKIN)
     assert QApplication.instance().styleSheet() == ""
     dialog.reject()
-    assert QApplication.instance().styleSheet() == resources.read_skin("Darkeum")
+    assert QApplication.instance().styleSheet() == resources.skin_stylesheet("Darkeum")
 
 
 def test_annuler_sans_apercu_ne_touche_pas_au_style(isolated_settings):
@@ -143,4 +143,4 @@ def test_enregistrer_consomme_l_apercu(isolated_settings):
     dialog._finalize_save({"notification_volume": 50, "notification_muted": False,
                            "selected_skin": "Darkeum"}, close=False)
     dialog.reject()
-    assert QApplication.instance().styleSheet() == resources.read_skin("Darkeum")
+    assert QApplication.instance().styleSheet() == resources.skin_stylesheet("Darkeum")

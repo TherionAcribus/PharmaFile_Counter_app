@@ -312,3 +312,18 @@ def test_premier_demarrage_ouvre_la_configuration_du_poste(monkeypatch):
     w._start_startup_sequence = lambda: setattr(w, "started", w.started + 1)
     main.MainWindow._require_valid_counter_id(w)
     assert opened == [w] and w.started == 1
+
+
+# --- Petits écrans : corps défilant, boutons toujours visibles ----------------
+
+def test_corps_defilant_et_boutons_hors_defilement(isolated_settings, secrets, monkeypatch):
+    from PySide6.QtWidgets import QScrollArea
+    dialog = _station(monkeypatch)
+    scroll = dialog.findChild(QScrollArea)
+    assert scroll is not None
+    # Les champs défilent…
+    assert scroll.widget().isAncestorOf(dialog.url_input)
+    assert scroll.widget().isAncestorOf(dialog.counter_combobox)
+    # … mais « Enregistrer / Annuler » reste toujours visible, hors défilement.
+    assert not scroll.isAncestorOf(dialog.button_box)
+    assert dialog.layout().indexOf(dialog.button_box) == dialog.layout().count() - 1

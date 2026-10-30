@@ -125,3 +125,16 @@ def test_fit_to_content_height_shrinks_an_oversized_window():
 
     assert win.height() == 360
     assert win.width() == 400
+
+
+def test_ensure_visible_reduit_une_fenetre_plus_grande_que_l_ecran():
+    win = GeoWindow()
+    win.show()
+    screens = win.placement.screen_rects()
+    avail = screens[0] if screens else (0, 0, 800, 600)
+    win.move(avail[0], avail[1])
+    win.resize(avail[2] + 400, avail[3] + 300)
+    win.placement.ensure_visible()
+    frame = win.frameGeometry()
+    assert frame.width() <= avail[2] and frame.height() <= avail[3]
+    assert frame.x() >= avail[0] and frame.y() >= avail[1]
