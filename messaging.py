@@ -26,6 +26,9 @@ from PySide6.QtWidgets import (
 
 import settings_schema
 from dock_arrangement import DockArranger, dock_in_front, toggle_dock
+from quick_replies_dialog import (
+    DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH, QuickRepliesDialog,
+)
 
 
 class MessageInput(QPlainTextEdit):
@@ -147,8 +150,10 @@ class MessagingController(QObject):
     # Délai avant l'envoi de l'accusé « Lu » : laisse à l'équipier le temps
     # de voir réellement les messages (cf. _schedule_read_mark).
     READ_DELAY_MS = 1_500
-    #: Phrases du menu « ⚡ » du compositeur : insérées dans le champ de
-    #: saisie, JAMAIS envoyées telles quelles — à éditer librement.
+    #: Phrases d'équipe d'origine du menu « ⚡ » : repli tant que le serveur
+    #: n'a pas transmis les siennes (ou s'il est trop ancien). Identiques à
+    #: ``DEFAULT_TEAM`` de Serveur/quick_replies.py (un test le vérifie).
+    #: Une phrase est insérée dans le champ, JAMAIS envoyée telle quelle.
     QUICK_REPLIES = (
         "J'arrive", "Occupé(e) 2 min", "En réserve", "Un client m'attend",
     )
@@ -196,6 +201,21 @@ class MessagingController(QObject):
         self.input = None
         self.send_button = None
         self.quick_button = None
+        # Menu « ⚡ » : phrases d'équipe (admin) puis phrases personnelles,
+        # toutes deux transmises dans l'état de messagerie. Tant que le
+        # serveur ne les a pas envoyées : phrases d'origine, et pas de
+        # gestion personnelle (rien où les enregistrer).
+        self.team_replies = list(self.QUICK_REPLIES)
+        self.personal_replies = []
+        self.quick_replies_supported = False
+        self.quick_max_count = DEFAULT_MAX_COUNT
+        self.quick_max_length = DEFAULT_MAX_LENGTH
+        # Liste personnelle dont l'enregistrement a échoué : reproposée à la
+        # prochaine ouverture de la fenêtre plutôt que perdue.
+        self._unsaved_personal = None
+        self._quick_menu = None
+        self._quick_phrase_actions = []
+        self._quick_manage_action = None
         self.urgent_button = None
         self.status_label = None
         self._online_only = None
@@ -396,6 +416,13 @@ class MessagingController(QObject):
         # notifications de mention ni pour le surlignage du fil.
         self.self_initials = None
         self._known_initials = set()
+        # Les phrases personnelles sont celles de l'agent précédent : retour
+        # aux phrases d'origine jusqu'au premier état du nouvel agent.
+        self.team_replies = list(self.QUICK_REPLIES)
+        self.personal_replies = []
+        self.quick_replies_supported = False
+        self._unsaved_personal = None
+        self._rebuild_quick_menu()
         # Tout ce qui suivait la session s'arrête avec elle : accusé « Lu » en
         # cours d'armement, brouillons par conversation, onglets ouverts ou
         # fermés à la main et intention d'ouverture en attente.
@@ -659,11 +686,14 @@ class MessagingController(QObject):
         self.quick_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup)
         quick_menu = QMenu(self.quick_button)
-        for phrase in self.QUICK_REPLIES:
-            action = quick_menu.addAction(phrase)
-            action.triggered.connect(
-                lambda _checked=False, _text=phrase:
-                    self._insert_quick_reply(_text))
+        self._quick_menu = quick_menu
+        # Les phrases (équipe puis personnelles) sont insérées en tête par
+        # _rebuild_quick_menu ; viennent ensuite, fixes, la gestion des
+        # phrases personnelles puis le retrait du dernier message.
+        self._quick_manage_action = quick_menu.addAction(
+            "Gérer mes phrases rapides…")
+        self._quick_manage_action.triggered.connect(
+            self.open_quick_replies_dialog)
         # Retrait du dernier message envoyé par erreur : séparé des
         # insertions de texte — c'est une autre nature d'action, confirmée
         # en deux temps en ligne (même logique que l'envoi « équipe »).
@@ -675,6 +705,7 @@ class MessagingController(QObject):
         # l'ouverture du menu plutôt qu'à chaque rendu du fil.
         quick_menu.aboutToShow.connect(self._refresh_delete_action)
         self.quick_button.setMenu(quick_menu)
+        self._rebuild_quick_menu()
         composer.addWidget(self.quick_button)
         self.send_button = QPushButton(container)
         self.send_button.setIcon(
@@ -748,6 +779,8 @@ class MessagingController(QObject):
         self.input = self.send_button = None
         self.quick_button = self.urgent_button = None
         self._delete_action = None
+        self._quick_menu = self._quick_manage_action = None
+        self._quick_phrase_actions = []
         self.status_label = None
         self._online_only = None
         self._recipient_model = self._recipient_proxy = None
@@ -877,6 +910,7 @@ class MessagingController(QObject):
                 self.unread_total = int(result.data.get("unread_total") or 0)
                 self.self_initials = (
                     result.data.get("self") or {}).get("initials")
+                self._apply_quick_replies(result.data.get("quick_replies"))
                 self._refresh_tabs()
                 self._update_badge()
                 if self.unread_total > previous_unread and self._pending_event:
@@ -1274,6 +1308,127 @@ class MessagingController(QObject):
         """Échap dans le panneau : la main revient à la fenêtre principale,
         l'équipier enchaîne au clavier sur la file des patients."""
         self.window.setFocus()
+
+    # --- phrases rapides « ⚡ » -----------------------------------------------
+
+    @staticmethod
+    def _phrase_list(value):
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str) and item.strip()]
+
+    def _apply_quick_replies(self, payload):
+        """Bloc ``quick_replies`` de l'état serveur. Absent (serveur
+        ancien) : phrases d'origine, gestion personnelle masquée."""
+        if isinstance(payload, dict):
+            team = self._phrase_list(payload.get("team"))
+            personal = self._phrase_list(payload.get("personal"))
+            supported = True
+            try:
+                max_count = int(payload.get("max_personal") or DEFAULT_MAX_COUNT)
+                max_length = int(payload.get("max_length") or DEFAULT_MAX_LENGTH)
+            except (TypeError, ValueError):
+                max_count, max_length = DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH
+        else:
+            team, personal, supported = list(self.QUICK_REPLIES), [], False
+            max_count, max_length = DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH
+        changed = (team != self.team_replies
+                   or personal != self.personal_replies
+                   or supported != self.quick_replies_supported)
+        self.team_replies = team
+        self.personal_replies = personal
+        self.quick_replies_supported = supported
+        self.quick_max_count = max(1, max_count)
+        self.quick_max_length = max(1, max_length)
+        if changed:
+            self._rebuild_quick_menu()
+
+    def _rebuild_quick_menu(self):
+        """Remplace les phrases en tête du menu « ⚡ » ; les actions fixes
+        (gestion, retrait du dernier message) restent en place — l'action de
+        retrait porte l'état de sa confirmation en deux temps."""
+        menu = self._quick_menu
+        if menu is None:
+            return
+        for action in self._quick_phrase_actions:
+            menu.removeAction(action)
+            action.deleteLater()
+        self._quick_phrase_actions = []
+        anchor = self._quick_manage_action
+        for group in (self.team_replies, self.personal_replies):
+            if not group:
+                continue
+            for phrase in group:
+                action = QAction(phrase, menu)
+                action.triggered.connect(
+                    lambda _checked=False, _text=phrase:
+                        self._insert_quick_reply(_text))
+                menu.insertAction(anchor, action)
+                self._quick_phrase_actions.append(action)
+            # Séparateur après chaque groupe : équipe | personnelles | gestion.
+            self._quick_phrase_actions.append(menu.insertSeparator(anchor))
+        if anchor is not None:
+            anchor.setVisible(self.quick_replies_supported)
+            anchor.setText("Gérer mes phrases rapides…" if self.personal_replies
+                           else "Ajouter mes phrases rapides…")
+
+    def open_quick_replies_dialog(self):
+        """Fenêtre « Mes phrases rapides » ; l'enregistrement part au
+        serveur à la validation (la fenêtre ne fait aucun appel réseau)."""
+        if not (self.enabled and self.staff_id and self.quick_replies_supported):
+            return
+        phrases = (self._unsaved_personal if self._unsaved_personal is not None
+                   else self.personal_replies)
+        dialog = QuickRepliesDialog(
+            phrases, team_phrases=self.team_replies,
+            max_count=self.quick_max_count, max_length=self.quick_max_length,
+            parent=self.dock if self.dock is not None else self.window)
+        if dialog.exec() != QuickRepliesDialog.DialogCode.Accepted:
+            return
+        self.save_personal_quick_replies(dialog.phrases())
+
+    def save_personal_quick_replies(self, phrases):
+        phrases = list(phrases)
+        self._unsaved_personal = phrases
+        handle = self.window.api.messaging_save_quick_replies(
+            phrases,
+            on_result=self._network_callback(self._handle_quick_replies_saved))
+        if handle is None:
+            self._show_transient_status(
+                "Enregistrement des phrases déjà en cours…")
+
+    def _handle_quick_replies_saved(self, result):
+        data = result.data if isinstance(result.data, dict) else {}
+        if result.status == 200 and "personal" in data:
+            self._unsaved_personal = None
+            self.personal_replies = self._phrase_list(data.get("personal"))
+            if "team" in data:
+                self.team_replies = self._phrase_list(data.get("team"))
+            self._rebuild_quick_menu()
+            self._show_transient_status("Vos phrases rapides sont enregistrées.")
+            return
+        message = data.get("message")
+        self._show_transient_status(
+            message if isinstance(message, str) and message
+            else "Vos phrases rapides n'ont pas pu être enregistrées. "
+                 "Rouvrez « ⚡ » pour réessayer.")
+
+    def _show_transient_status(self, text, delay_ms=6000):
+        """Message affiché sous le champ de saisie, effacé après quelques
+        secondes s'il est toujours celui affiché."""
+        self._status_message = text
+        self._update_composer()
+        QTimer.singleShot(delay_ms, lambda: self._clear_status_if(text))
+
+    def _clear_status_if(self, text):
+        if self._status_message != text:
+            return
+        self._status_message = None
+        try:
+            self._update_composer()
+        except RuntimeError:
+            # Le délai peut s'écouler après la destruction du panneau.
+            pass
 
     def _insert_quick_reply(self, text):
         """Réponse rapide : insérée à la position du curseur (insertion, pas

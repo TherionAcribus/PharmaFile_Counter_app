@@ -401,6 +401,14 @@ class CounterApi:
                           on_result=on_result, key="messaging_delete",
                           silent=True)
 
+    def messaging_save_quick_replies(self, phrases, on_result=None):
+        """Remplace les phrases rapides personnelles de l'équipier connecté
+        au comptoir (le serveur l'identifie par le comptoir). PUT JSON."""
+        data = {"counter_id": self._counter_id(), "personal": list(phrases)}
+        return self._put(endpoints.messaging_quick_replies(self._url()),
+                         data=data, on_result=on_result,
+                         key="messaging_quick_replies")
+
     def release_counter_blocking(self, url=None, counter_id=None):
         """ Libère le comptoir et attend (au plus quelques secondes).
 

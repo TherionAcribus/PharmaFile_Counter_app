@@ -211,6 +211,11 @@ def messaging_delete(web_url):
     return f"{_base(web_url)}/api/messaging/delete"
 
 
+def messaging_quick_replies(web_url):
+    """Phrases rapides personnelles (PUT, routes/messaging.py)."""
+    return f"{_base(web_url)}/api/messaging/quick_replies"
+
+
 # --- Temps réel ------------------------------------------------------------
 
 def socket_url(web_url):

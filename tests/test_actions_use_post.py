@@ -55,7 +55,7 @@ READ_ACTIONS = ["fetch_staff", "fetch_staff_preferences",
                 "messaging_state", "messaging_messages"]
 
 # Remplacements complets d'une ressource : PUT.
-PUT_ACTIONS = ["upload_staff_preferences"]
+PUT_ACTIONS = ["upload_staff_preferences", "messaging_save_quick_replies"]
 
 
 def _method_body(name):
