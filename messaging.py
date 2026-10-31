@@ -20,7 +20,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QCompleter, QDockWidget, QHBoxLayout, QLabel,
-    QLineEdit, QMenu, QPlainTextEdit, QPushButton, QSizePolicy, QStyle,
+    QLineEdit, QMenu, QPlainTextEdit, QSizePolicy,
     QTabBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -48,6 +48,32 @@ class MessageInput(QPlainTextEdit):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+#: En dessous de ces dimensions (px), le panneau resserre marges et
+#: espacements : chaque pixel rendu va au fil et au champ de saisie.
+COMPACT_DOCK_WIDTH = 320
+COMPACT_DOCK_HEIGHT = 260
+
+
+def composer_spacing(width, height):
+    """(marge, espacement, marge interne du champ) selon la taille du
+    panneau de messagerie : valeurs d'origine, ou resserrées s'il est
+    étroit OU bas."""
+    if width < COMPACT_DOCK_WIDTH or height < COMPACT_DOCK_HEIGHT:
+        return 2, 3, 2
+    return 6, 6, 4
+
+
+class _ResizeAwareWidget(QWidget):
+    """Conteneur du panneau qui signale ses changements de taille."""
+
+    resized = Signal(int, int)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        size = event.size()
+        self.resized.emit(size.width(), size.height())
 
 
 def _normalize(text):
@@ -165,6 +191,31 @@ class MessagingController(QObject):
     #: Fenêtre de retrait d'un de mes messages (s) : garde miroir de
     #: DELETE_WINDOW_SECONDS côté serveur, qui reste le seul juge.
     DELETE_WINDOW_SECONDS = 15 * 60
+    #: Sans bouton « Envoyer », l'invite du champ rappelle le geste.
+    #: Vers toute l'équipe, l'envoi se confirme par un second Entrée
+    #: (cf. send) : annoncé AVANT la frappe, pas découvert après.
+    INPUT_PLACEHOLDER = "Écrire un message… (Entrée pour envoyer)"
+    URGENT_PLACEHOLDER = "Message URGENT… (Entrée pour envoyer)"
+    TEAM_PLACEHOLDER = ("Message à toute l'équipe… "
+                        "(Entrée 2 fois pour envoyer)")
+    TEAM_URGENT_PLACEHOLDER = ("Message URGENT à toute l'équipe… "
+                               "(Entrée 2 fois pour envoyer)")
+    INPUT_TOOLTIP = "Entrée : envoyer — Maj+Entrée : aller à la ligne"
+    TEAM_INPUT_TOOLTIP = ("Entrée puis Entrée à nouveau : envoyer à toute "
+                          "l'équipe (confirmation) — Maj+Entrée : aller à "
+                          "la ligne")
+    URGENT_ACTION_TEXT = "Message urgent (prochain envoi)"
+    QUICK_BUTTON_TOOLTIP = "Réponses rapides, message urgent…"
+    URGENT_BUTTON_TOOLTIP = ("Prochain message envoyé en URGENT — "
+                             "décocher dans ce menu pour annuler")
+    #: Repère visuel de l'urgence armée, posé sur le champ lui-même.
+    URGENT_INPUT_STYLE = (
+        "QPlainTextEdit { border: 2px solid #dc2626; border-radius: 4px;"
+        " background-color: palette(base); }")
+    #: Fond rouge plutôt que couleur du texte : l'émoji « ⚡ » garde ses
+    #: propres couleurs et ignorerait un simple ``color``.
+    URGENT_BUTTON_STYLE = (
+        "QToolButton { background-color:#dc2626; border-radius:4px; }")
 
     def __init__(self, window, settings_factory=QSettings):
         super().__init__()
@@ -199,7 +250,6 @@ class MessagingController(QObject):
         self.tabs = None
         self.thread = None
         self.input = None
-        self.send_button = None
         self.quick_button = None
         # Menu « ⚡ » : phrases d'équipe (admin) puis phrases personnelles,
         # toutes deux transmises dans l'état de messagerie. Tant que le
@@ -216,7 +266,12 @@ class MessagingController(QObject):
         self._quick_menu = None
         self._quick_phrase_actions = []
         self._quick_manage_action = None
-        self.urgent_button = None
+        # « Message urgent » : action cochable du menu « ⚡ » (plus de bouton
+        # dédié — la largeur revient au champ de saisie).
+        self.urgent_action = None
+        self._layout = None
+        self._composer = None
+        self._spacing = None
         self.status_label = None
         self._online_only = None
         self._icon_layout = None
@@ -550,10 +605,13 @@ class MessagingController(QObject):
         self.dock.setMinimumHeight(180)
         self.dock.setAccessibleName("Panneau de messagerie interne")
 
-        container = QWidget(self.dock)
+        container = _ResizeAwareWidget(self.dock)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        self._layout = layout
+        self._spacing = None
+        # Marges et espacements ajustés à la taille réelle du panneau
+        # (cf. composer_spacing) ; valeurs d'origine posées d'emblée.
+        container.resized.connect(self._apply_spacing)
 
         # Recherche d'un destinataire : complétion par nom ou initiales ;
         # l'activation ouvre l'onglet de la conversation. Pas de combo
@@ -646,10 +704,16 @@ class MessagingController(QObject):
         self._online_only.hide()
         layout.addWidget(self._online_only)
 
+        # Ligne de saisie : le champ et un seul petit bouton « ⚡ ». Pas de
+        # bouton « Envoyer » (Entrée envoie, le texte d'invite le rappelle)
+        # ni de bouton « urgent » (option du menu « ⚡ ») : sur un petit
+        # écran, la largeur revient au texte en cours d'écriture.
         composer = QHBoxLayout()
+        self._composer = composer
         self.input = MessageInput(container)
-        self.input.setPlaceholderText("Écrire un message…")
+        self.input.setPlaceholderText(self.INPUT_PLACEHOLDER)
         self.input.setAccessibleName("Texte du message")
+        self.input.setToolTip(self.INPUT_TOOLTIP)
         self.input.setMinimumWidth(0)
         self.input.setMaximumHeight(76)
         self.input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -659,30 +723,15 @@ class MessagingController(QObject):
         self.input.sendRequested.connect(self.send)
         self.input.escapeRequested.connect(self._release_focus)
         composer.addWidget(self.input, 1)
-        # « ❗ » : arme le PROCHAIN envoi en urgent — notification
-        # persistante chez le destinataire. Un seul message concerné : le
-        # bouton se désarme tout seul après l'envoi réussi (et repart
-        # désarmé à chaque changement de conversation).
-        self.urgent_button = QToolButton(container)
-        self.urgent_button.setText("❗")
-        self.urgent_button.setCheckable(True)
-        self.urgent_button.setAutoRaise(True)
-        self.urgent_button.setFixedSize(36, 36)
-        self.urgent_button.setToolTip(
-            "Envoyer en urgent — notification persistante chez le destinataire")
-        self.urgent_button.setAccessibleName("Message urgent")
-        self.urgent_button.setStyleSheet(
-            "QToolButton:checked { color:#dc2626; font-weight:bold; }")
-        composer.addWidget(self.urgent_button)
         # Réponses rapides : le menu insère la phrase dans le champ (elle
         # reste modifiable, Entrée envoie) — pas d'envoi direct : un envoi
         # immédiat sous le doigt au comptoir serait une fausse manip.
         self.quick_button = QToolButton(container)
         self.quick_button.setText("⚡")
-        self.quick_button.setToolTip("Insérer une réponse rapide")
+        self.quick_button.setToolTip(self.QUICK_BUTTON_TOOLTIP)
         self.quick_button.setAccessibleName("Réponses rapides")
         self.quick_button.setAutoRaise(True)
-        self.quick_button.setFixedSize(36, 36)
+        self.quick_button.setFixedSize(32, 32)
         self.quick_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup)
         quick_menu = QMenu(self.quick_button)
@@ -694,6 +743,18 @@ class MessagingController(QObject):
             "Gérer mes phrases rapides…")
         self._quick_manage_action.triggered.connect(
             self.open_quick_replies_dialog)
+        # « Message urgent » : arme le PROCHAIN envoi en urgent —
+        # notification persistante chez le destinataire. Un seul message
+        # concerné : l'option se décoche toute seule après l'envoi réussi
+        # (et repart décochée à chaque changement de conversation). Armée,
+        # elle se voit sur le champ lui-même (cf. _apply_urgent_state).
+        quick_menu.addSeparator()
+        self.urgent_action = quick_menu.addAction(self.URGENT_ACTION_TEXT)
+        self.urgent_action.setCheckable(True)
+        self.urgent_action.setToolTip(
+            "Le prochain message s'affichera en notification persistante "
+            "chez le destinataire")
+        self.urgent_action.toggled.connect(self._apply_urgent_state)
         # Retrait du dernier message envoyé par erreur : séparé des
         # insertions de texte — c'est une autre nature d'action, confirmée
         # en deux temps en ligne (même logique que l'envoi « équipe »).
@@ -706,17 +767,9 @@ class MessagingController(QObject):
         quick_menu.aboutToShow.connect(self._refresh_delete_action)
         self.quick_button.setMenu(quick_menu)
         self._rebuild_quick_menu()
-        composer.addWidget(self.quick_button)
-        self.send_button = QPushButton(container)
-        self.send_button.setIcon(
-            self.window.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
-        )
-        self.send_button.setFixedSize(36, 36)
-        self.send_button.setToolTip("Envoyer le message (Entrée)")
-        self.send_button.setAccessibleName("Envoyer le message")
-        self.send_button.clicked.connect(self.send)
-        composer.addWidget(self.send_button)
+        composer.addWidget(self.quick_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(composer)
+        self._apply_spacing(container.width(), container.height())
 
         self.dock.setWidget(container)
         settings = self._settings_factory()
@@ -776,8 +829,9 @@ class MessagingController(QObject):
                     pass
             setattr(self, obj_name, None)
         self.search = self.tabs = self.thread = None
-        self.input = self.send_button = None
-        self.quick_button = self.urgent_button = None
+        self.input = None
+        self.quick_button = self.urgent_action = None
+        self._layout = self._composer = self._spacing = None
         self._delete_action = None
         self._quick_menu = self._quick_manage_action = None
         self._quick_phrase_actions = []
@@ -1582,10 +1636,9 @@ class MessagingController(QObject):
             # La portée choisie appartenait à la conversation quittée : on
             # repart sur le périmètre par défaut (« tous »).
             self._online_only.setChecked(False)
-        if self.urgent_button is not None:
-            # « Urgent » armé dans le fil quitté : on ne le transporte pas
-            # dans la conversation suivante.
-            self.urgent_button.setChecked(False)
+        # « Urgent » armé dans le fil quitté : on ne le transporte pas dans
+        # la conversation suivante.
+        self._disarm_urgent()
         # « … écrit » concernait l'interlocuteur du fil quitté.
         self._typing_timer.stop()
         self._typing_text = None
@@ -1859,6 +1912,72 @@ class MessagingController(QObject):
         délai d'attention, sous les gardes de _mark_visible_read."""
         self._schedule_read_mark()
 
+    def _apply_spacing(self, width, height):
+        """Marges resserrées quand le panneau est petit (composer_spacing) ;
+        rien n'est touché tant que le palier ne change pas."""
+        spacing = composer_spacing(width, height)
+        if spacing == self._spacing or self._layout is None:
+            return
+        self._spacing = spacing
+        margin, gap, text_margin = spacing
+        try:
+            self._layout.setContentsMargins(margin, margin, margin, margin)
+            self._layout.setSpacing(gap)
+            if self._composer is not None:
+                self._composer.setSpacing(gap)
+            if self.input is not None:
+                self.input.document().setDocumentMargin(text_margin)
+        except RuntimeError:
+            # Redimensionnement livré pendant la destruction du panneau.
+            pass
+
+    def _is_urgent(self):
+        return bool(self.urgent_action is not None
+                    and self.urgent_action.isChecked())
+
+    def _apply_urgent_state(self, armed=None):
+        """« Urgent » armé : bordure rouge sur le champ, invite dédiée et
+        bouton « ⚡ » sur fond rouge — visible sans ouvrir le menu."""
+        if armed is None:
+            armed = self._is_urgent()
+        try:
+            if self.input is not None:
+                self.input.setStyleSheet(
+                    self.URGENT_INPUT_STYLE if armed else "")
+                self.input.setAccessibleDescription(
+                    "Le prochain message partira en urgent" if armed else "")
+                self._refresh_input_hint()
+            if self.quick_button is not None:
+                self.quick_button.setStyleSheet(
+                    self.URGENT_BUTTON_STYLE if armed else "")
+                self.quick_button.setToolTip(
+                    self.URGENT_BUTTON_TOOLTIP if armed
+                    else self.QUICK_BUTTON_TOOLTIP)
+        except RuntimeError:
+            pass
+
+    def _refresh_input_hint(self):
+        """Invite et bulle d'aide du champ selon le fil (équipe : Entrée
+        deux fois) et l'urgence armée."""
+        if self.input is None:
+            return
+        conversation = self._selected()
+        team = bool(conversation and conversation.get("kind") == "broadcast")
+        urgent = self._is_urgent()
+        if team:
+            placeholder = (self.TEAM_URGENT_PLACEHOLDER if urgent
+                           else self.TEAM_PLACEHOLDER)
+        else:
+            placeholder = (self.URGENT_PLACEHOLDER if urgent
+                           else self.INPUT_PLACEHOLDER)
+        self.input.setPlaceholderText(placeholder)
+        self.input.setToolTip(
+            self.TEAM_INPUT_TOOLTIP if team else self.INPUT_TOOLTIP)
+
+    def _disarm_urgent(self):
+        if self.urgent_action is not None:
+            self.urgent_action.setChecked(False)
+
     def _update_composer(self):
         conversation = self._selected()
         can_send = bool(conversation and self.enabled and self.staff_id)
@@ -1882,22 +2001,19 @@ class MessagingController(QObject):
             self.status_label.setVisible(bool(text))
         if self.input is not None:
             self.input.setEnabled(can_send)
+            self._refresh_input_hint()
         if self.quick_button is not None:
             # Pas de conversation : insérer une phrase n'aurait pas de sens.
             self.quick_button.setEnabled(can_send)
-        if self.urgent_button is not None:
+        if self.urgent_action is not None:
             # Même règle : pas de conversation, rien à envoyer.
-            self.urgent_button.setEnabled(can_send)
-        if self.send_button is not None:
-            text = self.input.toPlainText().strip() if self.input is not None else ""
-            self.send_button.setEnabled(
-                can_send and bool(text) and not self._send_in_flight)
+            self.urgent_action.setEnabled(can_send)
 
     def send(self):
         conversation = self._selected()
         if not conversation or self.input is None:
             return
-        # Un envoi à la fois : Entrée (sendRequested) ou le bouton peuvent se
+        # Un envoi à la fois : Entrée (sendRequested) peut se
         # déclencher une seconde fois pendant le vol — sans ce verrou le même
         # texte repartait avec un nouveau client_message_id = doublon serveur.
         if self._send_in_flight or not self.enabled or not self.staff_id:
@@ -1952,11 +2068,10 @@ class MessagingController(QObject):
         # Conversation de l'envoi mémorisée : si l'utilisateur change d'onglet
         # pendant le vol, le succès saura quel brouillon purger.
         self._sent_key = conversation.get("key")
-        self._update_composer()  # bouton grisé tant que la requête est en vol
-        # « ❗ » armé : le message part urgent (notification persistante
-        # chez le destinataire) ; le bouton se désarme au succès.
-        urgent = (self.urgent_button is not None
-                  and self.urgent_button.isChecked())
+        self._update_composer()
+        # « Urgent » armé : le message part urgent (notification persistante
+        # chez le destinataire) ; l'option se décoche au succès.
+        urgent = self._is_urgent()
         self.window.api.messaging_send(
             client_message_id, kind, body, recipient_id, scope=scope,
             urgent=urgent,
@@ -1993,9 +2108,8 @@ class MessagingController(QObject):
             self._sent_body = None
             self._status_message = None
             self._broadcast_confirm = False
-            if self.urgent_button is not None:
-                # Un seul message urgent par armement : désarmé au succès.
-                self.urgent_button.setChecked(False)
+            # Un seul message urgent par armement : désarmé au succès.
+            self._disarm_urgent()
             self._update_composer()
             self.request_state()
             self.request_messages()

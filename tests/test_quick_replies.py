@@ -124,21 +124,23 @@ def test_menu_shows_team_then_personal_phrases_from_state():
         team=["Au labo", "En réserve"], personal=["Pause café"])))
     assert _menu_labels(controller) == [
         "Au labo", "En réserve", "Pause café",
-        "Gérer mes phrases rapides…", "Retirer mon dernier message"]
+        "Gérer mes phrases rapides…", controller.URGENT_ACTION_TEXT,
+        "Retirer mon dernier message"]
 
 
 def test_menu_offers_to_add_when_no_personal_phrase():
     _window, controller = _quick_controller()
     controller._handle_state_result(NetResult(200, data=_state_with(personal=[])))
     assert _menu_labels(controller) == [
-        "Au labo", "Ajouter mes phrases rapides…", "Retirer mon dernier message"]
+        "Au labo", "Ajouter mes phrases rapides…",
+        controller.URGENT_ACTION_TEXT, "Retirer mon dernier message"]
 
 
 def test_old_server_keeps_default_phrases_without_management():
     _window, controller = _quick_controller()
     controller._handle_state_result(NetResult(200, data=_state()))
     assert _menu_labels(controller) == list(controller.QUICK_REPLIES) + [
-        "Retirer mon dernier message"]
+        controller.URGENT_ACTION_TEXT, "Retirer mon dernier message"]
     assert not controller.quick_replies_supported
 
 

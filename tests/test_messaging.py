@@ -12,7 +12,8 @@ from PySide6.QtGui import (
     QStandardItemModel,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDockWidget, QHBoxLayout, QMainWindow, QMenu, QTabBar, QWidget,
+    QApplication, QDockWidget, QHBoxLayout, QMainWindow, QMenu, QPushButton,
+    QTabBar, QToolButton, QWidget,
 )
 
 from messaging import (
@@ -164,15 +165,36 @@ def test_feature_is_absent_until_enabled_and_destroyed_when_disabled():
 
 
 def test_compact_composer_does_not_impose_the_app_width():
+    # Un seul petit bouton « ⚡ » à côté du champ : ni « Envoyer » (Entrée
+    # envoie, l'invite le rappelle) ni « ❗ » (option du menu).
     _window, controller = _controller()
     controller.set_enabled(True)
 
     assert controller.dock.minimumWidth() == 0
-    assert controller.send_button.text() == ""
-    assert controller.send_button.width() == 36
-    assert not controller.send_button.icon().isNull()
-    assert controller.send_button.accessibleName() == "Envoyer le message"
-    assert "Entrée" in controller.send_button.toolTip()
+    buttons = controller.dock.widget().findChildren(
+        QToolButton, options=Qt.FindChildOption.FindDirectChildrenOnly)
+    assert buttons == [controller.quick_button]
+    assert controller.quick_button.width() == 32
+    assert not controller.dock.widget().findChildren(QPushButton)
+    assert "Entrée" in controller.input.placeholderText()
+    assert "Entrée" in controller.input.toolTip()
+
+
+def test_spacing_tightens_on_small_panel():
+    from messaging import composer_spacing
+    assert composer_spacing(400, 400) == (6, 6, 4)
+    assert composer_spacing(300, 400) == (2, 3, 2)     # étroit
+    assert composer_spacing(400, 200) == (2, 3, 2)     # bas
+
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._apply_spacing(250, 400)
+    assert controller._layout.contentsMargins().left() == 2
+    assert controller._layout.spacing() == 3
+    assert controller.input.document().documentMargin() == 2
+    controller._apply_spacing(500, 500)
+    assert controller._layout.contentsMargins().left() == 6
+    assert controller.input.document().documentMargin() == 4
 
 
 def test_dock_is_below_main_interface_by_default():
@@ -297,7 +319,6 @@ def test_offline_contact_remains_visible_and_can_still_receive_message():
     assert controller.input.isEnabled()
     assert "prochaine connexion" in controller.status_label.text()
     controller.input.setPlainText("On se voit demain")
-    assert controller.send_button.isEnabled()
     controller.send()
     send = _sends(window.api)[-1]
     assert send[1:4] == ("direct", "On se voit demain", 2)
@@ -318,14 +339,13 @@ def test_second_send_during_flight_does_not_duplicate():
     _select(controller, "direct:2")
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
-    controller.send()          # second Entrée / clic pendant le vol
+    controller.send()          # second Entrée pendant le vol
     assert len(_sends(window.api)) == 1
-    assert not controller.send_button.isEnabled()
 
 
-def test_send_button_stays_disabled_while_typing_during_flight():
-    # Même si l'utilisateur retape du texte pendant le vol, le bouton ne doit
-    # pas se réactiver avant la réponse.
+def test_no_second_send_while_typing_during_flight():
+    # Même si l'utilisateur retape du texte pendant le vol, un nouvel Entrée
+    # n'envoie rien avant la réponse ; ensuite, l'envoi repart.
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
@@ -333,9 +353,12 @@ def test_send_button_stays_disabled_while_typing_during_flight():
     controller.input.setPlainText("Bonjour Bob")
     controller.send()
     controller.input.setPlainText("Brouillon suivant")
-    assert not controller.send_button.isEnabled()
+    controller.send()
+    assert len(_sends(window.api)) == 1
     _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
-    assert controller.send_button.isEnabled()
+    controller.send()
+    assert len(_sends(window.api)) == 2
+    assert _sends(window.api)[-1][2] == "Brouillon suivant"
 
 
 def test_draft_typed_during_send_survives_the_response():
@@ -1660,35 +1683,45 @@ def test_known_initials_are_highlighted_in_the_thread():
 
 # --- Messages « urgent » -------------------------------------------------------
 
-def test_urgent_button_arms_next_send_and_disarms_on_success():
-    # « ❗ » arme UN envoi : propagé au serveur, désarmé au succès — le
-    # message suivant repart en normal.
+def test_urgent_option_arms_next_send_and_disarms_on_success():
+    # « Message urgent » (menu ⚡) arme UN envoi : propagé au serveur,
+    # désarmé au succès — le message suivant repart en normal.
     window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
-    assert controller.urgent_button.accessibleName() == "Message urgent"
+    assert controller.urgent_action in controller.quick_button.menu().actions()
+    assert controller.urgent_action.isCheckable()
+    assert controller.urgent_action.isEnabled()
     controller.input.setPlainText("Panne au comptoir 3 !")
-    controller.urgent_button.setChecked(True)
+    controller.urgent_action.setChecked(True)
+    # Armé : visible sur le champ et sur le bouton, sans ouvrir le menu.
+    assert "#dc2626" in controller.input.styleSheet()
+    assert "URGENT" in controller.input.placeholderText()
+    assert "#dc2626" in controller.quick_button.styleSheet()
     controller.send()
     assert _sends(window.api)[-1][6] is True          # urgent propagé
     _sends(window.api)[-1][4](NetResult(201, data={"id": 1}))
-    assert not controller.urgent_button.isChecked()
+    assert not controller.urgent_action.isChecked()
+    assert controller.input.styleSheet() == ""
+    assert controller.quick_button.styleSheet() == ""
+    assert controller.input.placeholderText() == controller.INPUT_PLACEHOLDER
     controller.input.setPlainText("C'est réparé")
     controller.send()
     assert _sends(window.api)[-1][6] is False
 
 
-def test_urgent_button_resets_on_conversation_change():
+def test_urgent_option_resets_on_conversation_change():
     # Armé dans un fil, désarmé en changeant d'onglet : l'urgence ne se
     # transporte pas dans la conversation suivante.
     _window, controller = _controller()
     controller.set_enabled(True)
     controller._handle_state_result(NetResult(200, data=_state()))
     _select(controller, "direct:2")
-    controller.urgent_button.setChecked(True)
+    controller.urgent_action.setChecked(True)
     _select(controller, "broadcast")
-    assert not controller.urgent_button.isChecked()
+    assert not controller.urgent_action.isChecked()
+    assert controller.input.styleSheet() == ""
 
 
 def test_urgent_notification_uses_sticky_origin():
@@ -2079,3 +2112,21 @@ def test_older_state_resets_on_tab_change():
     _select(controller, "broadcast")
     assert not controller._has_more
     assert not controller._older_in_flight
+
+
+def test_input_hint_announces_double_enter_for_team():
+    # Vers toute l'équipe, l'envoi demande un second Entrée : l'invite du
+    # champ l'annonce AVANT la frappe ; un direct garde « Entrée ».
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "broadcast")
+    assert controller.input.placeholderText() == controller.TEAM_PLACEHOLDER
+    assert "2 fois" in controller.input.placeholderText()
+    assert "Entrée à nouveau" in controller.input.toolTip()
+    controller.urgent_action.setChecked(True)
+    assert controller.input.placeholderText() == \
+        controller.TEAM_URGENT_PLACEHOLDER
+    _select(controller, "direct:2")                   # désarme l'urgence
+    assert controller.input.placeholderText() == controller.INPUT_PLACEHOLDER
+    assert controller.input.toolTip() == controller.INPUT_TOOLTIP
