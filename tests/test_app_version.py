@@ -9,7 +9,7 @@ import pytest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, ROOT)
 
-from app_version import (  # noqa: E402
+from app_version import (
     APP_VERSION, reported_version, tag_matches, version_label, version_tuple,
 )
 

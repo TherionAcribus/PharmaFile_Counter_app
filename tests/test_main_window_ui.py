@@ -17,9 +17,9 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QLineEdit, QWidget
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import login_view  # noqa: E402
-import main  # noqa: E402
-import main_window_ui  # noqa: E402
+import login_view
+import main
+import main_window_ui
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

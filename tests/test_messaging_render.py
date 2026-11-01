@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import messaging_render as mr  # noqa: E402
+import messaging_render as mr
 
 # Dates fixes et heures locales sans fuseau : aucun test ne dépend de
 # l'heure à laquelle il tourne (minuit inclus).

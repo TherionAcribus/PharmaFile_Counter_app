@@ -22,10 +22,10 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
-import shortcut_manager  # noqa: E402
-from shortcut_manager import ShortcutManager  # noqa: E402
-from shortcut_config import (  # noqa: E402
+import main
+import shortcut_manager
+from shortcut_manager import ShortcutManager
+from shortcut_config import (
     MODE_DISABLED, MODE_FOCUSED, MODE_GLOBAL,
 )
 

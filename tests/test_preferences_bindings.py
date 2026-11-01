@@ -19,11 +19,11 @@ from PySide6.QtWidgets import QSlider, QSpinBox, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
-import settings_schema  # noqa: E402
-from accessibility import TONE_HUMOROUS, TONE_SOBER  # noqa: E402
-from shortcut_config import MODE_DISABLED, MODE_FOCUSED  # noqa: E402
-from shortcut_defaults import SHORTCUT_DEFAULTS  # noqa: E402
+import preferences
+import settings_schema
+from accessibility import TONE_HUMOROUS, TONE_SOBER
+from shortcut_config import MODE_DISABLED, MODE_FOCUSED
+from shortcut_defaults import SHORTCUT_DEFAULTS
 
 #: Réglages du schéma qui ne sont PAS dans le formulaire des préférences.
 NOT_IN_FORM = {"web_url"}   # configuration du poste (StationDialog)

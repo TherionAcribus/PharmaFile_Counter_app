@@ -336,8 +336,11 @@ class MainWindow(QMainWindow, PatientActionsMixin):
         try:
             dialog = StationDialog(self)
             accepted = dialog.exec()
-        except Exception as e:
-            self.logger.error("Écran de configuration indisponible : %s", e)
+        except Exception:
+            # Écran indispensable au démarrage : sa panne ne doit pas laisser
+            # l'App dans un état indéterminé — on journalise la trace et on
+            # quitte proprement (ci-dessous).
+            self.logger.exception("Écran de configuration indisponible")
             accepted = False
 
         if accepted:
@@ -1434,8 +1437,13 @@ class MainWindow(QMainWindow, PatientActionsMixin):
         try:
             self.get_app_token()
             return True
-        except Exception as e:
+        except RuntimeError as e:
+            # Refus ou serveur injoignable : cas attendu, le message suffit.
             self.logger.warning("Échec du renouvellement du token : %s", e)
+            return False
+        except Exception:
+            # Imprévu : trace gardée, mais la reconnexion ne doit pas casser.
+            self.logger.exception("Erreur imprévue lors du renouvellement du token")
             return False
 
 
@@ -1684,7 +1692,7 @@ class MainWindow(QMainWindow, PatientActionsMixin):
         # est encore valide et affichée).
         try:
             self.placement.save()
-        except Exception as e:
+        except Exception as e:  # la fermeture doit toujours aboutir
             self.logger.debug("Sauvegarde de la géométrie à la fermeture : %s", e)
 
         self.shutting_down = True

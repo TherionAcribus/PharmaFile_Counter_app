@@ -22,11 +22,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
-import preferences  # noqa: E402
-import profile_sync  # noqa: E402
-import settings_schema  # noqa: E402
-from shortcut_defaults import SHORTCUT_DEFAULTS  # noqa: E402
+import main
+import preferences
+import profile_sync
+import settings_schema
+from shortcut_defaults import SHORTCUT_DEFAULTS
 
 
 @pytest.fixture

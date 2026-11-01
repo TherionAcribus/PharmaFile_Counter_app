@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from button_state import (  # noqa: E402
+from button_state import (
     CALLING_BUTTONS, IDLE_BUTTONS, MALFORMED, ONGOING_BUTTONS, OTHER_COUNTER,
     UNKNOWN_STATUS, resolve_call_auto_validation, resolve_patient_buttons,
 )
@@ -207,10 +207,10 @@ def test_aucun_except_nu_dans_le_client():
 # Même approche que test_update_my_patient : on lie la vraie méthode à un faux
 # ``self`` minimal (elle n'instancie aucun widget).
 
-import logging  # noqa: E402
-import types  # noqa: E402
+import logging
+import types
 
-import main  # noqa: E402
+import main
 
 
 class FakeButton:

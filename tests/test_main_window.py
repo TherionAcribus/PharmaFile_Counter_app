@@ -36,13 +36,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout  # noqa: E402
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout
 
-import main  # noqa: E402
-from buttons import DebounceButton, IconeButton  # noqa: E402
-from call_alerts import CallAlertController  # noqa: E402
-from main_window_ui import ConnectionStatusIndicator  # noqa: E402
-from window_placement import WindowPlacement  # noqa: E402
+import main
+from buttons import DebounceButton, IconeButton
+from call_alerts import CallAlertController
+from main_window_ui import ConnectionStatusIndicator
+from window_placement import WindowPlacement
 
 
 # --- toggle_orientation : logique de branchement (faux self, mocks) ---------

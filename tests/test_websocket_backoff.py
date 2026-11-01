@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from websocket_client import (  # noqa: E402
+from websocket_client import (
     compute_reconnect_delay,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_DELAY,

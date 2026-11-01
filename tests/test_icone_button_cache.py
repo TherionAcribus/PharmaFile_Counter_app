@@ -22,10 +22,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication
 
-import buttons  # noqa: E402
-from buttons import IconeButton  # noqa: E402
+import buttons
+from buttons import IconeButton
 
 _ASSETS = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, "assets", "images"))

@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from app_version import APP_VERSION, version_tuple  # noqa: E402
+from app_version import APP_VERSION, version_tuple
 
 
 def windows_version_info(version: str = APP_VERSION):

@@ -22,9 +22,9 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
-from realtime_health import RealtimeHealth  # noqa: E402
-from resync_coordinator import ResyncCoordinator  # noqa: E402
+import main
+from realtime_health import RealtimeHealth
+from resync_coordinator import ResyncCoordinator
 
 
 # --- new_patient : garde de révision + robustesse (#6, #7, #8) ---------------

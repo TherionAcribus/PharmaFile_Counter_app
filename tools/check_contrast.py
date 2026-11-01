@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from accessibility import AA_NORMAL, contrast_ratio, parse_color  # noqa: E402
+from accessibility import AA_NORMAL, contrast_ratio, parse_color
 
 # Un bloc = "selecteur { ... }". On ignore les commentaires /* ... */ au préalable.
 _BLOCK_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.DOTALL)

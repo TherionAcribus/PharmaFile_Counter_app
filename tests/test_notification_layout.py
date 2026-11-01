@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import notification_layout as nl  # noqa: E402
+import notification_layout as nl
 
 SCREEN = (0, 0, 1920, 1080)
 # Écran secondaire décalé (multi-écrans) pour vérifier la prise en compte du offset.

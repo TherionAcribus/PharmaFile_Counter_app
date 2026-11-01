@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from counter_id_utils import coerce_counter_id  # noqa: E402
+from counter_id_utils import coerce_counter_id
 
 
 # --- helper pur -------------------------------------------------------------
@@ -38,8 +38,8 @@ def test_invalid_values_return_none(value):
 
 # --- cohérence des comparaisons WebSocket ----------------------------------
 
-from PySide6.QtCore import QCoreApplication  # noqa: E402
-from websocket_client import WebSocketClient  # noqa: E402
+from PySide6.QtCore import QCoreApplication
+from websocket_client import WebSocketClient
 
 
 @pytest.fixture(scope="module")

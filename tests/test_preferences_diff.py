@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from preferences_diff import needs_service_reconnect, SERVICE_KEYS  # noqa: E402
+from preferences_diff import needs_service_reconnect, SERVICE_KEYS
 
 
 def _prefs(url="http://a", secret="s", counter=1):

@@ -13,7 +13,7 @@ import sys
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, os.path.join(_ROOT, "tools"))
 
-import check_dependencies as cd  # noqa: E402
+import check_dependencies as cd
 
 
 def test_normalize_pep503():

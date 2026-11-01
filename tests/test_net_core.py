@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from net_core import perform_with_reauth  # noqa: E402
+from net_core import perform_with_reauth
 
 
 class FakeResponse:

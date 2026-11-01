@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import shortcut_config as sc  # noqa: E402
+import shortcut_config as sc
 
 
 # --- normalize_shortcut -----------------------------------------------------

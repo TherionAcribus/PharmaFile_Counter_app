@@ -5,13 +5,13 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from PySide6.QtGui import QGuiApplication  # noqa: E402
-from PySide6.QtWidgets import (  # noqa: E402
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import (
     QApplication, QDialog, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
-import resources  # noqa: E402
-import screen_fit  # noqa: E402
+import resources
+import screen_fit
 
 
 def _avail():

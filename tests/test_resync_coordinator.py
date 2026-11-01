@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from resync_coordinator import ResyncCoordinator, snapshot_is_fresh  # noqa: E402
+from resync_coordinator import ResyncCoordinator, snapshot_is_fresh
 
 
 # --- Coalescing -------------------------------------------------------------

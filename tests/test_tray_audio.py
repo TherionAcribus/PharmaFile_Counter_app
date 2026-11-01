@@ -15,9 +15,9 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import audio  # noqa: E402
-import main  # noqa: E402
-from tray_manager import TrayManager  # noqa: E402
+import audio
+import main
+from tray_manager import TrayManager
 
 
 @pytest.fixture(scope="module")

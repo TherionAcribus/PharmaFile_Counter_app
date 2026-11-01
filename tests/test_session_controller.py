@@ -16,8 +16,8 @@ from PySide6.QtCore import QCoreApplication, QThread
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import main  # noqa: E402
-from session_controller import ResyncWorker, SessionController, StartupWorker  # noqa: E402
+import main
+from session_controller import ResyncWorker, SessionController, StartupWorker
 
 
 class FakeTasks:

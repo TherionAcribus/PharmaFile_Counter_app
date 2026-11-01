@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from button_state import resolve_button_state  # noqa: E402
+from button_state import resolve_button_state
 
 
 def test_success_active():

@@ -20,9 +20,9 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from PySide6.QtWidgets import QDialog, QWidget  # noqa: E402
+from PySide6.QtWidgets import QDialog, QWidget
 
-import preferences  # noqa: E402
+import preferences
 
 
 class FakePlayer:

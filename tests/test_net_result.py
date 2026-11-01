@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from net_result import (  # noqa: E402
+from net_result import (
     NetResult,
     user_message_for_status,
     parse_json_if_possible,

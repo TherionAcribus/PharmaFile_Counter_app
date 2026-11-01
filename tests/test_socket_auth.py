@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from socket_auth import build_socket_auth_headers  # noqa: E402
+from socket_auth import build_socket_auth_headers
 
 
 def test_headers_include_token_when_present():

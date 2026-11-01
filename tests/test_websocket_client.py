@@ -14,10 +14,10 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from PySide6.QtCore import QCoreApplication  # noqa: E402
-import socketio  # noqa: E402
+from PySide6.QtCore import QCoreApplication
+import socketio
 
-from websocket_client import WebSocketClient  # noqa: E402
+from websocket_client import WebSocketClient
 
 
 @pytest.fixture(scope="module")

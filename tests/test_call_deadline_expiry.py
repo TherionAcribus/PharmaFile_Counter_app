@@ -19,9 +19,9 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import call_alerts  # noqa: E402
-import main  # noqa: E402
-from call_alerts import CallAlertController  # noqa: E402
+import call_alerts
+import main
+from call_alerts import CallAlertController
 
 
 class _FakeSignal:

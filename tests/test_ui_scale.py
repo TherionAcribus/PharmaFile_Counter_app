@@ -9,11 +9,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import profile_sync  # noqa: E402
-import settings_schema  # noqa: E402
-import ui_scale  # noqa: E402
-from profile_sync import DictSettings  # noqa: E402
-from ui_scale import AUTO, ENV_VAR, ScaleDecision, ScreenInfo  # noqa: E402
+import profile_sync
+import settings_schema
+import ui_scale
+from profile_sync import DictSettings
+from ui_scale import AUTO, ENV_VAR, ScaleDecision, ScreenInfo
 
 
 @pytest.fixture(autouse=True)

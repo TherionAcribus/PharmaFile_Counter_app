@@ -19,7 +19,7 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import station_dialog  # noqa: E402
+import station_dialog
 
 
 # --- Faux worker (interface minimale utilisée par le registre) --------------

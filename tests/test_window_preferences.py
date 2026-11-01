@@ -6,10 +6,10 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import notification_rules  # noqa: E402
-import settings_schema  # noqa: E402
-import window_preferences as wp  # noqa: E402
-from shortcut_defaults import default_shortcut  # noqa: E402
+import notification_rules
+import settings_schema
+import window_preferences as wp
+from shortcut_defaults import default_shortcut
 
 
 class FakeSettings:
@@ -18,7 +18,7 @@ class FakeSettings:
     def __init__(self, values=None):
         self.values = dict(values or {})
 
-    def value(self, key, default=None, type=None):  # noqa: A002 - signature QSettings
+    def value(self, key, default=None, type=None):  # même signature que QSettings.value
         value = self.values.get(key, default)
         return type(value) if type is not None and value is not None else value
 

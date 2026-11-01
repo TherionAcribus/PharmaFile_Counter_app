@@ -13,8 +13,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app_version import APP_VERSION  # noqa: E402
-from app_identity import (  # noqa: E402
+from app_version import APP_VERSION
+from app_identity import (
     APPLICATION_NAME, DISPLAY_NAME, LEGACY_IDENTITIES, MIGRATION_MARKER_KEY,
     ORGANIZATION_NAME, apply_identity, legacy_sources, migrate_legacy_settings,
 )

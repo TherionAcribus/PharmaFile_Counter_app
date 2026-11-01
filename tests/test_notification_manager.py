@@ -16,10 +16,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QWidget  # noqa: E402
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget
 
-from notification import NotificationManager  # noqa: E402
+from notification import NotificationManager
 
 
 class FakeMainWindow(QWidget):
@@ -138,8 +138,8 @@ def test_reads_configured_corner(main_window):
 # Accessibilité (point 28) : ton configurable + sévérité (titre + couleurs)
 # --------------------------------------------------------------------------
 
-from notification import CustomNotification  # noqa: E402
-from accessibility import (  # noqa: E402
+from notification import CustomNotification
+from accessibility import (
     TONE_HUMOROUS, TONE_SOBER, severity_colors, severity_glyph,
     notification_severity, passes_aa,
 )

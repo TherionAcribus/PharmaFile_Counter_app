@@ -436,7 +436,7 @@ class CounterApi:
             result = self.network_manager.request_blocking(
                 endpoints.remove_staff(base_url), method='POST',
                 data={'counter_id': target}, timeout=(2, 3), timeout_s=4)
-        except Exception as exc:
+        except Exception as exc:  # fermeture : ne jamais bloquer ni échouer
             self.logger.warning("Libération du comptoir échouée : %s", exc)
             return False
         if result.status == 200:

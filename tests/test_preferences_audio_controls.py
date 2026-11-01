@@ -20,10 +20,10 @@ from PySide6.QtWidgets import QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import audio  # noqa: E402
-import notification_rules  # noqa: E402
-import preferences  # noqa: E402
-import settings_schema  # noqa: E402
+import audio
+import notification_rules
+import preferences
+import settings_schema
 
 
 @pytest.fixture

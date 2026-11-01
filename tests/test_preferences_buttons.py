@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
+import preferences
 
 
 @pytest.fixture

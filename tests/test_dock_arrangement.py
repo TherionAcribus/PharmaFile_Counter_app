@@ -14,15 +14,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest  # noqa: E402
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 
-import dock_arrangement as da  # noqa: E402
-import main  # noqa: E402
-import messaging  # noqa: E402
-from test_main_window import _make_main_window  # noqa: E402
-from test_messaging import FakeSettings  # noqa: E402
+import dock_arrangement as da
+import main
+import messaging
+from test_main_window import _make_main_window
+from test_messaging import FakeSettings
 
 
 # --- cœur pur -----------------------------------------------------------------

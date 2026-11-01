@@ -13,12 +13,12 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import crash_guard  # noqa: E402
-from crash_guard import (  # noqa: E402
+import crash_guard
+from crash_guard import (
     FULL, SILENT, SUMMARY, CrashGuard, RepeatTracker, exception_signature,
     report_previous_crash,
 )
-from my_logger import RedactingFilter  # noqa: E402
+from my_logger import RedactingFilter
 
 
 class _ListHandler(logging.Handler):

@@ -196,13 +196,13 @@ def configure(read_setting: Callable[[], Any],
     env_value = environ.get(ENV_VAR)
     try:
         setting = read_setting()
-    except Exception:  # noqa: BLE001 — démarrer coûte que coûte
+    except Exception:  # démarrer coûte que coûte
         setting = DEFAULT
     screen = None
     if not (env_value and env_value.strip()) and normalize_ui_scale(setting) == AUTO:
         try:
             screen = probe()
-        except Exception:  # noqa: BLE001
+        except Exception:  # idem : sans écran détecté, pas de zoom automatique
             screen = None
     decision = decide(setting, screen, env_value)
     if decision.applied_by_app:
@@ -316,7 +316,7 @@ def relaunch() -> bool:
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
-        subprocess.Popen(command, env=env, close_fds=True, creationflags=flags)  # noqa: S603
+        subprocess.Popen(command, env=env, close_fds=True, creationflags=flags)
     except OSError:
         logger.exception("Redémarrage de l'App impossible")
         return False

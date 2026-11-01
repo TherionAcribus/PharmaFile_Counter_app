@@ -17,10 +17,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, QCoreApplication  # noqa: E402
-from PySide6.QtWidgets import QMainWindow  # noqa: E402
+from PySide6.QtCore import QSettings, QCoreApplication
+from PySide6.QtWidgets import QMainWindow
 
-from window_placement import WindowPlacement  # noqa: E402
+from window_placement import WindowPlacement
 
 
 class GeoWindow(QMainWindow):

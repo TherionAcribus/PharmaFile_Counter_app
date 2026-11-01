@@ -14,8 +14,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from counter_api import CounterApi  # noqa: E402
-from net_result import NetResult  # noqa: E402
+from counter_api import CounterApi
+from net_result import NetResult
 
 BASE = "http://srv:5000"
 COUNTER = 3

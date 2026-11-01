@@ -21,8 +21,8 @@ from PySide6.QtWidgets import QDialog, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
-from shortcut_config import MODE_DISABLED, MODE_FOCUSED  # noqa: E402
+import preferences
+from shortcut_config import MODE_DISABLED, MODE_FOCUSED
 
 
 @pytest.fixture

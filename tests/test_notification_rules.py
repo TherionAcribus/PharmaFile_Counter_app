@@ -23,11 +23,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import main  # noqa: E402
-from call_alerts import CallAlertController  # noqa: E402
-import notification_rules as rules  # noqa: E402
-from notification import extract_origin_message  # noqa: E402
-import settings_schema  # noqa: E402
+import main
+from call_alerts import CallAlertController
+import notification_rules as rules
+from notification import extract_origin_message
+import settings_schema
 
 
 # Une origine représentative (au moins) par catégorie.

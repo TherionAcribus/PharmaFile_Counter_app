@@ -19,9 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import main  # noqa: E402
-from call_alerts import CallAlertController  # noqa: E402
-import notification_texts as nt  # noqa: E402
+import main
+from call_alerts import CallAlertController
+import notification_texts as nt
 
 SERVEUR_CATALOGUE = (Path(__file__).resolve().parents[2]
                      / "Serveur" / "app_notification_texts.py")

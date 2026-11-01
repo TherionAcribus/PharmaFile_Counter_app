@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import my_logger  # noqa: E402
-from my_logger import RedactingFilter, APP_NAME, default_log_dir  # noqa: E402
+import my_logger
+from my_logger import RedactingFilter, APP_NAME, default_log_dir
 
 
 def _redact(text, filt=None):

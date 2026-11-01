@@ -22,11 +22,11 @@ import requests
 import socketio
 
 sys.path.insert(0, ".")
-from PySide6.QtCore import QCoreApplication, QSettings  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QSettings
 
-from app_identity import APPLICATION_NAME, ORGANIZATION_NAME  # noqa: E402
-from counter_id_utils import coerce_counter_id  # noqa: E402
-from secret_store import load_secret  # noqa: E402
+from app_identity import APPLICATION_NAME, ORGANIZATION_NAME
+from counter_id_utils import coerce_counter_id
+from secret_store import load_secret
 
 t0 = time.monotonic()
 lock = threading.Lock()

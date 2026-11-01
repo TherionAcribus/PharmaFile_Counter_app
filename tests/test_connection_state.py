@@ -25,9 +25,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import main  # noqa: E402
-from main_window_ui import ConnectionStatusIndicator  # noqa: E402
-from realtime_health import RealtimeHealth  # noqa: E402
+import main
+from main_window_ui import ConnectionStatusIndicator
+from realtime_health import RealtimeHealth
 
 
 class _FakeTimer:

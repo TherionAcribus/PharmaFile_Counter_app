@@ -16,8 +16,8 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import main  # noqa: E402
-from window_placement import WindowPlacement  # noqa: E402
+import main
+from window_placement import WindowPlacement
 
 
 class FakeTimer:

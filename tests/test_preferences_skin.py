@@ -21,8 +21,8 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
-import resources  # noqa: E402
+import preferences
+import resources
 
 SENTINEL = "QWidget { color: #123456; }"
 

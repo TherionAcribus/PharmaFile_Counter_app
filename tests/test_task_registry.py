@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from task_registry import TaskRegistry  # noqa: E402
+from task_registry import TaskRegistry
 
 
 def test_multiple_distinct_tasks_are_retained():

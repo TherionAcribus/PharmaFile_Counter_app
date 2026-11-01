@@ -26,9 +26,9 @@ from PySide6.QtWidgets import QDialog, QLineEdit, QMessageBox, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import preferences  # noqa: E402
-import station_dialog  # noqa: E402
-from secret_store import STORAGE_KEYRING, STORAGE_NONE  # noqa: E402
+import preferences
+import station_dialog
+from secret_store import STORAGE_KEYRING, STORAGE_NONE
 
 STORED = "secret-enregistre"
 

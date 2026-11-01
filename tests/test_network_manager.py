@@ -14,11 +14,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
-import connections  # noqa: E402
-from connections import NetworkManager, DEFAULT_TIMEOUT, _Job, _RequestSpec  # noqa: E402
-from net_result import NetResult  # noqa: E402
+import connections
+from connections import NetworkManager, DEFAULT_TIMEOUT, _Job, _RequestSpec
+from net_result import NetResult
 
 
 @pytest.fixture(scope="module")

@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import panel_layout as pl  # noqa: E402
+import panel_layout as pl
 
 # Écran typique (zone utile hors barre des tâches).
 SCREEN = (0, 0, 1920, 1040)

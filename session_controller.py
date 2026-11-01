@@ -45,8 +45,15 @@ class StartupWorker(QThread):
             mw.get_app_token()
             # si on a un token, on se considère comme connecté
             connected = True
-        except Exception as e:
+        except RuntimeError as e:
+            # Refus ou serveur injoignable : cas attendu, le message suffit.
             logger.error("Erreur lors de l'obtention du token : %s", e)
+            connected = False
+        except Exception:
+            # Imprévu (défaut de code) : on garde la trace, et le démarrage
+            # se poursuit en mode déconnecté au lieu de rester bloqué sur
+            # l'écran de chargement (le résultat doit toujours être émis).
+            logger.exception("Erreur imprévue lors de l'obtention du token")
             connected = False
 
         if connected:

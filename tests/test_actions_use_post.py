@@ -22,8 +22,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import counter_api  # noqa: E402
-from counter_api import CounterApi  # noqa: E402
+import counter_api
+from counter_api import CounterApi
 
 _SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "counter_api.py")

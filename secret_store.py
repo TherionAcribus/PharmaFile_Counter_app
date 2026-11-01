@@ -40,13 +40,12 @@ _LEGACY_QSETTINGS_KEY = "app_secret"
 
 try:  # keyring est optionnel : l'app doit fonctionner même sans lui.
     import keyring
-    from keyring.errors import KeyringError
     # Un backend "null"/"fail" peut être présent sans réellement stocker :
     # on vérifiera à l'usage via les exceptions.
     _KEYRING_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - dépend de l'environnement
-    # Les noms ``keyring``/``KeyringError`` restent alors
-    # indéfinis : tous les usages sont protégés par ``_KEYRING_AVAILABLE``.
+    # Le nom ``keyring`` reste alors indéfini : tous les usages sont
+    # protégés par ``_KEYRING_AVAILABLE``.
     _KEYRING_AVAILABLE = False
     logger.warning("keyring indisponible (%s) : repli sur QSettings pour le secret.", exc)
 
@@ -62,7 +61,7 @@ def _keyring_get_service(service):
         return None
     try:
         return keyring.get_password(service, SECRET_ENTRY)
-    except (KeyringError, Exception) as exc:  # pragma: no cover
+    except Exception as exc:  # pragma: no cover - erreurs propres à chaque backend
         logger.warning("Lecture keyring impossible (%s) : repli sur QSettings.", exc)
         return None
 
@@ -87,7 +86,7 @@ def _keyring_set(value) -> bool:
     try:
         keyring.set_password(SERVICE_NAME, SECRET_ENTRY, value)
         return True
-    except (KeyringError, Exception) as exc:  # pragma: no cover
+    except Exception as exc:  # pragma: no cover - erreurs propres à chaque backend
         logger.warning("Écriture keyring impossible (%s) : repli sur QSettings.", exc)
         return False
 

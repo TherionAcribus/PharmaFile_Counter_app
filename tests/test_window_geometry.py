@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import window_geometry as wg  # noqa: E402
+import window_geometry as wg
 
 # Deux écrans côte à côte (config multi-écrans typique).
 SCREEN_LEFT = (0, 0, 1920, 1080)

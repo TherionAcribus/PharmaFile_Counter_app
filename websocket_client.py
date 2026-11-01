@@ -46,8 +46,8 @@ def _safe_origin(data):
             payload = json.loads(payload)
         if isinstance(payload, dict):
             return payload.get("origin", "?")
-    except Exception:
-        pass
+    except (ValueError, TypeError):
+        pass  # contenu illisible : l'origine reste inconnue
     return "?"
 
 

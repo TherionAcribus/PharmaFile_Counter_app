@@ -14,6 +14,10 @@
 #   E711/E712/E713 : comparaisons à None/True/False mal écrites
 #   E722 : `except:` nu — cf. point 10.3, un test le vérifie aussi
 #   W605 : séquence d'échappement invalide dans une chaîne (chemins Windows)
+#   RUF100 : directive `# noqa` inutile — elle vise une règle non activée ou
+#            qui ne se déclenche pas sur la ligne. 198 s'étaient accumulées
+#            (surtout `noqa: E402` dans les tests, déjà couverts plus bas) ;
+#            un `noqa` doit rester une exception justifiée, pas du bruit.
 target-version = "py312"
 line-length = 120
 
@@ -21,7 +25,7 @@ exclude = [".venv", "build", "dist", "__pycache__"]
 
 [lint]
 select = ["E9", "F63", "F7", "F81", "F82", "F401", "F841",
-          "E711", "E712", "E713", "E722", "W605"]
+          "E711", "E712", "E713", "E722", "W605", "RUF100"]
 
 [lint.per-file-ignores]
 # Les tests importent volontairement des modules pour leurs effets de bord et

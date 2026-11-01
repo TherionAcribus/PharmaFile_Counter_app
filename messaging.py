@@ -16,6 +16,7 @@ méthodes lisent et modifient son état, et restent appelées sur lui.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 
@@ -44,6 +45,9 @@ from messaging_ui import (
 from quick_replies_dialog import (
     DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH,
 )
+
+
+logger = logging.getLogger("appcomptoir.messaging")
 
 
 class MessagingController(QObject, ComposerMixin, DeleteMessagesMixin, QuickRepliesMixin):
@@ -328,8 +332,10 @@ class MessagingController(QObject, ComposerMixin, DeleteMessagesMixin, QuickRepl
         if self.enabled and self.staff_id:
             try:
                 self.window.api.messaging_leave_blocking(self.client_instance_id)
-            except Exception:
-                pass
+            except Exception as e:
+                # Fermeture de l'App : la présence expirera d'elle-même côté
+                # serveur ; l'arrêt ne doit jamais échouer pour autant.
+                logger.debug("Retrait de présence à la fermeture : %s", e)
 
     def _clear_runtime_data(self):
         # Nouvelle génération : toute réponse d'une requête partie sous

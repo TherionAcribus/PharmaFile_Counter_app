@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 # une QGuiApplication mais pas d'affichage réel.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from patient_list_model import (  # noqa: E402
+from patient_list_model import (
     MAX_DISPLAYED_PATIENTS,
     PatientListModel,
     compute_list_diff,
@@ -98,8 +98,8 @@ def test_staff_highlight():
 # Modèle Qt (PySide6 réel, offscreen)
 # --------------------------------------------------------------------------
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QGuiApplication  # noqa: E402
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 
 
 @pytest.fixture(scope="module")

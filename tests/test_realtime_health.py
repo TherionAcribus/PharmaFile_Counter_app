@@ -7,9 +7,9 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import endpoints  # noqa: E402
-import main  # noqa: E402
-from realtime_health import RealtimeHealth  # noqa: E402
+import endpoints
+import main
+from realtime_health import RealtimeHealth
 
 
 class _Clock:

@@ -17,7 +17,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from tools.check_contrast import audit_file, audit_text  # noqa: E402
+from tools.check_contrast import audit_file, audit_text
 
 SKINS = sorted(glob.glob(os.path.join(ROOT, "skins", "*.qss")))
 
