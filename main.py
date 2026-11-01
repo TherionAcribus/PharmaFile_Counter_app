@@ -28,7 +28,8 @@ from window_placement import WindowPlacement
 from session_controller import SessionController
 from audio import build_audio_player
 from loading_screen import LoadingScreen
-from my_logger import AppLogger, register_secret
+from my_logger import AppLogger, default_log_dir, register_secret
+import crash_guard
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import snapshot_is_fresh
@@ -2461,6 +2462,16 @@ class MainWindow(QMainWindow):
         timer.start(self._INLINE_NOTICE_MS)
         return True
 
+    def notify_internal_error(self, message):
+        """ Prévient discrètement qu'une erreur non prévue vient d'être
+        enregistrée dans le journal (appelé par crash_guard, une fois par
+        erreur distincte, dans le thread graphique). Bandeau du panneau
+        seulement : une fenêtre flottante inquiéterait pour une erreur souvent
+        sans effet visible ; hors panneau, le journal suffit. """
+        if self.shutting_down or not self.isVisible():
+            return
+        self._show_inline_notice(message)
+
     def _write_inline_notice(self, message):
         hint = self.status_hint
         hint.setText(message)
@@ -2766,12 +2777,29 @@ if __name__ == "__main__":
     # Zoom global (taille de l'interface) : DOIT précéder QApplication, Qt ne
     # lit QT_SCALE_FACTOR qu'à sa création.
     ui_scale.configure_before_app()
+    # Capture des erreurs non prévues AVANT tout le reste : l'exécutable n'a
+    # pas de console, une exception non rattrapée ne laisserait sinon aucune
+    # trace (cf. crash_guard). Le journal est configuré au passage.
+    AppLogger.get_instance()
+    guard = crash_guard.install(log_dir=default_log_dir())
     app = setup_application(QApplication(sys.argv))
 
     # MainWindow.show() est appelé en interne une fois l'initialisation
     # asynchrone terminée (_on_startup_ready), pas ici : l'appeler tout de
     # suite afficherait une fenêtre encore vide pendant le chargement.
-    window = MainWindow()
+    try:
+        window = MainWindow()
+    except Exception:
+        # Sans console, un échec ici fermait l'App sans un mot : on l'écrit
+        # dans le journal et on le dit à l'utilisateur.
+        logging.getLogger(crash_guard.LOGGER_NAME).critical(
+            "Démarrage impossible", exc_info=True)
+        QMessageBox.critical(
+            None, "Flowelis Comptoir",
+            "L'application n'a pas pu démarrer à cause d'une erreur interne.\n\n"
+            f"Le détail a été enregistré dans le journal :\n{default_log_dir()}")
+        sys.exit(1)
+    guard.set_notifier(window.notify_internal_error)
     exit_code = app.exec()
     if window.restart_requested:
         ui_scale.relaunch()

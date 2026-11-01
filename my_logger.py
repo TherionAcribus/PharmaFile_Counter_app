@@ -87,6 +87,7 @@ class RedactingFilter(logging.Filter):
             re.IGNORECASE,
         )
         self._bearer_pattern = re.compile(r"(bearer\s+)\S+", re.IGNORECASE)
+        self._exc_formatter = logging.Formatter()
 
     def register_secret(self, value):
         """Enregistre une valeur exacte (jeton/secret) à masquer partout."""
@@ -112,6 +113,16 @@ class RedactingFilter(logging.Filter):
             if redacted != message:
                 record.msg = redacted
                 record.args = ()
+            # Trace d'erreur : le formateur l'ajoute APRÈS les filtres, à partir
+            # de exc_text s'il est déjà rempli. On la produit donc ici pour la
+            # masquer aussi (le message d'une exception peut contenir un jeton
+            # ou une donnée patient).
+            if record.exc_info and not record.exc_text:
+                record.exc_text = self._exc_formatter.formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = self._redact(record.exc_text)
+            if record.stack_info:
+                record.stack_info = self._redact(record.stack_info)
         except Exception:
             # La journalisation ne doit jamais casser le flux applicatif.
             pass
