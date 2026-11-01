@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import main  # noqa: E402
+from call_alerts import CallAlertController  # noqa: E402
 import notification_texts as nt  # noqa: E402
 
 SERVEUR_CATALOGUE = (Path(__file__).resolve().parents[2]
@@ -106,8 +107,9 @@ def test_rappel_de_validation_avec_numero():
     w.my_patient = {"id": 5, "call_number": "C-4", "status": "calling"}
     w.patient_id = 5
     w.call_auto_validation = {"enabled": False}
-    w._set_validate_alert = lambda value: None
-    main.MainWindow.call_timer_delay_expired(w)
+    alerts = CallAlertController(w, reminder_seconds=60)
+    alerts.set_validate_alert = lambda value: None
+    alerts.reminder_expired()
     assert w.shown[0] == {"origin": "please_validate", "message": "Validez C-4 !"}
 
 

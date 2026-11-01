@@ -100,7 +100,7 @@ class DebounceButton(QPushButton):
         Accessibilité (point 28) : l'état ne doit pas reposer sur la seule
         couleur. On garde le fond rouge (contraste AA rouge #c0392b / blanc) pour
         ceux qui perçoivent la couleur, mais le libellé et le nom accessible sont
-        enrichis d'un marqueur texte par l'appelant (cf. main._set_validate_alert).
+        enrichis d'un marqueur texte par l'appelant (cf. call_alerts.CallAlertController.set_validate_alert).
         """
         if not self.color_changed:
             # Capturé à l'entrée de l'alerte — pas à la construction : tout

@@ -102,27 +102,24 @@ class WarningButton:
 def test_phase_avertissement_reutilise_pause_sans_ajouter_bouton():
     import types
 
+    from call_alerts import CallAlertController
+
     window = types.SimpleNamespace(
         patient_id=7,
         my_patient={"call_auto_validate_at": 130},
         btn_pause=WarningButton(),
-        _auto_warning_active=False,
-        _auto_warning_key=None,
         alerts=[], notifications=[], blink_starts=0,
     )
-    window._set_validate_alert = lambda active: window.alerts.append(active)
-    window._start_validate_blink = lambda: setattr(
-        window, "blink_starts", window.blink_starts + 1)
     window.show_notification = lambda data, **kwargs: window.notifications.append(
         (data, kwargs))
-    window._set_extend_button = types.MethodType(
-        main.MainWindow._set_extend_button, window)
-    window._render_call_auto_validation = types.MethodType(
-        main.MainWindow._render_call_auto_validation, window)
+    controller = CallAlertController(window, reminder_seconds=60)
+    controller.set_validate_alert = lambda active: window.alerts.append(active)
+    controller._start_blink = lambda: setattr(
+        window, "blink_starts", window.blink_starts + 1)
 
     state = types.SimpleNamespace(warning_active=True, remaining_seconds=30)
-    window._render_call_auto_validation(state)
-    window._render_call_auto_validation(state)
+    controller._render(state)
+    controller._render(state)
 
     assert window.btn_pause.enabled is True
     assert "Prolonger" in window.btn_pause.text
@@ -237,15 +234,22 @@ class FakeButton:
         self.description = text
 
 
-class FakeTimer:
-    def __init__(self):
-        self.calls = []
+class FakeAlerts:
+    """Remplace CallAlertController : « start » = rappel/compte à rebours
+    lancés (patient en appel), « stop » = arrêtés."""
 
-    def start(self):
+    def __init__(self, alerts):
+        self.calls = []
+        self._alerts = alerts
+
+    def sync(self):
         self.calls.append("start")
 
-    def stop(self):
+    def stop_call(self):
         self.calls.append("stop")
+
+    def set_validate_alert(self, active):
+        self._alerts.append(active)
 
 
 class FakeWindow:
@@ -253,8 +257,8 @@ class FakeWindow:
 
     def __init__(self, counter_id=COUNTER, with_buttons=True):
         self.counter_id = counter_id
-        self.call_timer = FakeTimer()
         self.alerts = []
+        self.call_alerts = FakeAlerts(self.alerts)
         self.logger = logging.getLogger("test.patient_buttons")
         if with_buttons:
             self.btn_pause = FakeButton()
@@ -267,16 +271,13 @@ class FakeWindow:
         # staticmethod : résolution directe sur la classe.
         self._safe_widget = main.MainWindow._safe_widget
 
-    def _set_validate_alert(self, active):
-        self.alerts.append(active)
-
 
 def test_application_patient_en_appel():
     w = FakeWindow()
     w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "calling"})
     assert w.btn_validate.enabled is True
     assert w.btn_pause.enabled is False
-    assert w.call_timer.calls == ["start"]
+    assert w.call_alerts.calls == ["start"]
     assert w.alerts == []          # alerte volontairement non touchée
 
 
@@ -285,7 +286,7 @@ def test_application_sans_patient():
     w.update_my_buttons(None)
     assert w.btn_validate.enabled is False
     assert w.btn_pause.enabled is False
-    assert w.call_timer.calls == ["stop"]
+    assert w.call_alerts.calls == ["stop"]
     assert w.alerts == [False]
 
 
@@ -294,7 +295,7 @@ def test_application_patient_pris_en_charge():
     w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "ongoing"})
     assert w.btn_pause.enabled is True
     assert w.btn_validate.enabled is False
-    assert w.call_timer.calls == ["stop"]
+    assert w.call_alerts.calls == ["stop"]
     assert w.alerts == [False]
 
 
@@ -303,14 +304,14 @@ def test_autre_comptoir_laisse_les_boutons_intacts():
     w.update_my_buttons({"counter_id": COUNTER + 1, "id": 7, "status": "calling"})
     assert w.btn_pause.enabled == "sentinelle"
     assert w.btn_validate.enabled == "sentinelle"
-    assert w.call_timer.calls == []
+    assert w.call_alerts.calls == []
 
 
 def test_donnee_malformee_ne_crashe_pas_et_journalise(caplog):
     w = FakeWindow()
     with caplog.at_level(logging.WARNING, logger="test.patient_buttons"):
         w.update_my_buttons("pas un patient")
-    assert w.call_timer.calls == []
+    assert w.call_alerts.calls == []
     assert any(MALFORMED in r.getMessage() for r in caplog.records)
 
 
@@ -326,7 +327,7 @@ def test_ecran_de_connexion_sans_boutons_ne_crashe_pas():
     masquait l'AttributeError, on le gère désormais explicitement."""
     w = FakeWindow(with_buttons=False)
     w.update_my_buttons({"counter_id": COUNTER, "id": 7, "status": "calling"})
-    assert w.call_timer.calls == []
+    assert w.call_alerts.calls == []
 
 
 # --- infobulles d'état (E4) : un bouton grisé explique pourquoi --------------

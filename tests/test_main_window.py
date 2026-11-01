@@ -40,6 +40,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout  # noqa: E40
 
 import main  # noqa: E402
 from buttons import DebounceButton, IconeButton  # noqa: E402
+from call_alerts import CallAlertController  # noqa: E402
 from main_window_ui import ConnectionStatusIndicator  # noqa: E402
 from window_placement import WindowPlacement  # noqa: E402
 
@@ -155,6 +156,8 @@ def _make_main_window(horizontal_mode=False, compact_mode=False):
     win.pause_shortcut = "Alt+P"
     win.recall_shortcut = "Alt+R"
     win.deconnect_shortcut = "Alt+D"
+    # Créé par __init__ (non appelé ici) : rappel de validation / compte à rebours.
+    win.call_alerts = CallAlertController(win, reminder_seconds=60)
 
     win.create_interface()
     return win

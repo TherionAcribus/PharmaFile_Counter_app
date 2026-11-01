@@ -55,3 +55,16 @@ def render(texts, message_id, **values):
             return "" if value is None else str(value)
         return match.group(0)
     return _MARKER.sub(_sub, template_for(texts, message_id))
+
+
+def render_for(window, message_id, **values):
+    """Texte d'une notification de l'App : celui réglé dans l'administration
+    du serveur (état du comptoir, porté par ``window.notification_texts``),
+    sinon le texte d'origine."""
+    return render(getattr(window, "notification_texts", None), message_id, **values)
+
+
+def current_call_number(window):
+    """Numéro d'appel du patient au comptoir (balise {N}), vide sinon."""
+    patient = getattr(window, "my_patient", None)
+    return patient.get("call_number", "") if isinstance(patient, dict) else ""

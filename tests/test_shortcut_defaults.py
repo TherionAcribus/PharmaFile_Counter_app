@@ -65,7 +65,7 @@ def test_migrate_only_applies_to_known_field():
 def test_no_buggy_default_pattern_in_source():
     # L'ancien défaut bogué (passé à value()/load_shortcut) ne doit plus exister.
     # (Une mention "Altl+P" dans un commentaire de migration reste tolérée.)
-    for f in ("main.py", "preferences.py"):
+    for f in ("main.py", "window_preferences.py", "preferences.py"):
         assert '", "Altl+P")' not in _read(f)
 
 
@@ -146,13 +146,15 @@ def test_join_shortcut_ordre_canonique():
 # --- cliquet : une seule implémentation de lecture -------------------------
 
 def test_aucune_relecture_locale_des_raccourcis():
-    """main.py et preferences.py ne doivent plus lire/migrer un raccourci
-    eux-mêmes : read_shortcut est la seule porte d'entrée."""
-    for name in ("main.py", "preferences.py"):
+    """La fenêtre principale et les préférences ne doivent plus lire/migrer un
+    raccourci elles-mêmes : read_shortcut est la seule porte d'entrée. La
+    fenêtre lit ses raccourcis via window_preferences."""
+    for name in ("main.py", "window_preferences.py", "preferences.py"):
         source = _read(name)
         assert "migrate_shortcut(" not in source, name
         assert "default_shortcut(" not in source, name
-        assert "read_shortcut(" in source, name
+    for name in ("window_preferences.py", "preferences.py"):
+        assert "read_shortcut(" in _read(name), name
 
 
 def test_main_ne_definit_plus_son_propre_loader():

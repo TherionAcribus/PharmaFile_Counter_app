@@ -1,7 +1,7 @@
 import sys
 import time
 from functools import partial
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QDialog
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QDialog
 from PySide6.QtCore import Signal, Slot, QSettings, QTimer, Qt, QEvent
 from PySide6.QtGui import QIcon, QAction
 
@@ -11,14 +11,13 @@ from station_dialog import StationDialog
 from app_identity import apply_identity, legacy_sources, migrate_legacy_settings
 from button_state import (
     CALLING, MALFORMED, NO_CURRENT_PATIENT, NO_PATIENT, ONGOING,
-    resolve_call_auto_validation, resolve_patient_buttons,
+    resolve_patient_buttons,
 )
-from patient_list_model import PatientListModel
 import notification_rules
 import notification_texts
 from notification import NotificationManager, extract_origin_message
 from connections import NetworkManager
-from counter_api import CounterApi, PATIENT_ACTION_GROUP
+from counter_api import CounterApi
 import main_window_ui
 import dock_arrangement
 from login_view import create_login_widget
@@ -35,19 +34,18 @@ from single_instance import SingleInstance
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import snapshot_is_fresh
+from call_alerts import CallAlertController
+from patient_actions import PatientActionsMixin
 from realtime_health import REPORT_INTERVAL_SECONDS, RealtimeHealth
 from messaging import MessagingController
 from counter_id_utils import coerce_counter_id
-from shortcut_defaults import read_shortcut
 from preferences_diff import needs_service_reconnect
 import endpoints
 import profile_sync
 import resources
 import settings_schema
 import ui_scale
-from accessibility import (
-    validate_alert_text,
-)
+import window_preferences
 
 import logging
 # Logger de module : propage vers les handlers configurés par AppLogger
@@ -65,15 +63,6 @@ resource_path = resources.resource_path
 #: on élide — le texte complet reste en infobulle. Dimensionnée pour une
 #: colonne de ~300 px logiques sans déborder.
 ACTIVITY_LABEL_MAX = 34
-
-#: Délai avant la première re-vérification d'état quand le compte à rebours
-#: « Prolonger » affiche 0 : le job serveur de validation automatique tourne
-#: toutes les 5 s — on lui laisse le temps de trancher avant de resynchroniser.
-EXPIRED_CALL_RECHECK_DELAY_S = 6
-#: Périodicité des re-vérifications tant que le serveur n'a pas confirmé la
-#: validation automatique : couvre la perte d'un évènement temps réel
-#: (coupure socket, conteneur « scheduler » sans file de messages partagée).
-EXPIRED_CALL_RECHECK_PERIOD_S = 15
 
 #: Périodicité du chien de garde de fraîcheur de la file. Socket.IO n'est
 #: qu'une notification : si un évènement n'est jamais émis ou livré (échec
@@ -94,39 +83,13 @@ def _elide(text, limit=ACTIVITY_LABEL_MAX):
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-class _BusyButtonRef:
-    """Référence « occupé » donnée à CounterApi à la place d'un widget concret.
-
-    La requête tient un verrou LOGIQUE mémorisé par la fenêtre
-    (``_busy_widgets``) : les boutons réels peuvent être détruits et recréés
-    pendant le vol (changement d'orientation, mode compact, reconnexion) sans
-    que le ``set_busy(False)`` de fin ne s'adresse à un objet Qt mort — cause
-    du « RuntimeError: Internal C++ object already deleted » constaté en audit.
-    """
-
-    __slots__ = ("_window", "_attrs")
-
-    def __init__(self, window, attrs):
-        self._window = window
-        self._attrs = attrs
-
-    def set_busy(self, busy):
-        self._window._set_busy_widgets(self._attrs, busy)
 
 
-def _notification_text(window, message_id, **values):
-    """Texte d'une notification de l'App : celui réglé dans l'administration
-    du serveur (état du comptoir), sinon le texte d'origine."""
-    return notification_texts.render(
-        getattr(window, "notification_texts", None), message_id, **values)
+_notification_text = notification_texts.render_for
+_current_call_number = notification_texts.current_call_number
 
 
-def _current_call_number(window):
-    patient = getattr(window, "my_patient", None)
-    return patient.get("call_number", "") if isinstance(patient, dict) else ""
-
-
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, PatientActionsMixin):
 
     patient_data_received = Signal(object)
 
@@ -160,9 +123,6 @@ class MainWindow(QMainWindow):
     # autoritatif si on détecte un trou. -1 = aucun état chargé pour l'instant.
     queue_revision = -1
 
-    # Boutons verrouillés pendant une action patient en vol : le verrou logique
-    # (_busy_widgets) est réappliqué à chaque reconstruction de l'interface.
-    _PATIENT_BUTTONS = ("btn_next", "btn_validate", "btn_pause")
 
     # État de la liaison temps réel, mémorisé par le CONTRÔLEUR — l'indicateur
     # graphique est recréé à chaque reconstruction d'interface et repartait à
@@ -231,10 +191,6 @@ class MainWindow(QMainWindow):
         # Textes des notifications réglés dans l'administration du serveur
         # (vide = textes d'origine, cf. notification_texts).
         self.notification_texts = {}
-        self._auto_warning_active = False
-        self._auto_warning_key = None
-        self._expired_resync_at = None
-        self._validate_blink_highlighted = False
         # Équipiers pour qui la recherche d'un profil de préférences serveur a
         # déjà été tentée dans cette session : pas de requête ni de question
         # répétée à chaque reconnexion d'un même équipier.
@@ -243,8 +199,9 @@ class MainWindow(QMainWindow):
         # LOAD PREFERENCES
         self.load_preferences()
 
-        # on créé un timer qui permet d'alerter si le patient reste en Calling
-        self.create_call_timer()
+        # Rappel « pensez à valider » et compte à rebours de la validation
+        # automatique du patient en appel (cf. call_alerts).
+        self.call_alerts = CallAlertController(self, reminder_seconds=self.timer_after_calling)
 
         # quand App se ferme, on ferme aussi le systray
         app = QApplication.instance()
@@ -418,78 +375,14 @@ class MainWindow(QMainWindow):
         # comparaisons (WebSocket, patient["counter_id"]...) soient cohérentes.
         # Défaut contextuel (runtime = 1) : géré hors schéma, cf. settings_schema.
         self.counter_id = coerce_counter_id(settings.value("counter_id", 1))
-        # Reconnexion automatique au démarrage avec les initiales du dernier
-        # équipier validé (persistées dans last_staff_initials) : option activée
-        # par défaut, l'écran de connexion reste le repli en cas d'échec.
-        self.reconnect_last_user = settings_schema.read(settings, "reconnect_last_user")
-        # Raccourcis : défauts centralisés dans shortcut_defaults (source unique)
-        # + migration transparente des anciennes valeurs erronées (ex: "Altl+P").
-        # Lecture via read_shortcut (shortcut_defaults) : MÊME fonction que celle
-        # utilisée par la fenêtre de préférences — plus de double logique.
-        self.next_patient_shortcut = read_shortcut(settings, "next_patient_shortcut", self.logger)
-        self.validate_patient_shortcut = read_shortcut(settings, "validate_patient_shortcut", self.logger)
-        self.pause_shortcut = read_shortcut(settings, "pause_shortcut", self.logger)
-        self.recall_shortcut = read_shortcut(settings, "recall_shortcut", self.logger)
-        self.deconnect_shortcut = read_shortcut(settings, "deconnect_shortcut", self.logger)
-        # Mode des raccourcis (point 27) : désactivés / actifs au premier plan /
-        # globaux. Défaut = global (comportement historique). + confirmation
-        # facultative des actions sensibles et retour visuel de l'action.
-        self.shortcut_mode = settings_schema.read(settings, "shortcut_mode")
-        self.confirm_sensitive_shortcuts = settings_schema.read(settings, "confirm_sensitive_shortcuts")
-        self.shortcut_feedback = settings_schema.read(settings, "shortcut_feedback")
-        # Notifications : un réglage « afficher » ET un réglage « son » PAR
-        # CATÉGORIE (notification_rules). Auparavant une seule case (« activités
-        # spécifiques ») servait de filtre général dans show_notification() et
-        # faisait taire toutes les autres alertes ; chaque catégorie est
-        # désormais indépendante, et le filtrage a lieu à un seul endroit.
-        self.notification_prefs = {key: settings_schema.read(settings, key)
-                                   for key in notification_rules.ALL_KEYS}
-        self.notification_after_deconnection = settings_schema.read(settings, "notification_after_deconnection")
-        self.timer_after_calling = settings_schema.read(settings, "notification_after_calling")
-        self.notification_duration = settings_schema.read(settings, "notification_duration")
-        self.notification_font_size = settings_schema.read(settings, "notification_font_size")
-        # Ton des messages de notification (point 28) : « sobre » (explicite,
-        # défaut) ou « humoristique » (ancien ton). Titres calculés dans
-        # accessibility.notification_title.
-        self.message_tone = settings_schema.read(settings, "message_tone")
-        # Taille de police de la file des patients (point 28), bornée au plancher
-        # de lisibilité. Remplace l'ancienne valeur figée de 8 pt.
-        self.patient_list_font_size = settings_schema.read(settings, "patient_list_font_size")
-        # Coin de l'écran où empiler les notifications (configurable).
-        self.notification_corner = settings_schema.read(settings, "notification_corner")
-        self.sound_volume = settings_schema.read(settings, "notification_volume")
-        # Mode muet, indépendant du volume : couper le son ne doit pas faire
-        # perdre le réglage préféré (on le retrouve en rétablissant).
-        self.sound_muted = settings_schema.read(settings, "notification_muted")
-
-        self.always_on_top = settings_schema.read(settings, "always_on_top")
-        self.horizontal_mode = settings_schema.read(settings, "vertical_mode")
-        # Mode panneau compact (point 25) : panneau étroit docké sur un bord
-        # plutôt qu'une fenêtre générique. En mode vertical, colonne étroite ; en
-        # mode horizontal, barre fine au-dessus du progiciel.
-        self.compact_mode = settings_schema.read(settings, "compact_mode")
-        # Bouton-icône « appel automatique » affiché en permanence (sinon il
-        # n'apparaît que tant que l'appel automatique est actif ; l'action reste
-        # dans le menu « Menu » dans tous les cas).
-        self.show_auto_call_button = settings_schema.read(settings, "show_auto_call_button")
-        # Magnétisme aux bords de l'écran lors d'un déplacement manuel.
-        self.panel_snap = settings_schema.read(settings, "panel_snap")
-        # Épaisseur du panneau (largeur en vertical, hauteur en horizontal), bornée.
-        self.panel_thickness = settings_schema.read(settings, "panel_thickness")
-        self.display_patient_list = settings_schema.read(settings, "display_patient_list")
-        self.patient_list_position_vertical = settings_schema.read(settings, "patient_list_vertical_position")
-        self.patient_list_position_horizontal = settings_schema.read(settings, "patient_list_horizontal_position")
-        # Une seule icône regroupée dans la zone de notification (E5) au lieu
-        # des trois icônes d'action — option, défaut = comportement historique.
-        self.tray_single_icon = settings_schema.read(settings, "tray_single_icon")
-        self.debug_window = settings_schema.read(settings, "debug_window")
-        # Journalisation détaillée (DEBUG) seulement si la fenêtre de log est
-        # demandée ; sinon INFO (production). Les logs DEBUG ne sont donc pas
-        # actifs en usage normal.
+        # Toutes les autres préférences : table attribut ← réglage
+        # (window_preferences, avec le rôle de chacune).
+        for attr, value in window_preferences.read_preferences(settings, self.logger).items():
+            setattr(self, attr, value)
+        # Journalisation détaillée (DEBUG) seulement en mode diagnostic ; sinon
+        # INFO (production).
         if hasattr(self, "app_logger"):
             self.app_logger.enable_debug(self.debug_window)
-        self.selected_skin = settings_schema.read(settings, "selected_skin")
-        self.ui_scale = settings_schema.read(settings, "ui_scale")
 
     def setup_ui(self):
         self.logger.info("Initialisation de l'interface...")
@@ -541,160 +434,6 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setEnabled(enable)
 
-    def on_action_wait(self):
-        # Logique pour remettre le patient en attente
-        if not self._patient_action_ready("wait") or not self.patient_id:
-            return
-        self.logger.debug("Patient remis en attente")
-        self.api.put_standing(self.patient_id, on_result=self.handle_result,
-                              busy_button=self._busy_ref(),
-                              group=PATIENT_ACTION_GROUP)
-
-    def _wait_for_targets(self, patient_id=None):
-        """Destinataires de « Remettre en attente pour... » sous la forme de
-        couples ``(libellé, slot)``.
-
-        Les ÉQUIPIERS (``staff_targets``) sont proposés quand le serveur les
-        fournit — l'envoi ne dépend alors d'aucune demande nominative
-        préconfigurée (le serveur résout/crée la nominative à la volée).
-        Repli sur les demandes nominatives (``activities_staff``) pour les
-        serveurs qui n'envoient pas encore ``staff_targets``. ``patient_id``
-        vise un patient de la file (menu contextuel) ; ``None`` = patient
-        courant du comptoir."""
-        if getattr(self, "staff_targets", None):
-            return [
-                (target["name"],
-                 (lambda checked=False, t=target, p=patient_id:
-                  self.on_action_wait_for_staff(t["id"], patient_id=p)))
-                for target in self.staff_targets
-            ]
-        if getattr(self, "activities_staff", None):
-            return [
-                (activity["name"],
-                 (lambda checked=False, a=activity, p=patient_id:
-                  self.on_action_wait_for(a, patient_id=p)))
-                for activity in self.activities_staff
-            ]
-        return []
-
-    def refresh_wait_for_submenu(self):
-        """(Re)peuple le sous-menu « Remettre en attente pour... » du patient
-        courant et le masque quand il n'y a aucun destinataire. Le sous-menu
-        existe toujours (créé à chaque create_interface) : cette méthode est
-        donc appelable à chaque application d'état, y compris quand les
-        destinataires arrivent après la construction de l'interface ou
-        disparaissent du serveur."""
-        submenu = getattr(self, "wait_for_submenu", None)
-        if submenu is None:
-            return
-        submenu.clear()
-        targets = self._wait_for_targets()
-        for label, slot in targets:
-            action = submenu.addAction(label)
-            action.triggered.connect(slot)
-        submenu.menuAction().setVisible(bool(targets))
-
-    def on_action_wait_for_staff(self, staff_id, patient_id=None):
-        """Variante « équipier » de on_action_wait_for : le serveur résout (ou
-        crée à la volée) la demande nominative du destinataire."""
-        if not self._patient_action_ready("wait_for"):
-            return
-        target_id = patient_id if patient_id is not None else self.patient_id
-        if target_id is None:
-            return
-        group = self._patient_action_group(target_id)
-        self.logger.debug("Patient remis en attente pour l'équipier id=%s", staff_id)
-        self.api.put_standing_for_staff(
-            target_id, staff_id,
-            on_result=self._patient_result_handler(target_id),
-            busy_button=self._busy_ref() if group else None,
-            group=group)
-
-    def on_action_wait_for(self, activity, patient_id=None):
-        """
-        patient_id: si non fourni, utilise self.patient_id (patient en cours)
-        """
-        if not self._patient_action_ready("wait_for"):
-            return
-        target_id = patient_id if patient_id is not None else self.patient_id
-        if target_id is None:
-            return
-        group = self._patient_action_group(target_id)
-        self.logger.debug("Patient remis en attente pour l'activité id=%s", activity['id'])
-        self.api.put_standing(target_id, activity["id"],
-                              on_result=self._patient_result_handler(target_id),
-                              busy_button=self._busy_ref() if group else None,
-                              group=group)
-
-    def on_action_validate(self, patient_id):
-        # Patient désigné dans la file (menu contextuel) : route « file », pas
-        # celle du comptoir — et NON conditionnée à l'existence d'un patient
-        # courant (la file peut en contenir alors que le comptoir est vide).
-        if not self._patient_action_ready("validate_queued"):
-            return
-        group = self._patient_action_group(patient_id)
-        self.api.validate_queued_patient(
-            patient_id, on_result=self.handle_queue_result,
-            busy_button=self._busy_ref() if group else None,
-            group=group)
-
-    def on_action_delete(self, patient_id=None):
-        """
-        patient_id: si non fourni, utilise self.patient_id (patient en cours)
-        """
-        if not self._patient_action_ready("delete"):
-            return
-        target_id = patient_id if patient_id is not None else self.patient_id
-        if target_id is None:
-            return
-        
-        msg_box = QMessageBox()
-        msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowStaysOnTopHint)
-        msg_box.setIcon(QMessageBox.Warning)
-        msg_box.setWindowTitle("Confirmation de suppression")
-        msg_box.setText("Êtes-vous sûr de vouloir supprimer ce patient ?")
-        
-        # Création des boutons personnalisés
-        bouton_oui = msg_box.addButton("Oui", QMessageBox.YesRole)
-        bouton_non = msg_box.addButton("Non", QMessageBox.NoRole)
-        msg_box.setDefaultButton(bouton_non)
-        
-        msg_box.exec()
-        
-        # Si l'utilisateur clique sur "Oui"
-        if msg_box.clickedButton() == bouton_oui:
-            self.logger.debug("Suppression du patient demandée")
-            group = self._patient_action_group(target_id)
-            self.api.delete_patient(target_id,
-                                    on_result=self._patient_result_handler(target_id),
-                                    busy_button=self._busy_ref() if group else None,
-                                    group=group)
-
-    def _set_validate_alert(self, active):
-        """Marque (ou démarque) le bouton Valider comme « patient à valider ».
-
-        Accessibilité (point 28) : l'état ne repose plus uniquement sur le fond
-        rouge. On enrichit aussi le libellé d'un pictogramme d'alerte, le nom
-        accessible et l'infobulle, pour rester compréhensible en niveaux de gris
-        et pour les lecteurs d'écran."""
-        button = getattr(self, "btn_validate", None)
-        if button is None:
-            return
-        base_label = getattr(button, "_base_label", button.text())
-        if active:
-            button.setRed()
-            button.setText(validate_alert_text(base_label))
-            button.setAccessibleName("Patient à valider")
-            button.setToolTip("Patient à valider — cliquez pour valider")
-        else:
-            self._stop_validate_blink()
-            button.resetColor()
-            button.setText(base_label)
-            button.setAccessibleName("Valider")
-            button.setToolTip(getattr(button, "_base_tooltip", None) or "Valider")
-
-
-
     def trigger_paper_button(self):
         if hasattr(self, 'btn_paper'):
             self.logger.debug("trigger_paper_button (état=%s)", self.btn_paper.state)
@@ -736,123 +475,6 @@ class MainWindow(QMainWindow):
 
     # --- garde commune des actions patient (boutons, menus, raccourcis, systray) ---
 
-    def _patient_action_ready(self, action):
-        """ Garde métier partagée par TOUS les points d'entrée d'une action qui
-        modifie le patient ou la file. Refuse si aucun agent n'est identifié sur
-        le comptoir (session invalide) ou si une action du groupe exclusif est
-        déjà en vol — sinon la seconde requête partirait d'un état dépassé. """
-        if not (isinstance(self.staff_id, int) and self.staff_id):
-            self.logger.info("Action '%s' ignorée : aucun agent au comptoir", action)
-            # Refus jusque-là silencieux (icônes systray accessibles avant
-            # l'identification) : l'utilisateur doit savoir pourquoi rien ne
-            # se passe — sinon l'action semble ignorée.
-            self.show_notification(
-                {"origin": "action_refused",
-                 "message": _notification_text(self, "not_identified")},
-                internal=True)
-            return False
-        if self._tasks.is_group_active(PATIENT_ACTION_GROUP):
-            self.logger.info("Action '%s' refusée : une action patient est déjà en cours", action)
-            self.show_notification(
-                {"origin": "action_busy", "message": _notification_text(self, "action_busy")},
-                internal=True)
-            return False
-        return True
-
-    def _patient_action_group(self, target_id):
-        """ Une action de file ne rejoint le groupe exclusif QUE si sa cible est
-        le patient courant (elle modifierait alors l'état du comptoir). """
-        return PATIENT_ACTION_GROUP if target_id == self.patient_id else None
-
-    def _on_patient_action_refused(self, reason):
-        """ Appelé par CounterApi quand une requête n'a pas pu partir — filet de
-        sécurité derrière _patient_action_ready (concurrence rare, ex. un menu
-        validé pendant qu'une autre action vient de démarrer). """
-        if reason == "shutdown":
-            return
-        self.logger.info("Action refusée par la couche d'accès : %s", reason)
-        self.show_notification(
-            {"origin": "action_busy", "message": _notification_text(self, "action_busy")},
-            internal=True)
-
-    def _resync_if_uncertain(self, result):
-        """ Après un échec dont l'effet côté serveur est douteux (transport rompu
-        : statut 0 — ou erreur 5xx où l'opération a pu être appliquée), demande
-        une resynchronisation plutôt que de réutiliser un état local faussé. """
-        if result.status == 0 or result.status >= 500:
-            if hasattr(self, "session"):
-                self._request_resync()
-
-    # --- verrous « occupé » indépendants des widgets --------------------------
-
-    def _busy_ref(self):
-        """ Référence « occupé » couvrant tous les boutons d'action patient :
-        une action du groupe exclusif les verrouille tous (les autres entrées
-        seraient incompatibles de toute façon). """
-        return _BusyButtonRef(self, self._PATIENT_BUTTONS)
-
-    def _set_busy_widgets(self, attrs, busy):
-        """ (Dé)verrouille les widgets nommés ET mémorise le verrou (compteur
-        par widget) pour le réappliquer après une reconstruction d'interface. """
-        busy_state = getattr(self, "_busy_widgets", None)
-        if busy_state is None:
-            busy_state = self._busy_widgets = {}
-        for attr in attrs:
-            count = busy_state.get(attr, 0) + (1 if busy else -1)
-            if count > 0:
-                busy_state[attr] = count
-            else:
-                busy_state.pop(attr, None)
-            widget = getattr(self, attr, None)
-            if widget is not None:
-                try:
-                    widget.set_busy(count > 0)
-                except RuntimeError:
-                    pass  # Widget déjà détruit : le verrou logique reste juste.
-
-    def _apply_busy_widgets(self):
-        """ Réimpose les verrous « occupé » mémorisés sur les widgets actuels —
-        appelé après chaque create_interface : les boutons tout neufs reprennent
-        le verrou de la requête encore en vol. """
-        for attr in getattr(self, "_busy_widgets", {}):
-            widget = getattr(self, attr, None)
-            if widget is not None:
-                try:
-                    widget.set_busy(True)
-                except RuntimeError:
-                    pass
-
-    def call_web_function_validate_and_call_next(self):
-        # L'idempotence de cette action (ne pas faire avancer la file deux fois
-        # si la requête est rejouée) est garantie par la couche d'accès.
-        if not self._patient_action_ready("next"):
-            return
-        self.api.validate_and_call_next(on_result=self.handle_result,
-                                        busy_button=self._busy_ref())
-        self.update_my_buttons(self.my_patient)
-        self.close_please_validate_notification()
-
-
-    def call_web_function_validate(self):
-        self.logger.debug("Validation du patient (call_web_function_validate)")
-        if not self._patient_action_ready("validate"):
-            return
-        self.close_please_validate_notification()
-        self.validate_my_patient(partial(self.api.validate_current_patient, self.patient_id))
-
-
-    def validate_my_patient(self, send):
-        """ Valide le patient s'il y en a un. ``send`` est la requête à envoyer,
-        déjà liée au patient concerné (celui du comptoir, ou un patient désigné
-        dans la file) : cette méthode ne décide que du « faut-il envoyer ». """
-        self.logger.debug("Validation du patient en cours")
-        self.close_please_validate_notification()
-        if self.my_patient:
-            send(on_result=self.handle_result, busy_button=self._busy_ref())
-        # permet de supprimer le Validate en rouge et l'alerte en si le bouton "Valider" est resté enclenché mais qu'il n'y a plus de patient
-        else:
-            self.update_my_buttons(self.my_patient)
-
     def close_please_validate_notification(self):
         """Annule le rappel « pensez à valider » quand le patient vient d'être
         validé : les notifications affichées ET celles encore en file d'attente.
@@ -861,37 +483,6 @@ class MainWindow(QMainWindow):
         manager = getattr(self, 'notification_manager', None)
         if manager is not None:
             manager.dismiss("please_validate")
-
-    def call_web_function_pause(self):
-        if getattr(self, "_auto_warning_active", False):
-            self.call_web_function_extend_call()
-            return
-        if not self._patient_action_ready("pause") or not self.patient_id:
-            return
-        self.logger.debug("Mise en pause du patient")
-        self.api.pause_current_patient(self.patient_id, on_result=self.handle_result,
-                                       busy_button=self._busy_ref())
-
-    def call_web_function_extend_call(self):
-        if not self._patient_action_ready("extend_call") or not self.patient_id:
-            return
-        self.api.extend_current_call(
-            self.patient_id,
-            on_result=self.handle_extend_call_result,
-            busy_button=self._busy_ref())
-
-    @Slot(object)
-    def handle_extend_call_result(self, result):
-        if result.status == 200 and isinstance(result.data, dict):
-            self.close_please_validate_notification()
-            self.update_my_patient(result.data)
-            self.update_my_buttons(result.data)
-            self._show_inline_notice("Appel prolongé.")
-            return
-        self._notify_network_error(result)
-        self._resync_if_uncertain(result)
-
-
 
     def toggle_compact_mode(self):
         """Bascule rapide du mode panneau compact (menu « Menu »). Persiste le
@@ -989,61 +580,6 @@ class MainWindow(QMainWindow):
         else:
             self.placement.fit_to_content_height()
 
-    def _on_patient_list_clicked(self, index):
-        """Clic sur une ligne de la vue : appelle le patient correspondant
-        (équivalent de l'ancien clic sur un PatientButton)."""
-        self._last_patient_list_trigger = time.monotonic()
-        patient_id = index.data(PatientListModel.IdRole)
-        if patient_id is not None:
-            self.call_web_function_validate_and_call_specifique(patient_id)
-
-    def _on_patient_list_activated(self, index):
-        """Activation clavier (Entrée) d'une ligne : même effet qu'un clic.
-
-        Un double-clic souris émet à la fois ``clicked`` et ``activated`` ; on
-        ignore l'``activated`` s'il suit immédiatement un ``clicked`` pour ne pas
-        appeler deux fois le même patient."""
-        last = getattr(self, "_last_patient_list_trigger", 0)
-        if time.monotonic() - last < 0.3:
-            return
-        self._on_patient_list_clicked(index)
-
-    def _on_patient_list_context_menu(self, position):
-        """Menu contextuel d'un patient de la vue (valider / supprimer /
-        assigner). Reprend à l'identique l'ancien menu de PatientButton, mais
-        construit à la demande pour le patient sous le curseur."""
-        index = self.patient_list_view.indexAt(position)
-        if not index.isValid():
-            return
-        patient = index.data(PatientListModel.PatientRole)
-        if not isinstance(patient, dict):
-            return
-        patient_id = patient.get("id")
-        if patient_id is None:
-            return
-
-        menu = QMenu(self.patient_list_view)
-
-        action_validate = menu.addAction("Marquer comme validé")
-        action_validate.triggered.connect(
-            lambda checked=False, pid=patient_id: self.on_action_validate(pid))
-
-        action_delete = menu.addAction("Supprimer")
-        action_delete.triggered.connect(
-            lambda checked=False, pid=patient_id: self.on_action_delete(pid))
-
-        # Mêmes destinataires que le sous-menu du patient courant : équipiers
-        # si le serveur les fournit, demandes nominatives sinon.
-        targets = self._wait_for_targets(patient_id)
-        if targets:
-            assign_submenu = QMenu("Assigner à...", menu)
-            for label, slot in targets:
-                action = assign_submenu.addAction(label)
-                action.triggered.connect(slot)
-            menu.addMenu(assign_submenu)
-
-        menu.exec(self.patient_list_view.viewport().mapToGlobal(position))
-
     def toggle_orientation(self):
         self.horizontal_mode = not self.horizontal_mode
         self.create_interface()
@@ -1056,90 +592,10 @@ class MainWindow(QMainWindow):
                 self.placement.fit_to_content_height()
 
 
-    def recall(self):
-        if not self._patient_action_ready("recall") or not self.patient_id:
-            return
-        self.api.relaunch_call(busy_button=self._busy_ref())
-
     def setup_user(self):
         """ Va chercher le staff sur le comptoir """
         self.logger.info("Paramétrage de l'utilisateur...")
         self.api.fetch_staff(on_result=self.handle_user_result)
-
-    def _notify_network_error(self, result):
-        """ Affiche un message utilisateur court (distinct selon le statut :
-        401/403/409-423/5xx/timeout) et journalise le détail technique. Le détail
-        n'est jamais montré à l'utilisateur. """
-        if result.message:
-            # Origine « action_error » (catégorie SYSTÈME), pas « connection » :
-            # un échec d'action n'est pas un évènement d'état de connexion —
-            # décocher les alertes de connexion ne doit pas le masquer, et la
-            # notification reste affichée tant que l'utilisateur ne l'a pas
-            # fermée (origine « sticky », cf. notification_rules).
-            self.show_notification({"origin": "action_error", "message": result.message}, internal=True)
-        if result.detail:
-            self.logger.warning("Erreur réseau (statut=%s) : %s", result.status, result.detail)
-
-    @Slot(object)
-    def handle_result(self, result):
-        self.logger.debug("Réponse action patient (statut=%s)", result.status)
-        status = result.status
-        if status == 200:
-            data = result.data
-            if isinstance(data, dict):
-                self.update_my_patient(data)
-                self.update_my_buttons(data)
-                if data.get("call_number"):
-                    message = _notification_text(self,
-                        "new_patient", N=data["call_number"], A=data.get("activity", ""))
-                    self.show_notification({"origin": "new_patient", "message": message}, internal=True)
-            else:
-                self.logger.warning("Réponse 200 sans JSON exploitable")
-        # plus de patient. Attention 204 ne permet pas de passer une info car 204 =pas de données
-        elif status == 204:
-            self.update_my_patient(None)
-            # Les boutons doivent suivre : sans cet appel ils restaient
-            # actifs/minuteur lancé sur un patient qui n'existe plus.
-            self.update_my_buttons(None)
-        # utiliser pour supprimer ou remettre un patient en attente
-        elif status == 201:
-            self.update_my_patient(False)
-            patient = {"counter_id": self.counter_id, "id": None}
-            self.update_my_buttons(patient)
-        # 423 = patient déjà pris par un autre comptoir (message dédié via l'UI)
-        elif status == 423:
-            self.patient_already_taken()
-        else:
-            self._notify_network_error(result)
-            self._resync_if_uncertain(result)
-
-    def _patient_result_handler(self, target_id):
-        """Choisit le handler de résultat selon la CIBLE de l'action :
-        ``handle_result`` pour le patient courant du comptoir,
-        ``handle_queue_result`` pour un patient désigné dans la file — sinon un
-        201 (put_standing/delete/validate) effacerait l'affichage du patient en
-        cours alors qu'il concernait un autre patient."""
-        if target_id is not None and target_id == self.patient_id:
-            return self.handle_result
-        return self.handle_queue_result
-
-    @Slot(object)
-    def handle_queue_result(self, result):
-        """Résultat d'une action sur un patient de la FILE (pas le patient
-        courant). Succès : la liste est rafraîchie par les évènements temps
-        réel, on ne touche ni au libellé ni aux boutons du patient courant."""
-        self.logger.debug("Réponse action sur la file (statut=%s)", result.status)
-        if 200 <= result.status < 300:
-            return
-        if result.status == 423:
-            self.play_notification_sound("patient_taken", "patient_taken")
-            self.show_notification(
-                {"origin": "patient_taken",
-                 "message": _notification_text(self, "patient_taken_queue")},
-                internal=True)
-            return
-        self._notify_network_error(result)
-        self._resync_if_uncertain(result)
 
     @Slot(object)
     def handle_user_result(self, result):
@@ -1624,24 +1080,12 @@ class MainWindow(QMainWindow):
             return
         self.logger.debug("Boutons patient : %s", reason)
         self._safe_widget(lambda: self._apply_patient_buttons(decision, reason))
-        if hasattr(self, "call_timer"):
-            # call_timer peut manquer : create_interface s'appelle avant
-            # create_call_timer dans __init__, et hors contexte complet.
+        alerts = getattr(self, "call_alerts", None)
+        if alerts is not None:
             if decision.start_call_timer:
-                sync_timers = getattr(self, "_sync_call_timers", None)
-                if callable(sync_timers):
-                    sync_timers()
-                else:
-                    self.call_timer.start()
+                alerts.sync()
             else:
-                self.call_timer.stop()
-                deadline_timer = getattr(self, "call_deadline_timer", None)
-                if deadline_timer is not None:
-                    deadline_timer.stop()
-                clear_warning = getattr(
-                    self, "_clear_call_extension_warning", None)
-                if callable(clear_warning):
-                    clear_warning()
+                alerts.stop_call()
 
     def _apply_patient_buttons(self, decision, reason=None):
         """ Écrit l'état Valider/Pause + l'alerte éventuelle. Appelée via
@@ -1650,7 +1094,7 @@ class MainWindow(QMainWindow):
         self.btn_pause.setEnabled(decision.pause_enabled)
         self.btn_validate.setEnabled(decision.validate_enabled)
         if decision.validate_alert is not None:
-            self._set_validate_alert(decision.validate_alert)
+            self.call_alerts.set_validate_alert(decision.validate_alert)
         self._explain_patient_buttons(decision, reason)
 
     #: Pourquoi un bouton patient est grisé, par motif de ``resolve_patient_buttons``
@@ -1959,13 +1403,6 @@ class MainWindow(QMainWindow):
         self.shortcuts.install()
 
 
-    def call_web_function_validate_and_call_specifique(self, patient_select_id):
-        if not self._patient_action_ready("call_specific"):
-            return
-        self.api.call_specific_patient(patient_select_id, on_result=self.handle_result,
-                                       busy_button=self._busy_ref())
-
-
     def _on_token_refreshed(self, token):
         """ Synchronise self.app_token quand le gestionnaire réseau renouvelle le
         jeton (utilisé par le WebSocket et la connexion staff). Le jeton n'est
@@ -2016,10 +1453,8 @@ class MainWindow(QMainWindow):
         # Réglages affectant la disposition : un changement impose de reconstruire
         # l'interface comptoir pour prendre effet immédiatement (orientation, mode
         # compact, épaisseur, liste des patients).
-        old_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
-                      self.display_patient_list, self.patient_list_position_vertical,
-                      self.patient_list_position_horizontal,
-                      getattr(self, "show_auto_call_button", False))
+        old_layout = window_preferences.snapshot(self, window_preferences.LAYOUT_ATTRIBUTES)
+        old_shape = window_preferences.snapshot(self, window_preferences.SHAPE_ATTRIBUTES)
         old_on_top = getattr(self, "always_on_top", False)
         old_tray_single = getattr(self, "tray_single_icon", False)
         old_skin = getattr(self, "selected_skin", "")
@@ -2039,15 +1474,12 @@ class MainWindow(QMainWindow):
                 self.show()
         new = {"web_url": self.web_url, "app_secret": self.app_secret,
                "counter_id": self.counter_id}
-        new_layout = (self.horizontal_mode, self.compact_mode, self.panel_thickness,
-                      self.display_patient_list, self.patient_list_position_vertical,
-                      self.patient_list_position_horizontal,
-                      getattr(self, "show_auto_call_button", False))
+        new_layout = window_preferences.snapshot(self, window_preferences.LAYOUT_ATTRIBUTES)
 
         # Réglages cosmétiques : toujours appliqués, aucune reconnexion requise.
         self.setup_global_shortcut()
-        if hasattr(self, "call_timer"):
-            self.call_timer.setInterval(self.timer_after_calling * 1000)
+        if hasattr(self, "call_alerts"):
+            self.call_alerts.set_reminder_delay(self.timer_after_calling)
         if hasattr(self, "audio_player"):
             self.audio_player.set_volume(self.sound_volume)
             self.audio_player.set_muted(self.sound_muted)
@@ -2093,7 +1525,8 @@ class MainWindow(QMainWindow):
         # compact, épaisseur) — un changement de volume ou de contenu ne doit pas
         # déplacer la fenêtre sous l'utilisateur.
         if self.isVisible():
-            dock = old_layout[:3] != new_layout[:3]
+            dock = old_shape != window_preferences.snapshot(
+                self, window_preferences.SHAPE_ATTRIBUTES)
             QTimer.singleShot(0, lambda: self.fit_window_to_content(dock=dock))
 
     def _reconnect_services(self, old_config, old_staff_present):
@@ -2265,10 +1698,8 @@ class MainWindow(QMainWindow):
         # 2. Arrêt des timers.
         if hasattr(self, 'realtime_health_timer'):
             self.realtime_health_timer.stop()
-        if hasattr(self, 'call_timer'):
-            self.call_timer.stop()
-            self.call_deadline_timer.stop()
-            self._validate_blink_timer.stop()
+        if hasattr(self, 'call_alerts'):
+            self.call_alerts.shutdown()
 
         # 3. Arrêt du WebSocket (drapeau + disconnect + attente bornée). Empêche
         #    aussi le déclenchement de nouveaux ResyncWorker.
@@ -2616,11 +2047,6 @@ class MainWindow(QMainWindow):
     def pyqt_call_preferences(self):
         self.show_preferences_dialog()
 
-    def select_patient(self, patient_select_id):
-        self.call_web_function_validate_and_call_specifique(patient_select_id)
-
-
-
     def load_skin(self):
         """ Applique le skin choisi à la fenêtre et à toute l'application, ou
         retire le skin courant si « aucun » est choisi. Le fichier est localisé
@@ -2645,150 +2071,6 @@ class MainWindow(QMainWindow):
         if not self.connected:
             self.show_notification({"origin": "connection", "message": _notification_text(self, "server_unreachable")}, internal=True)
 
-    def call_timer_delay_expired(self):
-        if hasattr(self, "my_patient"):
-            state = resolve_call_auto_validation(
-                self.my_patient,
-                getattr(self, "call_auto_validation", {"enabled": False}))
-            if state.armed or not isinstance(self.my_patient, dict):
-                return
-            if self.my_patient.get("status") != "calling":
-                return
-        self._set_validate_alert(True)
-        self.show_notification(
-            {"origin": "please_validate",
-             "message": _notification_text(self,
-                 "please_validate", N=_current_call_number(self))},
-            internal=True, patient_id=self.patient_id)
-
-    def _sync_call_timers(self):
-        state = resolve_call_auto_validation(
-            self.my_patient, self.call_auto_validation)
-        if state.armed:
-            self.call_timer.stop()
-            if not self.call_deadline_timer.isActive():
-                self.call_deadline_timer.start()
-            self._render_call_auto_validation(state)
-            return
-        self.call_deadline_timer.stop()
-        self._clear_call_extension_warning()
-        if not self.call_timer.isActive():
-            self.call_timer.start()
-
-    def _update_call_deadline(self):
-        state = resolve_call_auto_validation(
-            self.my_patient, self.call_auto_validation)
-        if not state.armed:
-            self._expired_resync_at = None
-            self.call_deadline_timer.stop()
-            self._clear_call_extension_warning()
-            return
-        self._render_call_auto_validation(state)
-        self._maybe_resync_expired_call(state)
-
-    def _maybe_resync_expired_call(self, state):
-        """Auto-guérison : l'échéance affiche 0 mais le serveur n'a pas encore
-        confirmé la validation — l'évènement temps réel a pu être perdu. On
-        redemande alors l'état autoritatif, d'abord après un court délai (le
-        job serveur tourne toutes les 5 s) puis périodiquement tant que le
-        compteur reste bloqué à 0."""
-        if state.remaining_seconds > 0:
-            self._expired_resync_at = None
-            return
-        now = time.monotonic()
-        if self._expired_resync_at is None:
-            self._expired_resync_at = now + EXPIRED_CALL_RECHECK_DELAY_S
-            return
-        if now < self._expired_resync_at:
-            return
-        self._expired_resync_at = now + EXPIRED_CALL_RECHECK_PERIOD_S
-        self._request_resync()
-
-    def _render_call_auto_validation(self, state):
-        if not state.warning_active:
-            self._clear_call_extension_warning()
-            return
-
-        if not self._auto_warning_active:
-            self._auto_warning_active = True
-        self._set_validate_alert(True)
-        self._start_validate_blink()
-
-        self._set_extend_button(state.remaining_seconds)
-        warning_key = (
-            self.patient_id,
-            self.my_patient.get("call_auto_validate_at")
-            if isinstance(self.my_patient, dict) else None,
-        )
-        if warning_key != self._auto_warning_key:
-            self._auto_warning_key = warning_key
-            self.show_notification({
-                "origin": "please_validate",
-                "message": _notification_text(self,
-                    "auto_release_warning", S=state.remaining_seconds,
-                    N=_current_call_number(self)),
-            }, internal=True, patient_id=self.patient_id)
-
-    def _set_extend_button(self, remaining_seconds):
-        button = getattr(self, "btn_pause", None)
-        if button is None:
-            return
-        button.setText(f"↻ Prolonger\n{remaining_seconds} s")
-        button.setAccessibleName("Prolonger l'appel")
-        hint = (
-            "Conserver le patient sur l'écran d'appel et relancer le délai "
-            f"({remaining_seconds} s restantes)"
-        )
-        button.setToolTip(hint)
-        button.setAccessibleDescription(hint)
-        button.setEnabled(True)
-
-    def _clear_call_extension_warning(self):
-        was_active = self._auto_warning_active
-        self._auto_warning_active = False
-        self._auto_warning_key = None
-        self._stop_validate_blink()
-        button = getattr(self, "btn_pause", None)
-        if button is not None:
-            button.setText(getattr(button, "_base_label", "Pause"))
-            button.setAccessibleName("Pause")
-            tooltip = getattr(button, "_base_tooltip", None) or "Pause"
-            button.setToolTip(tooltip)
-            button.setAccessibleDescription(tooltip)
-        if was_active:
-            self._set_validate_alert(False)
-            self.close_please_validate_notification()
-
-    def _start_validate_blink(self):
-        if not self._validate_blink_timer.isActive():
-            self._validate_blink_timer.start()
-
-    def _toggle_validate_blink(self):
-        self._validate_blink_highlighted = not self._validate_blink_highlighted
-        button = getattr(self, "btn_validate", None)
-        if button is not None:
-            button.setAlertPulse(self._validate_blink_highlighted)
-
-    def _stop_validate_blink(self):
-        timer = getattr(self, "_validate_blink_timer", None)
-        if timer is not None:
-            timer.stop()
-        self._validate_blink_highlighted = False
-        button = getattr(self, "btn_validate", None)
-        if button is not None:
-            button.setAlertPulse(False)
-
-    def create_call_timer(self):
-        """ Permet de définir un timer qui envoye une alerte si le patient n'est pas validé """
-        self.call_timer = QTimer(self)
-        self.call_timer.setInterval(self.timer_after_calling * 1000)
-        self.call_timer.timeout.connect(self.call_timer_delay_expired)
-        self.call_deadline_timer = QTimer(self)
-        self.call_deadline_timer.setInterval(1000)
-        self.call_deadline_timer.timeout.connect(self._update_call_deadline)
-        self._validate_blink_timer = QTimer(self)
-        self._validate_blink_timer.setInterval(450)
-        self._validate_blink_timer.timeout.connect(self._toggle_validate_blink)
 def setup_application(app):
     """ Prépare l'application Qt AVANT toute lecture de configuration : identité
     (dont dépend l'emplacement de QSettings) puis reprise des réglages laissés

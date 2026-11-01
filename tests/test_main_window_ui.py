@@ -163,15 +163,17 @@ def test_main_ne_construit_plus_de_mise_en_page():
 
     Les boîtes de dialogue (QMessageBox) et le menu du systray restent légitimes.
     """
-    with open(os.path.join(APP_DIR, "main.py"), encoding="utf-8") as fh:
-        tree = ast.parse(fh.read(), filename="main.py")
     interdits = {"QVBoxLayout", "QHBoxLayout", "QLabel", "QPushButton", "QListView",
                  "QDockWidget", "QSizePolicy", "QLineEdit", "QCheckBox",
                  "QPlainTextEdit", "QAbstractItemView"}
-    trouves = sorted({node.func.id for node in ast.walk(tree)
-                      if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                      and node.func.id in interdits})
-    assert trouves == [], f"construction de widgets restée dans main.py : {trouves}"
+    # Les modules sortis de MainWindow suivent la même règle.
+    for name in ("main.py", "patient_actions.py", "call_alerts.py"):
+        with open(os.path.join(APP_DIR, name), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=name)
+        trouves = sorted({node.func.id for node in ast.walk(tree)
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                          and node.func.id in interdits})
+        assert trouves == [], f"construction de widgets restée dans {name} : {trouves}"
 
 
 def test_modules_ui_sans_dependance_a_main():

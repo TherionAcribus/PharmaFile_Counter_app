@@ -106,7 +106,7 @@ def test_put_standing_list_sans_activite():
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Modules applicatifs susceptibles de parler au serveur.
-SOURCES = ["main.py", "preferences.py", "websocket_client.py", "connections.py",
+SOURCES = ["main.py", "patient_actions.py", "call_alerts.py", "preferences.py", "websocket_client.py", "connections.py",
            "buttons.py", "net_core.py", "socket_auth.py"]
 
 # Une URL construite à la main = une interpolation de la base suivie d'un chemin.

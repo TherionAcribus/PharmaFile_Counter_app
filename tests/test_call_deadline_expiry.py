@@ -19,13 +19,24 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import call_alerts  # noqa: E402
 import main  # noqa: E402
+from call_alerts import CallAlertController  # noqa: E402
+
+
+class _FakeSignal:
+    def connect(self, slot):
+        self.slot = slot
 
 
 class FakeTimer:
     def __init__(self):
         self.calls = []
         self.active = False
+        self.timeout = _FakeSignal()
+
+    def setInterval(self, ms):
+        self.interval = ms
 
     def start(self):
         self.calls.append("start")
@@ -75,17 +86,11 @@ COUNTER = 3
 
 
 def _window():
+    """Fenêtre minimale + vrai contrôleur d'alertes (minuteries simulées)."""
     w = types.SimpleNamespace(
         counter_id=COUNTER,
         patient_id=7,
         call_auto_validation={"enabled": True, "grace_seconds": 30},
-        _auto_warning_active=False,
-        _auto_warning_key=None,
-        _expired_resync_at=None,
-        _validate_blink_highlighted=False,
-        call_timer=FakeTimer(),
-        call_deadline_timer=FakeTimer(),
-        _validate_blink_timer=FakeTimer(),
         btn_pause=FakeButton(),
         btn_validate=FakeButton(),
         logger=logging.getLogger("test.call_deadline_expiry"),
@@ -93,15 +98,7 @@ def _window():
         notifications=[],
         resync_requests=0,
     )
-    for name in (
-        "_update_call_deadline", "_maybe_resync_expired_call",
-        "_render_call_auto_validation",
-        "_clear_call_extension_warning", "_start_validate_blink",
-        "_stop_validate_blink", "_toggle_validate_blink",
-        "_set_extend_button", "_set_validate_alert",
-        "_sync_call_timers", "update_my_buttons", "_apply_patient_buttons",
-        "_explain_patient_buttons",
-    ):
+    for name in ("update_my_buttons", "_apply_patient_buttons", "_explain_patient_buttons"):
         setattr(w, name, types.MethodType(getattr(main.MainWindow, name), w))
     w._PATIENT_BUTTON_REASON_HINT = main.MainWindow._PATIENT_BUTTON_REASON_HINT
     w._safe_widget = main.MainWindow._safe_widget
@@ -109,15 +106,18 @@ def _window():
     w.show_notification = lambda data, **kw: w.notifications.append(data)
     w._request_resync = lambda: setattr(
         w, "resync_requests", w.resync_requests + 1)
-    # _set_validate_alert touche les vrais boutons -> on instrumente :
+    w.call_alerts = CallAlertController(w, reminder_seconds=60, make_timer=FakeTimer)
+    # set_validate_alert touche les vrais boutons -> on instrumente :
+    alerts = w.call_alerts
+
     def _alert(active):
         w.alerts.append(active)
         if active:
             w.btn_validate.color_changed = True
         else:
-            main.MainWindow._stop_validate_blink(w)
+            alerts._stop_blink()
             w.btn_validate.color_changed = False
-    w._set_validate_alert = _alert
+    alerts.set_validate_alert = _alert
     return w
 
 
@@ -134,9 +134,9 @@ def test_clignote_a_zero_puis_se_reinitialise_sur_resync():
     # Patient en appel, échéance déjà dépassée (le serveur n'a pas encore
     # tranché) : le rendu doit afficher « Prolonger 0 s » et clignoter.
     w.my_patient = _patient_appele(time.time() - 1)
-    w._update_call_deadline()
+    w.call_alerts.deadline_tick()
     assert "Prolonger" in w.btn_pause.text
-    assert w._validate_blink_timer.active is True   # clignotement en cours
+    assert w.call_alerts.blink_timer.active is True   # clignotement en cours
 
     # Le serveur a validé : la resync applique le statut ongoing.
     w.my_patient = {
@@ -145,10 +145,10 @@ def test_clignote_a_zero_puis_se_reinitialise_sur_resync():
     }
     w.update_my_buttons(w.my_patient)
 
-    assert w._validate_blink_timer.active is False, "clignotement toujours actif"
+    assert w.call_alerts.blink_timer.active is False, "clignotement toujours actif"
     assert w.btn_pause.text == "Pause\nAlt+P"
     assert w.btn_validate.color_changed is False
-    assert w.call_deadline_timer.active is False
+    assert w.call_alerts.deadline_timer.active is False
 
 
 def test_echance_depassee_demande_une_resync_espacee(monkeypatch):
@@ -158,25 +158,25 @@ def test_echance_depassee_demande_une_resync_espacee(monkeypatch):
     import time
     w = _window()
     now = [1000.0]
-    monkeypatch.setattr(main.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(call_alerts.time, "monotonic", lambda: now[0])
     w.my_patient = _patient_appele(time.time() - 1)
 
-    w._update_call_deadline()          # premier passage à 0 : on arme le délai
+    w.call_alerts.deadline_tick()          # premier passage à 0 : on arme le délai
     assert w.resync_requests == 0
 
-    now[0] += main.EXPIRED_CALL_RECHECK_DELAY_S - 1
-    w._update_call_deadline()          # le job serveur a encore le temps
+    now[0] += call_alerts.EXPIRED_CALL_RECHECK_DELAY_S - 1
+    w.call_alerts.deadline_tick()          # le job serveur a encore le temps
     assert w.resync_requests == 0
 
     now[0] += 2                        # délai écoulé -> vérification
-    w._update_call_deadline()
+    w.call_alerts.deadline_tick()
     assert w.resync_requests == 1
 
-    w._update_call_deadline()          # pas de rafale : la suivante attend
+    w.call_alerts.deadline_tick()          # pas de rafale : la suivante attend
     assert w.resync_requests == 1
 
-    now[0] += main.EXPIRED_CALL_RECHECK_PERIOD_S
-    w._update_call_deadline()          # toujours bloqué à 0 -> nouvelle passe
+    now[0] += call_alerts.EXPIRED_CALL_RECHECK_PERIOD_S
+    w.call_alerts.deadline_tick()          # toujours bloqué à 0 -> nouvelle passe
     assert w.resync_requests == 2
 
 
@@ -184,6 +184,6 @@ def test_pas_de_resync_avant_l_echeance():
     import time
     w = _window()
     w.my_patient = _patient_appele(time.time() + 60)
-    w._update_call_deadline()
+    w.call_alerts.deadline_tick()
     assert w.resync_requests == 0
-    assert w._expired_resync_at is None
+    assert w.call_alerts._expired_resync_at is None

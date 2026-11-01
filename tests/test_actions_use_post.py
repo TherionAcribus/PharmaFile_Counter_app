@@ -132,13 +132,15 @@ def test_idempotence_reservee_a_l_action_qui_fait_avancer_la_file():
 
 
 def test_plus_aucune_requete_construite_dans_main():
-    """main.py ne doit plus appeler directement le gestionnaire réseau."""
-    main_source = open(
-        os.path.join(os.path.dirname(_SOURCE), "main.py"), encoding="utf-8").read()
-    for interdit in ("self.network_manager.request_blocking",
-                     "self.network_manager.make_handle",
-                     "self.network_manager.fetch_token_blocking"):
-        assert interdit not in main_source, interdit
+    """La fenêtre (main.py et les modules qui en sont sortis) ne doit plus
+    appeler directement le gestionnaire réseau."""
+    for name in ("main.py", "patient_actions.py", "call_alerts.py"):
+        with open(os.path.join(os.path.dirname(_SOURCE), name), encoding="utf-8") as fh:
+            source = fh.read()
+        for interdit in ("self.network_manager.request_blocking",
+                         "self.network_manager.make_handle",
+                         "self.network_manager.fetch_token_blocking"):
+            assert interdit not in source, (name, interdit)
 
 
 def test_module_expose_bien_la_classe():

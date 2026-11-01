@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import main  # noqa: E402
+from call_alerts import CallAlertController  # noqa: E402
 import notification_rules as rules  # noqa: E402
 from notification import extract_origin_message  # noqa: E402
 import settings_schema  # noqa: E402
@@ -266,9 +267,9 @@ def test_other_notifications_never_become_obsolete():
 
 def test_reminder_carries_the_patient_it_concerns():
     w = _validate_window(patient_id=42)
-    w.call_timer_delay_expired = types.MethodType(main.MainWindow.call_timer_delay_expired, w)
-    w._set_validate_alert = lambda alert: None
-    w.call_timer_delay_expired()
+    alerts = CallAlertController(w, reminder_seconds=60)
+    alerts.set_validate_alert = lambda alert: None
+    alerts.reminder_expired()
     assert [origin for origin, _sound in w.shown] == ["please_validate"]
     assert w.notified_patients == [42]
 
