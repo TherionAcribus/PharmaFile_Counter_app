@@ -114,3 +114,29 @@ def test_child_logger_propagates_and_is_redacted():
         assert "***" in joined
     finally:
         parent.removeHandler(handler)
+
+
+# --- phrases en français : « champ : texte » n'est pas un couple clé/valeur ---
+
+@pytest.mark.parametrize("text", [
+    "Erreur lors de l'obtention du token : Échec de l'obtention du token",
+    "Échec du renouvellement du token : délai dépassé",
+    "Le secret : vérifiez la configuration du poste",
+])
+def test_french_prose_is_left_readable(text):
+    """L'espace française avant les deux-points marque une phrase : la
+    masquer avalait le mot suivant (« token : *** de l'obtention… »)."""
+    assert _redact(text) == text
+
+
+@pytest.mark.parametrize("text,secret", [
+    ("X-App-Token: abc123def456", "abc123def456"),
+    ("token:abc123def456", "abc123def456"),
+    ("app_secret = monsecret", "monsecret"),
+    ('{"token" : "abc123def456"}', "abc123def456"),
+    ("{'initials': 'JD', 'id': 3}", "'JD'"),
+])
+def test_key_value_forms_stay_masked(text, secret):
+    out = _redact(text)
+    assert secret not in out
+    assert "***" in out

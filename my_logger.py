@@ -79,10 +79,16 @@ class RedactingFilter(logging.Filter):
         super().__init__()
         self._secrets = set()
         self._lock = threading.Lock()
-        # Motifs pour "champ": "valeur"  /  champ=valeur  /  champ: valeur
+        # Motifs pour "champ": "valeur"  /  champ=valeur  /  champ: valeur.
+        # Clé NUE : les deux-points doivent être collés à la clé (forme des
+        # en-têtes et des dict/JSON). « token : Échec… », avec l'espace
+        # française avant les deux-points, est une phrase : la masquer avalait
+        # le mot suivant et rendait le message illisible. Les jetons et secrets
+        # eux-mêmes restent masqués par leur valeur exacte (register_secret).
         fields = "|".join(re.escape(f) for f in self._SENSITIVE_FIELDS)
         self._field_pattern = re.compile(
-            r"(['\"]?(?:" + fields + r")['\"]?\s*[:=]\s*)"
+            r"((?P<quote>['\"])(?:" + fields + r")(?P=quote)\s*[:=]\s*"
+            r"|(?:" + fields + r")(?::|\s*=)\s*)"
             r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}\)]+)",
             re.IGNORECASE,
         )
