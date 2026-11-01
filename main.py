@@ -30,6 +30,7 @@ from audio import build_audio_player
 from loading_screen import LoadingScreen
 from my_logger import AppLogger, default_log_dir, register_secret
 import crash_guard
+from single_instance import SingleInstance
 from secret_store import load_secret
 from task_registry import TaskRegistry
 from resync_coordinator import snapshot_is_fresh
@@ -2462,6 +2463,29 @@ class MainWindow(QMainWindow):
         timer.start(self._INLINE_NOTICE_MS)
         return True
 
+    def bring_to_front(self):
+        """ Une seconde instance de l'App vient d'être lancée : on montre
+        celle-ci à la place (cf. single_instance). Pendant le chargement ou la
+        configuration du poste, c'est l'écran en cours qui passe devant — la
+        fenêtre principale ne doit pas s'afficher vide. """
+        if self.shutting_down:
+            return
+        modal = QApplication.activeModalWidget()
+        if modal is not None:
+            target = modal
+        elif self.isVisible():
+            target = self
+        elif self.loading_screen is not None and self.loading_screen.isVisible():
+            target = self.loading_screen
+        else:
+            return
+        if target.isMinimized():
+            target.showNormal()
+        else:
+            target.show()
+        target.raise_()
+        target.activateWindow()
+
     def notify_internal_error(self, message):
         """ Prévient discrètement qu'une erreur non prévue vient d'être
         enregistrée dans le journal (appelé par crash_guard, une fois par
@@ -2782,7 +2806,24 @@ if __name__ == "__main__":
     # trace (cf. crash_guard). Le journal est configuré au passage.
     AppLogger.get_instance()
     guard = crash_guard.install(log_dir=default_log_dir())
-    app = setup_application(QApplication(sys.argv))
+    app = QApplication(sys.argv)
+
+    # Une seule App par utilisateur : une seconde instance doublerait les
+    # raccourcis globaux (un appui = deux patients appelés). Vérifié AVANT la
+    # reprise des réglages et toute connexion au serveur (cf. single_instance).
+    instance = SingleInstance()
+    if not instance.acquire():
+        logging.getLogger("appcomptoir").info(
+            "L'App est déjà ouverte pour cet utilisateur : cette instance se ferme.")
+        if not instance.notify_primary():
+            QMessageBox.information(
+                None, "Flowelis Comptoir",
+                "Flowelis Comptoir est déjà ouvert sur ce poste, mais ne répond pas.\n\n"
+                "Regardez près de l'horloge, dans la zone de notification. Si "
+                "l'application reste bloquée, fermez-la depuis le Gestionnaire "
+                "des tâches puis relancez-la.")
+        sys.exit(0)
+    setup_application(app)
 
     # MainWindow.show() est appelé en interne une fois l'initialisation
     # asynchrone terminée (_on_startup_ready), pas ici : l'appeler tout de
@@ -2800,7 +2841,10 @@ if __name__ == "__main__":
             f"Le détail a été enregistré dans le journal :\n{default_log_dir()}")
         sys.exit(1)
     guard.set_notifier(window.notify_internal_error)
+    instance.activation_requested.connect(window.bring_to_front)
     exit_code = app.exec()
     if window.restart_requested:
+        # La nouvelle instance doit trouver le verrou libre.
+        instance.release()
         ui_scale.relaunch()
     sys.exit(exit_code)
