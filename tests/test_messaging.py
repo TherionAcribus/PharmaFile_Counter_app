@@ -17,9 +17,8 @@ from PySide6.QtWidgets import (
     QTabBar, QToolButton, QWidget,
 )
 
-from messaging import (
-    MessagingController, _INITIALS_ROLE, _NAME_ROLE, _RecipientFilterModel,
-)
+from messaging import MessagingController
+from messaging_ui import _INITIALS_ROLE, _NAME_ROLE, _RecipientFilterModel
 from net_result import NetResult
 
 
@@ -188,7 +187,7 @@ def test_compact_composer_does_not_impose_the_app_width():
 
 
 def test_spacing_tightens_on_small_panel():
-    from messaging import composer_spacing
+    from messaging_ui import composer_spacing
     assert composer_spacing(400, 400) == (6, 6, 4)
     assert composer_spacing(300, 400) == (2, 3, 2)     # étroit
     assert composer_spacing(400, 200) == (2, 3, 2)     # bas
@@ -2656,7 +2655,7 @@ def test_no_remis_once_my_last_message_is_read():
 
 def test_day_label_in_french():
     from datetime import date
-    from messaging import day_label
+    from messaging_render import day_label
     today = date(2026, 11, 1)                       # un dimanche
     assert day_label(today, today) == "Aujourd'hui"
     assert day_label(date(2026, 10, 31), today) == "Hier"

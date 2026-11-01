@@ -1,220 +1,52 @@
-"""Interface compacte et contrôleur réseau de la messagerie App Comptoir."""
+"""Interface compacte et contrôleur réseau de la messagerie App Comptoir.
+
+``MessagingController`` porte l'état (identité, conversations, onglets, fil,
+lecture) et les échanges avec le serveur. Il s'appuie sur :
+
+- ``messaging_ui`` : widgets et construction du panneau ;
+- ``messaging_render`` : rendu HTML du fil (pur, sans Qt) ;
+- ``messaging_composer`` : saisie et envoi (urgent, équipe, brouillons) ;
+- ``messaging_delete`` : retrait d'un message envoyé par erreur ;
+- ``messaging_quick_replies`` : phrases rapides du menu « ⚡ ».
+
+Les trois derniers sont des classes parentes (mixins) du contrôleur : leurs
+méthodes lisent et modifient son état, et restent appelées sur lui.
+"""
 
 from __future__ import annotations
 
-import html
 import json
-import math
-import re
-import time
-import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from PySide6.QtCore import (
-    QEvent, QModelIndex, QObject, QSettings, QSortFilterProxyModel, Qt, QTimer,
-    Signal,
+    QEvent, QObject, QSettings, Qt, QTimer,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QIcon, QKeySequence, QPainter, QPalette, QPixmap,
-    QShortcut, QStandardItem, QStandardItemModel, QTextCursor,
+    QAction, QColor, QIcon, QPalette, QStandardItem, QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QCompleter, QDockWidget, QHBoxLayout, QLabel,
-    QLineEdit, QMenu, QPlainTextEdit, QPushButton, QSizePolicy,
-    QTabBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QDockWidget, QMenu, QTabBar, QToolButton,
 )
 
 import notification_rules
 import settings_schema
 from dock_arrangement import DockArranger, dock_in_front, toggle_dock
+from messaging_render import render_thread_html
+from messaging_render import normalize as _normalize
+import messaging_ui
+from messaging_composer import ComposerMixin
+from messaging_delete import DeleteMessagesMixin
+from messaging_quick_replies import QuickRepliesMixin
+from messaging_ui import (
+    _INITIALS_ROLE, _NAME_ROLE, _SEARCH_ROLE, _presence_icon, composer_spacing,
+)
 from quick_replies_dialog import (
-    DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH, QuickRepliesDialog,
+    DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH,
 )
 
 
-class MessageInput(QPlainTextEdit):
-    sendRequested = Signal()
-    #: Échap : rien à annuler dans le champ (le brouillon est conservé) —
-    #: le signal rend la main à la fenêtre principale.
-    escapeRequested = Signal()
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (
-                event.modifiers() & Qt.ShiftModifier):
-            self.sendRequested.emit()
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Escape:
-            self.escapeRequested.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-#: En dessous de ces dimensions (px), le panneau resserre marges et
-#: espacements : chaque pixel rendu va au fil et au champ de saisie.
-COMPACT_DOCK_WIDTH = 320
-COMPACT_DOCK_HEIGHT = 260
-
-
-def composer_spacing(width, height):
-    """(marge, espacement, marge interne du champ) selon la taille du
-    panneau de messagerie : valeurs d'origine, ou resserrées s'il est
-    étroit OU bas."""
-    if width < COMPACT_DOCK_WIDTH or height < COMPACT_DOCK_HEIGHT:
-        return 2, 3, 2
-    return 6, 6, 4
-
-
-class _ResizeAwareWidget(QWidget):
-    """Conteneur du panneau qui signale ses changements de taille."""
-
-    resized = Signal(int, int)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        size = event.size()
-        self.resized.emit(size.width(), size.height())
-
-
-#: Ancre posée sur chaque bulle du fil : retrouve le message sous un clic
-#: droit (une bulle = un bloc du document, cf. _message_in_block).
-_MESSAGE_ANCHOR = "msg-"
-
-
-class MessageThread(QTextBrowser):
-    """Fil des messages. Le menu du clic droit garde les actions standard
-    (copier, tout sélectionner) ; le contrôleur y ajoute les siennes via
-    ``contextMenuAboutToShow(menu, position)`` — position dans le viewport,
-    celle qu'attend cursorForPosition."""
-
-    contextMenuAboutToShow = Signal(object, object)
-
-    def contextMenuEvent(self, event):
-        menu = self.createStandardContextMenu(event.pos())
-        self.contextMenuAboutToShow.emit(menu, event.pos())
-        menu.exec(event.globalPos())
-        menu.deleteLater()
-
-
-def _normalize(text):
-    """Forme de comparaison tolérante : minuscules, accents retirés — un
-    « hel » tapé retrouve « Hélène »."""
-    decomposed = unicodedata.normalize("NFKD", text or "")
-    return "".join(
-        char for char in decomposed if not unicodedata.combining(char)).lower()
-
-
-def _presence_icon(online):
-    """Pastille de présence ~10 px pour l'onglet d'un fil direct : verte en
-    ligne, grise hors ligne."""
-    pixmap = QPixmap(10, 10)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#22c55e" if online else "#9ca3af"))
-    painter.drawEllipse(0, 0, 9, 9)
-    painter.end()
-    return QIcon(pixmap)
-
-
-#: Rôle modèle portant le nom « brut » d'un destinataire (sans le suffixe
-#: « — Comptoir X » du libellé) : c'est lui, pas le texte affiché, qui sert
-#: au matching de _RecipientFilterModel.
-_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
-
-#: Rôle modèle lu par la passe de filtrage INTERNE de QCompleter (MatchContains
-#: dessus) : nom + initiales, en version affichée ET normalisée. QCompleter
-#: filtre une seconde fois le modèle qu'on lui donne ; réunir ici toutes les
-#: formes cherchées garantit que sa passe n'écarte jamais une ligne que
-#: _RecipientFilterModel a acceptée (« ft », accents…).
-_SEARCH_ROLE = Qt.ItemDataRole.UserRole + 2
-
-#: Rôle modèle portant les initiales MÉTIER du destinataire
-#: (Pharmacist.initials côté serveur — « BN » pour « Benoit »), différentes
-#: des initiales dérivées des mots du nom quand le nom n'en a qu'un.
-#: None/absent sur un vieux serveur : toléré.
-_INITIALS_ROLE = Qt.ItemDataRole.UserRole + 3
-
-#: Token de mention « @XX » dans un corps de message : initiales métier
-#: (1 à 10 caractères de mot), match insensible à la casse — la même
-#: forme que l'extraction côté serveur.
-_WEEKDAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi",
-             "dimanche")
-_MONTHS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
-           "août", "septembre", "octobre", "novembre", "décembre")
-
-
-def day_label(day, today):
-    """Libellé d'un séparateur de date du fil, en français et sans dépendre
-    de la langue du système : « Aujourd'hui », « Hier », « Jeudi 29
-    octobre » (année en cours), « 29 octobre 2025 » (année passée)."""
-    delta = (today - day).days
-    if delta == 0:
-        return "Aujourd'hui"
-    if delta == 1:
-        return "Hier"
-    if day.year == today.year:
-        return (f"{_WEEKDAYS[day.weekday()].capitalize()} {day.day} "
-                f"{_MONTHS[day.month - 1]}")
-    return f"{day.day} {_MONTHS[day.month - 1]} {day.year}"
-
-
-_MENTION_PATTERN = re.compile(r"@(\w{1,10})\b", re.IGNORECASE)
-
-
-class _RecipientFilterModel(QSortFilterProxyModel):
-    """Filtre des destinataires de « Écrire à… » : la requête normalisée est
-    acceptée si elle est sous-chaîne du nom (ce qui couvre le préfixe d'un
-    mot), préfixe des initiales dérivées des mots (« ft » → « Fabien Test »),
-    ou préfixe des initiales métier (« bn » → « Benoit », rôle
-    _INITIALS_ROLE ; absent sur les vieux serveurs)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._query = ""
-
-    def set_query(self, text):
-        self._query = _normalize(text)
-        self.invalidate()
-
-    def filterAcceptsRow(self, row, parent):
-        if not self._query:
-            return True
-        index = self.sourceModel().index(row, 0, parent)
-        name = _normalize(index.data(_NAME_ROLE) or "")
-        if self._query in name:
-            return True
-        initials = "".join(word[0] for word in name.split())
-        if initials.startswith(self._query):
-            return True
-        business = _normalize(index.data(_INITIALS_ROLE) or "")
-        return bool(business) and business.startswith(self._query)
-
-
-class RecipientSearchEdit(QLineEdit):
-    """Champ de recherche d'un destinataire : Échap vide d'abord le champ ;
-    un second Échap — champ déjà vide — émet escapeRequested (la main
-    revient à la fenêtre principale). Quand le popup du completer est
-    ouvert, c'est lui qui consomme Échap (fermeture) avant que la touche
-    n'arrive ici."""
-
-    escapeRequested = Signal()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            if self.text():
-                self.clear()
-            else:
-                self.escapeRequested.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-class MessagingController(QObject):
+class MessagingController(QObject, ComposerMixin, DeleteMessagesMixin, QuickRepliesMixin):
     HEARTBEAT_MS = 30_000
     # Délai avant l'envoi de l'accusé « Lu » : laisse à l'équipier le temps
     # de voir réellement les messages (cf. _schedule_read_mark).
@@ -673,195 +505,7 @@ class MessagingController(QObject):
         self.dock.setMinimumHeight(180)
         self.dock.setAccessibleName("Panneau de messagerie interne")
 
-        container = _ResizeAwareWidget(self.dock)
-        layout = QVBoxLayout(container)
-        self._layout = layout
-        self._spacing = None
-        # Marges et espacements ajustés à la taille réelle du panneau
-        # (cf. composer_spacing) ; valeurs d'origine posées d'emblée.
-        container.resized.connect(self._apply_spacing)
-
-        # Recherche d'un destinataire : complétion par nom ou initiales ;
-        # l'activation ouvre l'onglet de la conversation. Pas de combo
-        # éditable : Entrée y insérait un item fantôme (InsertAtBottom) quand
-        # le texte ne correspondait à rien.
-        self.search = RecipientSearchEdit(container)
-        self.search.setPlaceholderText("Écrire à… (prénom ou initiales)")
-        self.search.setAccessibleName("Nouvelle conversation")
-        self.search.setToolTip(
-            "Écrire à un équipier : nom ou initiales, Entrée ouvre le fil")
-        self.search.setMinimumWidth(0)
-        self.search.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self._recipient_model = QStandardItemModel(self.search)
-        self._recipient_proxy = _RecipientFilterModel(self.search)
-        self._recipient_proxy.setSourceModel(self._recipient_model)
-        self._recipient_proxy.setFilterKeyColumn(0)
-        completer = QCompleter(self._recipient_proxy, self.search)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        # Le completer filtre lui-même par-dessus le proxy : _SEARCH_ROLE
-        # réunit toutes les formes cherchées pour que sa passe n'écarte rien.
-        completer.setCompletionRole(_SEARCH_ROLE)
-        self.search.setCompleter(completer)
-        self.search.textChanged.connect(self._recipient_proxy.set_query)
-        self.search.returnPressed.connect(self._activate_first_recipient)
-        self.search.escapeRequested.connect(self._release_focus)
-        completer.activated[QModelIndex].connect(self._recipient_activated)
-        layout.addWidget(self.search)
-
-        # Conversations en cours : « Équipe » permanente, un onglet par fil
-        # direct actif ou choisi — plusieurs échanges restent visibles d'un
-        # coup d'œil, dans un encombrement vertical minimal.
-        self.tabs = QTabBar(container)
-        self.tabs.setExpanding(False)
-        self.tabs.setUsesScrollButtons(True)
-        self.tabs.setElideMode(Qt.ElideRight)
-        self.tabs.setDrawBase(False)
-        self.tabs.setDocumentMode(True)
-        self.tabs.setTabsClosable(True)
-        self.tabs.setMovable(True)
-        self.tabs.setAccessibleName("Conversations en cours")
-        self.tabs.currentChanged.connect(self._tab_changed)
-        self.tabs.tabCloseRequested.connect(self._close_tab)
-        # Clic droit sur un onglet : « Marquer comme non lu ».
-        self.tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tabs.customContextMenuRequested.connect(self._show_tab_menu)
-        layout.addWidget(self.tabs)
-
-        # Navigation clavier entre conversations, même geste que les
-        # navigateurs : Ctrl+Tab / Ctrl+Maj+Tab, circulaire. Enfants du
-        # dock : détruits et recréés avec lui, jamais en double.
-        for sequence, step in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
-            shortcut = QShortcut(QKeySequence(sequence), self.dock)
-            shortcut.setContext(
-                Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(
-                lambda _step=step: self._cycle_tab(_step))
-
-        self.status_label = QLabel("", container)
-        self.status_label.setWordWrap(True)
-        self.status_label.setMinimumWidth(0)
-        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.status_label.setAccessibleName("État de la conversation")
-        # Vide par défaut : sans texte, le libellé ne réserve pas de ligne.
-        self.status_label.hide()
-        layout.addWidget(self.status_label)
-
-        self.thread = MessageThread(container)
-        self.thread.setOpenExternalLinks(False)
-        # Clic droit sur une de mes bulles récentes : « Retirer ce message ».
-        self.thread.contextMenuAboutToShow.connect(self._extend_thread_menu)
-        self.thread.setAccessibleName("Messages de la conversation")
-        self.thread.setMinimumWidth(0)
-        self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        layout.addWidget(self.thread, 1)
-        # Messages arrivés pendant que l'équipier lisait plus haut dans le
-        # fil : on ne le ramène pas de force en bas (il perdrait sa lecture),
-        # une barre cliquable le prévient et l'y emmène. Cachée sinon.
-        self.new_messages_button = QPushButton(container)
-        self.new_messages_button.setFlat(True)
-        self.new_messages_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.new_messages_button.setMinimumWidth(0)
-        self.new_messages_button.setSizePolicy(
-            QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.new_messages_button.setStyleSheet(
-            "QPushButton { background-color:#d97706; color:white; "
-            "border-radius:4px; padding:3px; font-weight:bold; }")
-        self.new_messages_button.setToolTip("Aller aux derniers messages")
-        self.new_messages_button.clicked.connect(self._scroll_to_latest)
-        self.new_messages_button.hide()
-        layout.addWidget(self.new_messages_button)
-        # Ascenseur arrivé en bas (défilement manuel ou suivi du dernier
-        # message) : point d'armement de l'accusé « Lu ».
-        self.thread.verticalScrollBar().valueChanged.connect(
-            self._thread_reached_bottom)
-        # Arrivé tout en haut : les messages plus anciens se chargent à la
-        # demande (« charger plus ancien » sans bouton).
-        self.thread.verticalScrollBar().valueChanged.connect(
-            self._maybe_load_older)
-
-        # Portée d'un message « équipe » : tous les équipiers actifs (défaut)
-        # ou les connectés seulement. Cachée hors conversation broadcast —
-        # sans intérêt pour un message direct — pour garder le dock compact ;
-        # sa visibilité suit la sélection (cf. _update_composer).
-        self._online_only = QCheckBox("Connectés seulement", container)
-        self._online_only.setMinimumWidth(0)
-        self._online_only.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self._online_only.setToolTip(
-            "N'envoyer qu'aux équipiers actuellement connectés")
-        self._online_only.setAccessibleName("Portée du message à l'équipe")
-        self._online_only.hide()
-        layout.addWidget(self._online_only)
-
-        # Ligne de saisie : le champ et un seul petit bouton « ⚡ ». Pas de
-        # bouton « Envoyer » (Entrée envoie, le texte d'invite le rappelle)
-        # ni de bouton « urgent » (option du menu « ⚡ ») : sur un petit
-        # écran, la largeur revient au texte en cours d'écriture.
-        composer = QHBoxLayout()
-        self._composer = composer
-        self.input = MessageInput(container)
-        self.input.setPlaceholderText(self.INPUT_PLACEHOLDER)
-        self.input.setAccessibleName("Texte du message")
-        self.input.setToolTip(self.INPUT_TOOLTIP)
-        self.input.setMinimumWidth(0)
-        self.input.setMaximumHeight(76)
-        self.input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.input.setTabChangesFocus(True)
-        self.input.textChanged.connect(self._update_composer)
-        self.input.textChanged.connect(self._maybe_emit_typing)
-        self.input.sendRequested.connect(self.send)
-        self.input.escapeRequested.connect(self._release_focus)
-        composer.addWidget(self.input, 1)
-        # Réponses rapides : le menu insère la phrase dans le champ (elle
-        # reste modifiable, Entrée envoie) — pas d'envoi direct : un envoi
-        # immédiat sous le doigt au comptoir serait une fausse manip.
-        self.quick_button = QToolButton(container)
-        self.quick_button.setText("⚡")
-        self.quick_button.setToolTip(self.QUICK_BUTTON_TOOLTIP)
-        self.quick_button.setAccessibleName("Réponses rapides")
-        self.quick_button.setAutoRaise(True)
-        self.quick_button.setFixedSize(32, 32)
-        self.quick_button.setPopupMode(
-            QToolButton.ToolButtonPopupMode.InstantPopup)
-        quick_menu = QMenu(self.quick_button)
-        # Bulles d'aide visibles : l'action de retrait y montre le message
-        # visé en entier (le libellé n'en garde qu'un extrait).
-        quick_menu.setToolTipsVisible(True)
-        self._quick_menu = quick_menu
-        # Les phrases (équipe puis personnelles) sont insérées en tête par
-        # _rebuild_quick_menu ; viennent ensuite, fixes, la gestion des
-        # phrases personnelles puis le retrait du dernier message.
-        self._quick_manage_action = quick_menu.addAction(
-            "Gérer mes phrases rapides…")
-        self._quick_manage_action.triggered.connect(
-            self.open_quick_replies_dialog)
-        # « Message urgent » : arme le PROCHAIN envoi en urgent —
-        # notification persistante chez le destinataire. Un seul message
-        # concerné : l'option se décoche toute seule après l'envoi réussi
-        # (et repart décochée à chaque changement de conversation). Armée,
-        # elle se voit sur le champ lui-même (cf. _apply_urgent_state).
-        quick_menu.addSeparator()
-        self.urgent_action = quick_menu.addAction(self.URGENT_ACTION_TEXT)
-        self.urgent_action.setCheckable(True)
-        self.urgent_action.setToolTip(
-            "Le prochain message s'affichera en notification persistante "
-            "chez le destinataire")
-        self.urgent_action.toggled.connect(self._apply_urgent_state)
-        # Retrait du dernier message envoyé par erreur : séparé des
-        # insertions de texte — c'est une autre nature d'action, confirmée
-        # en deux temps en ligne (même logique que l'envoi « équipe »).
-        quick_menu.addSeparator()
-        self._delete_action = quick_menu.addAction(self.DELETE_ACTION_TEXT)
-        self._delete_action.triggered.connect(self._request_delete)
-        # Libellé (message visé, temps restant ou raison du grisé) et état
-        # dépendent du dernier message chargé : réévalués à l'ouverture du
-        # menu plutôt qu'à chaque rendu du fil.
-        quick_menu.aboutToShow.connect(self._refresh_delete_action)
-        self.quick_button.setMenu(quick_menu)
-        self._rebuild_quick_menu()
-        composer.addWidget(self.quick_button, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(composer)
-        self._apply_spacing(container.width(), container.height())
+        container = messaging_ui.build_panel(self, self.dock)
 
         self.dock.setWidget(container)
         settings = self._settings_factory()
@@ -1499,108 +1143,6 @@ class MessagingController(QObject):
 
     # --- phrases rapides « ⚡ » -----------------------------------------------
 
-    @staticmethod
-    def _phrase_list(value):
-        if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, str) and item.strip()]
-
-    def _apply_quick_replies(self, payload):
-        """Bloc ``quick_replies`` de l'état serveur. Absent (serveur
-        ancien) : phrases d'origine, gestion personnelle masquée."""
-        if isinstance(payload, dict):
-            team = self._phrase_list(payload.get("team"))
-            personal = self._phrase_list(payload.get("personal"))
-            supported = True
-            try:
-                max_count = int(payload.get("max_personal") or DEFAULT_MAX_COUNT)
-                max_length = int(payload.get("max_length") or DEFAULT_MAX_LENGTH)
-            except (TypeError, ValueError):
-                max_count, max_length = DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH
-        else:
-            team, personal, supported = list(self.QUICK_REPLIES), [], False
-            max_count, max_length = DEFAULT_MAX_COUNT, DEFAULT_MAX_LENGTH
-        changed = (team != self.team_replies
-                   or personal != self.personal_replies
-                   or supported != self.quick_replies_supported)
-        self.team_replies = team
-        self.personal_replies = personal
-        self.quick_replies_supported = supported
-        self.quick_max_count = max(1, max_count)
-        self.quick_max_length = max(1, max_length)
-        if changed:
-            self._rebuild_quick_menu()
-
-    def _rebuild_quick_menu(self):
-        """Remplace les phrases en tête du menu « ⚡ » ; les actions fixes
-        (gestion, retrait du dernier message) restent en place — l'action de
-        retrait porte l'état de sa confirmation en deux temps."""
-        menu = self._quick_menu
-        if menu is None:
-            return
-        for action in self._quick_phrase_actions:
-            menu.removeAction(action)
-            action.deleteLater()
-        self._quick_phrase_actions = []
-        anchor = self._quick_manage_action
-        for group in (self.team_replies, self.personal_replies):
-            if not group:
-                continue
-            for phrase in group:
-                action = QAction(phrase, menu)
-                action.triggered.connect(
-                    lambda _checked=False, _text=phrase:
-                        self._insert_quick_reply(_text))
-                menu.insertAction(anchor, action)
-                self._quick_phrase_actions.append(action)
-            # Séparateur après chaque groupe : équipe | personnelles | gestion.
-            self._quick_phrase_actions.append(menu.insertSeparator(anchor))
-        if anchor is not None:
-            anchor.setVisible(self.quick_replies_supported)
-            anchor.setText("Gérer mes phrases rapides…" if self.personal_replies
-                           else "Ajouter mes phrases rapides…")
-
-    def open_quick_replies_dialog(self):
-        """Fenêtre « Mes phrases rapides » ; l'enregistrement part au
-        serveur à la validation (la fenêtre ne fait aucun appel réseau)."""
-        if not (self.enabled and self.staff_id and self.quick_replies_supported):
-            return
-        phrases = (self._unsaved_personal if self._unsaved_personal is not None
-                   else self.personal_replies)
-        dialog = QuickRepliesDialog(
-            phrases, team_phrases=self.team_replies,
-            max_count=self.quick_max_count, max_length=self.quick_max_length,
-            parent=self.dock if self.dock is not None else self.window)
-        if dialog.exec() != QuickRepliesDialog.DialogCode.Accepted:
-            return
-        self.save_personal_quick_replies(dialog.phrases())
-
-    def save_personal_quick_replies(self, phrases):
-        phrases = list(phrases)
-        self._unsaved_personal = phrases
-        handle = self.window.api.messaging_save_quick_replies(
-            phrases,
-            on_result=self._network_callback(self._handle_quick_replies_saved))
-        if handle is None:
-            self._show_transient_status(
-                "Enregistrement des phrases déjà en cours…")
-
-    def _handle_quick_replies_saved(self, result):
-        data = result.data if isinstance(result.data, dict) else {}
-        if result.status == 200 and "personal" in data:
-            self._unsaved_personal = None
-            self.personal_replies = self._phrase_list(data.get("personal"))
-            if "team" in data:
-                self.team_replies = self._phrase_list(data.get("team"))
-            self._rebuild_quick_menu()
-            self._show_transient_status("Vos phrases rapides sont enregistrées.")
-            return
-        message = data.get("message")
-        self._show_transient_status(
-            message if isinstance(message, str) and message
-            else "Vos phrases rapides n'ont pas pu être enregistrées. "
-                 "Rouvrez « ⚡ » pour réessayer.")
-
     def _show_transient_status(self, text, delay_ms=6000):
         """Message affiché sous le champ de saisie, effacé après quelques
         secondes s'il est toujours celui affiché."""
@@ -1617,225 +1159,6 @@ class MessagingController(QObject):
         except RuntimeError:
             # Le délai peut s'écouler après la destruction du panneau.
             pass
-
-    def _insert_quick_reply(self, text):
-        """Réponse rapide : insérée à la position du curseur (insertion, pas
-        de remplacement), jamais envoyée directement — l'équipier relit,
-        modifie si besoin puis valide par Entrée."""
-        if self.input is None:
-            return
-        self.input.insertPlainText(text)
-        self.input.setFocus()
-
-    def _delete_remaining(self, message):
-        """Secondes restantes pour retirer ``message``, ou None s'il n'est
-        pas retirable : pas de moi, sans identifiant ou date illisible.
-        Négatif (ou nul) = délai dépassé. Le serveur reste seul juge
-        (DELETE_WINDOW_SECONDS, si les horloges divergent)."""
-        if not self.enabled or not isinstance(message, dict):
-            return None
-        if message.get("id") is None or message.get("deleted"):
-            return None
-        if (message.get("sender") or {}).get("staff_id") != self.staff_id:
-            return None
-        try:
-            created = datetime.fromisoformat(
-                str(message.get("created_at") or ""))
-        except (TypeError, ValueError):
-            return None
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - created).total_seconds()
-        return self.DELETE_WINDOW_SECONDS - age
-
-    def _is_deletable(self, message):
-        remaining = self._delete_remaining(message)
-        return remaining is not None and remaining > 0
-
-    def _my_last_message(self):
-        """Mon message le plus récent du fil affiché, retirable ou non —
-        même si d'autres ont répondu depuis."""
-        for message in reversed(self.messages):
-            if message.get("deleted"):
-                continue  # déjà retiré : on vise le message d'avant
-            if (message.get("sender") or {}).get("staff_id") == self.staff_id:
-                return message
-        return None
-
-    def _my_last_deletable(self):
-        """Mon dernier message s'il est encore retirable (le serveur
-        l'accepte même après une réponse : seuls l'expéditeur et le délai
-        comptent)."""
-        message = self._my_last_message()
-        return message if self._is_deletable(message) else None
-
-    def _can_delete_last_message(self):
-        return self._my_last_deletable() is not None
-
-    @classmethod
-    def _snippet(cls, body):
-        """Extrait d'un message pour un libellé de menu : une seule ligne,
-        tronqué, « & » doublé (sinon pris pour un raccourci clavier)."""
-        text = " ".join(str(body or "").split())
-        if len(text) > cls.SNIPPET_LENGTH:
-            text = text[:cls.SNIPPET_LENGTH - 1].rstrip() + "…"
-        return text.replace("&", "&&")
-
-    def _delete_action_state(self):
-        """(libellé, actif, bulle d'aide) de l'action de retrait du menu ⚡ :
-        le message visé et le temps restant, ou la raison du grisé."""
-        if self._delete_confirm:
-            target = next((m for m in self.messages
-                           if m.get("id") == self._delete_target_id), None)
-            body = str((target or {}).get("body") or "")
-            return (f"⚠ Confirmer le retrait de « {self._snippet(body)} »",
-                    True, body)
-        message = self._my_last_message()
-        if message is None:
-            return (f"{self.DELETE_ACTION_TEXT} (aucun dans ce fil)",
-                    False, "")
-        body = str(message.get("body") or "")
-        remaining = self._delete_remaining(message)
-        if remaining is None or remaining <= 0:
-            return (f"{self.DELETE_ACTION_TEXT} (impossible après 15 min)",
-                    False, body)
-        minutes = max(1, math.ceil(remaining / 60))
-        return (f"Retirer « {self._snippet(body)} » (encore {minutes} min)",
-                True, body)
-
-    def _refresh_delete_action(self):
-        if self._delete_action is None:
-            return
-        text, enabled, tooltip = self._delete_action_state()
-        self._delete_action.setText(text)
-        self._delete_action.setEnabled(enabled)
-        self._delete_action.setToolTip(tooltip or text)
-
-    def _request_delete(self):
-        """« Retirer mon dernier message » (menu ⚡) : confirmation à deux
-        temps dans le menu lui-même. Un menu se referme au clic sur une
-        action : au premier clic on le rouvre donc aussitôt avec l'action
-        renommée « ⚠ Confirmer le retrait » — le second clic, à la même place
-        et visible, déclenche la requête. Le message visé est figé au premier
-        clic. Passé le délai (ou changement de fil), l'intention retombe."""
-        if not self._delete_confirm:
-            target = self._my_last_deletable()
-            if target is None:
-                return
-            self._delete_confirm = True
-            self._delete_target_id = target.get("id")
-            self._refresh_delete_action()
-            QTimer.singleShot(5000, self._disarm_delete_confirm)
-            # Le menu vient de se refermer sur ce premier clic : on le
-            # rouvre pour que la confirmation reste sous le doigt.
-            QTimer.singleShot(0, self._reopen_quick_menu)
-            return
-        target_id = self._delete_target_id
-        self._disarm_delete_confirm()
-        target = next((m for m in self.messages if m.get("id") == target_id),
-                      None)
-        if target is None or not self._is_deletable(target):
-            # Délai écoulé pendant la confirmation, ou fil rechargé sans lui.
-            self._status_message = "Délai dépassé (15 min)."
-            self._update_composer()
-            return
-        self._delete_message(target_id)
-
-    def _delete_message(self, message_id):
-        self.window.api.messaging_delete(
-            message_id,
-            on_result=self._network_callback(self._handle_delete_result))
-
-    def _message_in_block(self, block):
-        """Message affiché dans un bloc du fil (une bulle = un bloc), via
-        l'ancre posée au rendu ; None pour un repère ou un bloc vide."""
-        it = block.begin()
-        while not it.atEnd():
-            fragment = it.fragment()
-            for name in fragment.charFormat().anchorNames():
-                if name.startswith(_MESSAGE_ANCHOR):
-                    wanted = name[len(_MESSAGE_ANCHOR):]
-                    return next((m for m in self.messages
-                                 if str(m.get("id")) == wanted), None)
-            it += 1
-        return None
-
-    def _message_at(self, position):
-        if self.thread is None:
-            return None
-        return self._message_in_block(
-            self.thread.cursorForPosition(position).block())
-
-    def _extend_thread_menu(self, menu, position):
-        self._add_delete_entries(menu, self._message_at(position))
-
-    def _add_delete_entries(self, menu, message):
-        """Clic droit sur une de MES bulles : « Retirer ce message » en tête
-        du menu, avec le temps restant. La confirmation est un sous-menu
-        (survol puis clic) : deux gestes, sans boîte de dialogue. Délai
-        dépassé : l'entrée reste visible mais grisée, avec la raison."""
-        remaining = self._delete_remaining(message)
-        if remaining is None:
-            return
-        actions = menu.actions()
-        first = actions[0] if actions else None
-        if remaining <= 0:
-            action = QAction(
-                "Retirer ce message (impossible après 15 min)", menu)
-            action.setEnabled(False)
-            menu.insertAction(first, action)
-        else:
-            minutes = max(1, math.ceil(remaining / 60))
-            submenu = QMenu(
-                f"Retirer ce message (encore {minutes} min)", menu)
-            confirm = submenu.addAction("⚠ Confirmer le retrait")
-            message_id = message.get("id")
-            confirm.triggered.connect(
-                lambda _checked=False, _id=message_id:
-                    self._delete_message(_id))
-            menu.insertMenu(first, submenu)
-        if first is not None:
-            menu.insertSeparator(first)
-
-    def _reopen_quick_menu(self):
-        try:
-            if (self._delete_confirm and self.quick_button is not None
-                    and self.quick_button.isEnabled()):
-                self.quick_button.showMenu()
-        except RuntimeError:
-            # Le délai nul peut s'écouler après la destruction du panneau.
-            pass
-
-    def _disarm_delete_confirm(self):
-        """Fin du délai (ou fil quitté) : l'intention « retirer » retombe
-        et l'action retrouve son libellé."""
-        if not self._delete_confirm:
-            return
-        self._delete_confirm = False
-        self._delete_target_id = None
-        try:
-            self._refresh_delete_action()
-        except RuntimeError:
-            # Le timer peut s'écouler après la destruction de l'interface.
-            pass
-
-    def _handle_delete_result(self, result):
-        if (result.status == 200 and isinstance(result.data, dict)
-                and result.data.get("deleted")):
-            self._status_message = None
-            self._update_composer()
-            # Le message a disparu partout : état et fil se rechargent chez
-            # moi, le signal « messaging_changed » fait de même chez le
-            # destinataire côté serveur.
-            self.request_state()
-            self.request_messages()
-            return
-        error = (result.data.get("error")
-                 if isinstance(result.data, dict) else None)
-        self._status_message = (
-            "Délai dépassé (15 min)." if error == "delete_window_expired"
-            else "Le message n'a pas pu être retiré.")
-        self._update_composer()
 
     def _tab_menu(self, index):
         """Menu du clic droit sur l'onglet ``index`` (None hors onglet)."""
@@ -1910,22 +1233,6 @@ class MessagingController(QObject):
         if key in self._open_tabs:
             self._open_tabs.discard(key)
             self._save_open_tabs()
-
-    def _store_draft(self):
-        """Mémorise le texte saisi sous la clé de la conversation quittée —
-        ou l'oublie si le brouillon était vide."""
-        if self.input is None or self._current_key is None:
-            return
-        text = self.input.toPlainText()
-        if text.strip():
-            self._drafts[self._current_key] = text
-        else:
-            self._drafts.pop(self._current_key, None)
-
-    def _restore_draft(self):
-        if self.input is None:
-            return
-        self.input.setPlainText(self._drafts.get(self._current_key, ""))
 
     def _tab_changed(self, index):
         key = self.tabs.tabData(index) if index >= 0 else None
@@ -2143,113 +1450,15 @@ class MessagingController(QObject):
     def _render_messages(self, keep_position=False):
         if self.thread is None:
             return
-        blocks = []
-        separator_done = False
+        # Repères calculés ici (ils dépendent de l'état de lecture) ; la mise
+        # en forme elle-même est pure (messaging_render).
         marker_id = self._update_unread_marker()
         read_id, delivered_id = self._receipt_targets()
-        # Expéditeur de la bulle précédente (staff_id + kind) : les messages
-        # consécutifs du même expéditeur se regroupent — le nom n'est répété
-        # que sur la première et les suivantes se rapprochent (marge 2 px).
-        previous_bubble = None
-        # Séparateurs de date : seule l'heure figure sur les bulles. Un
-        # séparateur à chaque changement de jour ; en tête du fil seulement
-        # si ce n'est pas aujourd'hui (un fil du jour reste épuré).
-        today = datetime.now().astimezone().date()
-        previous_day = today
-        for message in self.messages:
-            day = self._message_day(message.get("created_at"))
-            if day is not None and day != previous_day:
-                blocks.append(
-                    '<div style="text-align:center; color:#6b7280; '
-                    'font-size:small; margin:8px 0 4px">'
-                    f'<b>{html.escape(day_label(day, today))}</b></div>')
-                previous_bubble = None   # nom réaffiché après le séparateur
-            if day is not None:
-                previous_day = day
-            sender = message.get("sender") or {}
-            mine = sender.get("staff_id") == self.staff_id
-            align = "right" if mine else "left"
-            if message.get("deleted"):
-                # Trace d'un message retiré (le serveur n'en envoie jamais
-                # le contenu) : ligne grise discrète, du côté de son
-                # expéditeur — le destinataire comprend pourquoi un
-                # message vu, ou notifié, n'est plus là.
-                who = ("Vous avez retiré un message" if mine else
-                       "Message retiré par "
-                       + html.escape(str(sender.get("name") or "son auteur")))
-                timestamp = self._format_time(message.get("created_at"))
-                blocks.append(
-                    f'<div style="text-align:{align}; margin:5px 0; '
-                    f'color:#6b7280"><i>{who}</i> <small>{timestamp}</small>'
-                    f'</div>')
-                # La trace coupe le regroupement des bulles.
-                previous_bubble = None
-                continue
-            color = "#dbeafe" if mine else "#f1f3f5"
-            if message.get("kind") == "broadcast":
-                color = "#fff3cd"
-            urgent = bool(message.get("urgent"))
-            if urgent:
-                # Prioritaire : fond rouge pâle et « ❗ » devant le nom —
-                # repérable quelle que soit la bulle (direct, équipe,
-                # sortante).
-                color = "#fee2e2"
-            name = "Vous" if mine else html.escape(str(sender.get("name") or "Inconnu"))
-            if urgent:
-                name = "❗ " + name
-            timestamp = self._format_time(message.get("created_at"))
-            body = html.escape(str(message.get("body") or "")).replace("\n", "<br>")
-            # Mentions « @initiales » sur le corps DÉJÀ échappé (@ et
-            # lettres ne sont jamais réécrits par html.escape) : seules les
-            # initiales connues sont mises en valeur, un « @xx » quelconque
-            # reste du texte ordinaire.
-            body = _MENTION_PATTERN.sub(self._highlight_mention, body)
-            # Accusés en gris discret, une seule fois (cf. _receipt_targets) :
-            # « Lu à HH:MM » sous mon dernier message lu, « Remis » sous mon
-            # dernier message s'il n'est pas encore lu.
-            receipt = ""
-            message_id = message.get("id")
-            if message_id is not None and message_id == read_id:
-                read_time = self._format_time(message.get("read_at"))
-                label = f"Lu à {read_time}" if read_time else "Lu"
-                receipt = f' · <span style="color:#6b7280">{label}</span>'
-            elif message_id is not None and message_id == delivered_id:
-                receipt = ' · <span style="color:#6b7280">Remis</span>'
-            # Repère visuel posé juste avant le message mémorisé (cf.
-            # _update_unread_marker) — uniquement si des messages le
-            # précèdent : un fil 100 % non lu se suffit. Il RESTE après
-            # l'accusé « Lu », jusqu'au changement de conversation : on
-            # garde le fil de sa lecture même après une réponse.
-            if (marker_id is not None and message.get("id") == marker_id
-                    and not separator_done):
-                separator_done = True
-                if blocks:
-                    blocks.append(
-                        '<div style="text-align:center; color:#6b7280; '
-                        'font-size:small; margin:6px 0">'
-                        '—— Nouveaux messages ——</div>')
-                    # Le repère coupe le regroupement : la bulle qui le
-                    # suit réaffiche le nom de l'expéditeur.
-                    previous_bubble = None
-            staff = sender.get("staff_id")
-            bubble_key = ((staff, message.get("kind"))
-                          if staff is not None else None)
-            grouped = bubble_key is not None and bubble_key == previous_bubble
-            margin = "2px 0 5px" if grouped else "5px 0"
-            header = "" if grouped else f"<b>{name}</b> "
-            content = f'{header}<small>{timestamp}{receipt}</small><br>{body}'
-            message_id = message.get("id")
-            if message_id is not None:
-                # Ancre sans lien (aucun style, aucun clic) : sert seulement
-                # à retrouver le message sous un clic droit.
-                anchor = html.escape(f"{_MESSAGE_ANCHOR}{message_id}")
-                content = f'<a name="{anchor}">{content}</a>'
-            blocks.append(
-                f'<div style="text-align:{align}; margin:{margin}">'
-                f'<span style="background:{color}; padding:6px">'
-                f'{content}</span></div>'
-            )
-            previous_bubble = bubble_key
+        document = render_thread_html(
+            self.messages, my_staff_id=self.staff_id,
+            today=datetime.now().astimezone().date(),
+            marker_id=marker_id, read_id=read_id, delivered_id=delivered_id,
+            known_initials=self._known_initials, self_initials=self.self_initials)
         # Si l'utilisateur consultait l'historique (ascenseur remonté), un
         # rafraîchissement ne doit pas le ramener brutalement en bas ; sinon on
         # suit normalement le dernier message.
@@ -2258,7 +1467,7 @@ class MessagingController(QObject):
         previous_max = bar.maximum() if bar is not None else 0
         stick_to_bottom = (not keep_position
                            and (bar is None or bar.value() >= bar.maximum()))
-        self.thread.setHtml("".join(blocks) or "<p>Aucun message aujourd’hui.</p>")
+        self.thread.setHtml(document)
         if keep_position and bar is not None:
             # Prépend d'anciens messages : le contenu a poussé vers le bas.
             # Garder la même DISTANCE au bas de l'ascenseur cale l'écran sur
@@ -2268,39 +1477,6 @@ class MessagingController(QObject):
             self.thread.moveCursor(QTextCursor.End)
         else:
             bar.setValue(min(previous, bar.maximum()))
-
-    def _highlight_mention(self, match):
-        """Mise en valeur d'un token « @XX » si c'est une initiale connue :
-        fond orange quand il s'agit de la mienne — elle doit sauter aux
-        yeux dans un fil d'équipe — simple gras orange pour les autres."""
-        token = _normalize(match.group(1))
-        if token not in self._known_initials:
-            return match.group(0)
-        if token == _normalize(self.self_initials or ""):
-            return (f'<b style="color:#fff;background:#b45309">'
-                    f'{match.group(0)}</b>')
-        return f'<b style="color:#b45309">{match.group(0)}</b>'
-
-    @staticmethod
-    def _message_day(value):
-        """Jour LOCAL d'un horodatage ISO (None s'il est illisible)."""
-        if not value:
-            return None
-        try:
-            parsed = datetime.fromisoformat(value)
-        except (TypeError, ValueError):
-            return None
-        return (parsed.astimezone() if parsed.tzinfo else parsed).date()
-
-    @staticmethod
-    def _format_time(value):
-        if not value:
-            return ""
-        try:
-            parsed = datetime.fromisoformat(value)
-            return parsed.astimezone().strftime("%H:%M") if parsed.tzinfo else parsed.strftime("%H:%M")
-        except (TypeError, ValueError):
-            return ""
 
     def _schedule_read_mark(self):
         """Arme la temporisation de l'accusé « Lu » si le fil est a priori
@@ -2409,212 +1585,6 @@ class MessagingController(QObject):
             # Redimensionnement livré pendant la destruction du panneau.
             pass
 
-    def _is_urgent(self):
-        return bool(self.urgent_action is not None
-                    and self.urgent_action.isChecked())
-
-    def _apply_urgent_state(self, armed=None):
-        """« Urgent » armé : bordure rouge sur le champ, invite dédiée et
-        bouton « ⚡ » sur fond rouge — visible sans ouvrir le menu."""
-        if armed is None:
-            armed = self._is_urgent()
-        try:
-            if self.input is not None:
-                self.input.setStyleSheet(
-                    self.URGENT_INPUT_STYLE if armed else "")
-                self.input.setAccessibleDescription(
-                    "Le prochain message partira en urgent" if armed else "")
-                self._refresh_input_hint()
-            if self.quick_button is not None:
-                self.quick_button.setStyleSheet(
-                    self.URGENT_BUTTON_STYLE if armed else "")
-                self.quick_button.setToolTip(
-                    self.URGENT_BUTTON_TOOLTIP if armed
-                    else self.QUICK_BUTTON_TOOLTIP)
-        except RuntimeError:
-            pass
-
-    def _refresh_input_hint(self):
-        """Invite et bulle d'aide du champ selon le fil (équipe : Entrée
-        deux fois) et l'urgence armée."""
-        if self.input is None:
-            return
-        conversation = self._selected()
-        team = bool(conversation and conversation.get("kind") == "broadcast")
-        urgent = self._is_urgent()
-        if team:
-            placeholder = (self.TEAM_URGENT_PLACEHOLDER if urgent
-                           else self.TEAM_PLACEHOLDER)
-        else:
-            placeholder = (self.URGENT_PLACEHOLDER if urgent
-                           else self.INPUT_PLACEHOLDER)
-        self.input.setPlaceholderText(placeholder)
-        self.input.setToolTip(
-            self.TEAM_INPUT_TOOLTIP if team else self.INPUT_TOOLTIP)
-
-    def _disarm_urgent(self):
-        if self.urgent_action is not None:
-            self.urgent_action.setChecked(False)
-
-    def _update_composer(self):
-        conversation = self._selected()
-        can_send = bool(conversation and self.enabled and self.staff_id)
-        status = ""
-        if conversation and conversation.get("kind") == "direct" and not conversation.get("online"):
-            # Le serveur accepte le message et le livrera à la prochaine
-            # connexion du destinataire : l'envoi reste possible, on
-            # l'annonce simplement.
-            status = "Hors ligne — le message sera affiché à sa prochaine connexion."
-        if self._online_only is not None:
-            # La portée « connectés seulement » ne concerne que les messages
-            # à toute l'équipe.
-            self._online_only.setVisible(
-                bool(conversation and conversation.get("kind") == "broadcast"))
-        if self.status_label is not None:
-            # Priorité : message transitoire (limite, consigne, erreur) >
-            # « … écrit » en cours > statut calculé. Sans texte, le libellé
-            # se replie : pas de ligne vide permanente.
-            text = self._status_message or self._typing_text or status
-            self.status_label.setText(text)
-            self.status_label.setVisible(bool(text))
-        if self.input is not None:
-            self.input.setEnabled(can_send)
-            self._refresh_input_hint()
-        if self.quick_button is not None:
-            # Pas de conversation : insérer une phrase n'aurait pas de sens.
-            self.quick_button.setEnabled(can_send)
-        if self.urgent_action is not None:
-            # Même règle : pas de conversation, rien à envoyer.
-            self.urgent_action.setEnabled(can_send)
-
-    def send(self):
-        conversation = self._selected()
-        if not conversation or self.input is None:
-            return
-        # Un envoi à la fois : Entrée (sendRequested) peut se
-        # déclencher une seconde fois pendant le vol — sans ce verrou le même
-        # texte repartait avec un nouveau client_message_id = doublon serveur.
-        if self._send_in_flight or not self.enabled or not self.staff_id:
-            return
-        body = self.input.toPlainText().strip()
-        if not body:
-            return
-        if len(body) > 1000:
-            # Pas de modale : le brouillon reste saisi, l'avertissement passe
-            # par le libellé d'état du panneau.
-            self._status_message = "Le message est limité à 1 000 caractères."
-            self._update_composer()
-            return
-        kind = conversation.get("kind")
-        # Portée serveur du broadcast : « all » (tous les équipiers actifs,
-        # connectés ou non) ou « online » (case cochée). None pour un
-        # message direct — le champ n'a alors pas de sens.
-        scope = None
-        if kind == "broadcast":
-            scope = ("online" if self._online_only is not None
-                     and self._online_only.isChecked() else "all")
-            if not self._broadcast_confirm:
-                if scope == "online":
-                    count = sum(
-                        1 for item in self.conversations
-                        if item.get("kind") == "direct" and item.get("online")
-                    )
-                    target = f"{count} personne(s) connectée(s)"
-                else:
-                    count = sum(
-                        1 for item in self.conversations
-                        if item.get("kind") == "direct"
-                    )
-                    target = f"{count} équipier(s)"
-                # Confirmation à deux temps, en ligne : un envoi à toute
-                # l'équipe se confirme par un second Entrée/clic dans le
-                # délai — pas par une boîte de dialogue qui vole le focus.
-                self._broadcast_confirm = True
-                QTimer.singleShot(5000, self._disarm_broadcast_confirm)
-                self._status_message = (
-                    "Appuyez de nouveau sur Entrée pour envoyer aux "
-                    f"{target}.")
-                self._update_composer()
-                return
-            # Second Entrée dans le délai : la confirmation est acquise.
-            self._broadcast_confirm = False
-            self._status_message = None
-        recipient_id = conversation.get("staff_id") if kind == "direct" else None
-        client_message_id = str(uuid.uuid4())
-        self._send_in_flight = True
-        self._sent_body = body
-        # Conversation de l'envoi mémorisée : si l'utilisateur change d'onglet
-        # pendant le vol, le succès saura quel brouillon purger.
-        self._sent_key = conversation.get("key")
-        self._update_composer()
-        # « Urgent » armé : le message part urgent (notification persistante
-        # chez le destinataire) ; l'option se décoche au succès.
-        urgent = self._is_urgent()
-        self.window.api.messaging_send(
-            client_message_id, kind, body, recipient_id, scope=scope,
-            urgent=urgent,
-            on_result=self._network_callback(self._handle_send_result),
-        )
-
-    def _disarm_broadcast_confirm(self):
-        """Fin du délai de confirmation « équipe » : l'envoi suivant
-        redemandera accord, et la consigne affichée redevient un statut
-        neutre."""
-        if not self._broadcast_confirm:
-            return
-        self._broadcast_confirm = False
-        self._status_message = None
-        try:
-            self._update_composer()
-        except RuntimeError:
-            # Le timer peut s'écouler après la destruction de l'interface
-            # (fermeture de la fenêtre, panneau détruit) : rien à rafraîchir.
-            pass
-
-    def _handle_send_result(self, result):
-        self._send_in_flight = False
-        if result.status in (200, 201):
-            # N'effacer que si le texte est toujours celui envoyé : un nouveau
-            # brouillon saisi pendant l'attente de la réponse serait perdu.
-            if (self.input is not None
-                    and self.input.toPlainText().strip() == self._sent_body):
-                self.input.clear()
-            # Le brouillon de la conversation expédiée part avec elle, même
-            # si l'utilisateur a changé d'onglet pendant le vol.
-            self._drafts.pop(self._sent_key, None)
-            # Répondre, c'est avoir lu : la remise en non lu tombe.
-            self._keep_unread_keys.discard(self._sent_key)
-            self._sent_key = None
-            self._sent_body = None
-            self._status_message = None
-            self._broadcast_confirm = False
-            # Un seul message urgent par armement : désarmé au succès.
-            self._disarm_urgent()
-            self._update_composer()
-            self.request_state()
-            self.request_messages()
-            return
-        self._sent_key = None
-        self._sent_body = None
-        error = result.data.get("error") if isinstance(result.data, dict) else None
-        messages = {
-            # Uniquement un broadcast « connectés seulement » sans personne
-            # en ligne : les directs vers un équipier hors ligne passent.
-            "recipient_offline": "Personne n’est connecté pour recevoir ce message.",
-            "messaging_disabled": "La messagerie vient d’être désactivée.",
-            "staff_not_connected": "Votre session n’est plus active sur ce comptoir.",
-            "invalid_message": "Le message est vide ou invalide.",
-        }
-        text = messages.get(error, "Le message n’a pas pu être envoyé.")
-        # Pas de QMessageBox : le détail reste dans le panneau, et la
-        # notification flottante — non modale — alerte sans voler le focus.
-        self._status_message = text
-        self._update_composer()
-        self.window.show_notification(
-            {"origin": "messaging_error", "message": text}, internal=True)
-        if error == "messaging_disabled":
-            self.set_enabled(False)
-
     def _update_badge(self):
         if self.button is None:
             return
@@ -2677,34 +1647,6 @@ class MessagingController(QObject):
         protocole : l'indicateur s'éteint tout seul."""
         self._typing_text = None
         self._update_composer()
-
-    def _maybe_emit_typing(self):
-        """Signale « en train d'écrire » au destinataire courant — au plus
-        une fois par TYPING_EMIT_INTERVAL, et seulement s'il y a du texte :
-        un champ vidé n'a plus rien à signaler."""
-        if not self.enabled or not self.staff_id or self.input is None:
-            return
-        conversation = self._selected()
-        if not conversation or not self.input.toPlainText().strip():
-            return
-        now = time.monotonic()
-        if now - self._last_typing_emit < self.TYPING_EMIT_INTERVAL:
-            return
-        client = getattr(self.window, "socket_io_client", None)
-        send = getattr(client, "send_typing", None)
-        if not callable(send):
-            return
-        self._last_typing_emit = now
-        payload = {
-            "kind": conversation.get("kind"),
-            "staff_id": self.staff_id,
-            "name": self.staff_name,
-            "counter_id": getattr(self.window, "counter_id", None),
-            "peer_counter_id": conversation.get("counter_id"),
-        }
-        if conversation.get("kind") == "direct":
-            payload["peer_staff_id"] = conversation.get("staff_id")
-        send(payload)
 
     def socket_presence_changed(self):
         self.request_state()
