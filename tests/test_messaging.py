@@ -1931,15 +1931,16 @@ def test_delete_requires_a_second_click_then_calls_the_api(monkeypatch):
     # Premier clic : l'action se renomme en « confirmer », aucune requête.
     controller._request_delete()
     assert controller._delete_confirm
-    assert controller._delete_action.text() == "⚠ Confirmer le retrait"
+    assert controller._delete_action.text() == (
+        "⚠ Confirmer le retrait de « envoyé par erreur »")
     assert not [c for c in window.api.calls if c[0] == "delete"]
 
-    # Second clic : la suppression part, le libellé est restauré.
+    # Second clic : la suppression part, le libellé quitte « confirmer ».
     controller._request_delete()
     delete_calls = [c for c in window.api.calls if c[0] == "delete"]
     assert len(delete_calls) == 1 and delete_calls[0][1] == 30
     assert not controller._delete_confirm
-    assert controller._delete_action.text() == "Retirer mon dernier message"
+    assert not controller._delete_action.text().startswith("⚠")
 
 
 def test_delete_success_reloads_state_and_thread(monkeypatch):
@@ -2000,7 +2001,53 @@ def test_delete_intent_is_disarmed_on_tab_change(monkeypatch):
     assert controller._delete_confirm
     _select(controller, "broadcast")
     assert not controller._delete_confirm
-    assert controller._delete_action.text() == "Retirer mon dernier message"
+    assert not controller._delete_action.text().startswith("⚠")
+
+
+def test_quick_menu_delete_label_names_the_message_and_time_left():
+    # À l'ouverture du menu ⚡ : extrait du message visé + temps restant,
+    # texte complet en bulle d'aide.
+    window, controller = _controller()
+    long_body = "Peux-tu passer au comptoir 2 & regarder l'ordonnance ?"
+    message = dict(_my_message(30), body=long_body)
+    _thread_with(controller, window.api, [message, _bob_message(40)])
+    controller._refresh_delete_action()
+    action = controller._delete_action
+    assert action.isEnabled()
+    assert action.text().startswith("Retirer « Peux-tu passer au comp")
+    assert "…" in action.text()                      # extrait tronqué
+    assert action.text().endswith("» (encore 15 min)")
+    assert action.toolTip() == long_body
+    assert controller.quick_button.menu().toolTipsVisible()
+
+
+def test_quick_menu_delete_label_explains_why_it_is_disabled():
+    window, controller = _controller()
+    # Aucun message de moi dans ce fil.
+    _thread_with(controller, window.api, [_bob_message(40)])
+    controller._refresh_delete_action()
+    assert not controller._delete_action.isEnabled()
+    assert controller._delete_action.text() == (
+        "Retirer mon dernier message (aucun dans ce fil)")
+    # Mon dernier message est trop ancien.
+    _feed_with(controller, window.api, [
+        _my_message(31, created_at=(
+            datetime.now(timezone.utc) - timedelta(minutes=20))),
+        _bob_message(40),
+    ])
+    controller._refresh_delete_action()
+    assert not controller._delete_action.isEnabled()
+    assert controller._delete_action.text() == (
+        "Retirer mon dernier message (impossible après 15 min)")
+
+
+def test_snippet_is_single_line_short_and_escapes_ampersand():
+    from messaging import MessagingController
+    assert MessagingController._snippet("a\nb   c") == "a b c"
+    assert MessagingController._snippet("Q & R") == "Q && R"
+    snippet = MessagingController._snippet("x" * 60)
+    assert len(snippet) == MessagingController.SNIPPET_LENGTH
+    assert snippet.endswith("…")
 
 
 def _bob_message(message_id=40, body="ok"):

@@ -226,6 +226,12 @@ class MessagingController(QObject):
                           "l'équipe (confirmation) — Maj+Entrée : aller à "
                           "la ligne")
     URGENT_ACTION_TEXT = "Message urgent (prochain envoi)"
+    #: Libellé de repos de l'action de retrait du menu « ⚡ » ; à
+    #: l'ouverture du menu, il précise le message visé ou la raison du
+    #: grisé (cf. _delete_action_state).
+    DELETE_ACTION_TEXT = "Retirer mon dernier message"
+    #: Longueur de l'extrait du message visé dans un libellé de menu.
+    SNIPPET_LENGTH = 25
     QUICK_BUTTON_TOOLTIP = "Réponses rapides, message urgent…"
     URGENT_BUTTON_TOOLTIP = ("Prochain message envoyé en URGENT — "
                              "décocher dans ce menu pour annuler")
@@ -760,6 +766,9 @@ class MessagingController(QObject):
         self.quick_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup)
         quick_menu = QMenu(self.quick_button)
+        # Bulles d'aide visibles : l'action de retrait y montre le message
+        # visé en entier (le libellé n'en garde qu'un extrait).
+        quick_menu.setToolTipsVisible(True)
         self._quick_menu = quick_menu
         # Les phrases (équipe puis personnelles) sont insérées en tête par
         # _rebuild_quick_menu ; viennent ensuite, fixes, la gestion des
@@ -784,11 +793,11 @@ class MessagingController(QObject):
         # insertions de texte — c'est une autre nature d'action, confirmée
         # en deux temps en ligne (même logique que l'envoi « équipe »).
         quick_menu.addSeparator()
-        self._delete_action = quick_menu.addAction(
-            "Retirer mon dernier message")
+        self._delete_action = quick_menu.addAction(self.DELETE_ACTION_TEXT)
         self._delete_action.triggered.connect(self._request_delete)
-        # Son état « activé » dépend du dernier message chargé : réévalué à
-        # l'ouverture du menu plutôt qu'à chaque rendu du fil.
+        # Libellé (message visé, temps restant ou raison du grisé) et état
+        # dépendent du dernier message chargé : réévalués à l'ouverture du
+        # menu plutôt qu'à chaque rendu du fil.
         quick_menu.aboutToShow.connect(self._refresh_delete_action)
         self.quick_button.setMenu(quick_menu)
         self._rebuild_quick_menu()
@@ -1543,21 +1552,62 @@ class MessagingController(QObject):
         remaining = self._delete_remaining(message)
         return remaining is not None and remaining > 0
 
-    def _my_last_deletable(self):
-        """Mon message le plus récent du fil affiché, s'il est encore
-        retirable — même si d'autres ont répondu depuis (le serveur
-        l'accepte : seuls l'expéditeur et le délai comptent)."""
+    def _my_last_message(self):
+        """Mon message le plus récent du fil affiché, retirable ou non —
+        même si d'autres ont répondu depuis."""
         for message in reversed(self.messages):
             if (message.get("sender") or {}).get("staff_id") == self.staff_id:
-                return message if self._is_deletable(message) else None
+                return message
         return None
+
+    def _my_last_deletable(self):
+        """Mon dernier message s'il est encore retirable (le serveur
+        l'accepte même après une réponse : seuls l'expéditeur et le délai
+        comptent)."""
+        message = self._my_last_message()
+        return message if self._is_deletable(message) else None
 
     def _can_delete_last_message(self):
         return self._my_last_deletable() is not None
 
+    @classmethod
+    def _snippet(cls, body):
+        """Extrait d'un message pour un libellé de menu : une seule ligne,
+        tronqué, « & » doublé (sinon pris pour un raccourci clavier)."""
+        text = " ".join(str(body or "").split())
+        if len(text) > cls.SNIPPET_LENGTH:
+            text = text[:cls.SNIPPET_LENGTH - 1].rstrip() + "…"
+        return text.replace("&", "&&")
+
+    def _delete_action_state(self):
+        """(libellé, actif, bulle d'aide) de l'action de retrait du menu ⚡ :
+        le message visé et le temps restant, ou la raison du grisé."""
+        if self._delete_confirm:
+            target = next((m for m in self.messages
+                           if m.get("id") == self._delete_target_id), None)
+            body = str((target or {}).get("body") or "")
+            return (f"⚠ Confirmer le retrait de « {self._snippet(body)} »",
+                    True, body)
+        message = self._my_last_message()
+        if message is None:
+            return (f"{self.DELETE_ACTION_TEXT} (aucun dans ce fil)",
+                    False, "")
+        body = str(message.get("body") or "")
+        remaining = self._delete_remaining(message)
+        if remaining is None or remaining <= 0:
+            return (f"{self.DELETE_ACTION_TEXT} (impossible après 15 min)",
+                    False, body)
+        minutes = max(1, math.ceil(remaining / 60))
+        return (f"Retirer « {self._snippet(body)} » (encore {minutes} min)",
+                True, body)
+
     def _refresh_delete_action(self):
-        if self._delete_action is not None:
-            self._delete_action.setEnabled(self._can_delete_last_message())
+        if self._delete_action is None:
+            return
+        text, enabled, tooltip = self._delete_action_state()
+        self._delete_action.setText(text)
+        self._delete_action.setEnabled(enabled)
+        self._delete_action.setToolTip(tooltip or text)
 
     def _request_delete(self):
         """« Retirer mon dernier message » (menu ⚡) : confirmation à deux
@@ -1572,7 +1622,7 @@ class MessagingController(QObject):
                 return
             self._delete_confirm = True
             self._delete_target_id = target.get("id")
-            self._delete_action.setText("⚠ Confirmer le retrait")
+            self._refresh_delete_action()
             QTimer.singleShot(5000, self._disarm_delete_confirm)
             # Le menu vient de se refermer sur ce premier clic : on le
             # rouvre pour que la confirmation reste sous le doigt.
@@ -1662,8 +1712,7 @@ class MessagingController(QObject):
         self._delete_confirm = False
         self._delete_target_id = None
         try:
-            if self._delete_action is not None:
-                self._delete_action.setText("Retirer mon dernier message")
+            self._refresh_delete_action()
         except RuntimeError:
             # Le timer peut s'écouler après la destruction de l'interface.
             pass
