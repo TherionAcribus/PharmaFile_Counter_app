@@ -2292,3 +2292,41 @@ def test_input_hint_announces_double_enter_for_team():
     _select(controller, "direct:2")                   # désarme l'urgence
     assert controller.input.placeholderText() == controller.INPUT_PLACEHOLDER
     assert controller.input.toolTip() == controller.INPUT_TOOLTIP
+
+
+# --- Traces « message retiré » --------------------------------------------------
+
+def _deleted(message_id, staff_id, name):
+    return {"id": message_id, "kind": "direct", "body": "", "deleted": True,
+            "urgent": False, "is_unread": False,
+            "sender": {"name": name, "staff_id": staff_id},
+            "created_at": datetime.now(timezone.utc).isoformat()}
+
+
+def test_deleted_message_shows_who_removed_it():
+    window, controller = _controller()
+    _thread_with(controller, window.api, [
+        _deleted(30, 2, "Bob"), _deleted(31, 1, "Alice"), _bob_message(40)])
+    text = controller.thread.toPlainText()
+    assert "Message retiré par Bob" in text
+    assert "Vous avez retiré un message" in text
+    # La bulle suivante de Bob réaffiche son nom (regroupement coupé).
+    assert text.count("Bob") == 2
+
+
+def test_deleted_trace_is_never_a_delete_target():
+    window, controller = _controller()
+    # Ma trace est la plus récente : ⚡ vise mon message d'avant.
+    _thread_with(controller, window.api, [_my_message(30), _deleted(31, 1, "Alice")])
+    assert controller._my_last_deletable()["id"] == 30
+    # Clic droit sur une trace : rien à proposer.
+    menu = QMenu()
+    menu.addAction("Copier")
+    controller._add_delete_entries(menu, controller.messages[1])
+    assert [a.text() for a in menu.actions()] == ["Copier"]
+
+
+def test_thread_requests_deleted_traces():
+    import endpoints
+    assert "include_deleted=1" in endpoints.messaging_messages(
+        "http://srv", 3, "direct", 2)

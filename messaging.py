@@ -1534,7 +1534,7 @@ class MessagingController(QObject):
         (DELETE_WINDOW_SECONDS, si les horloges divergent)."""
         if not self.enabled or not isinstance(message, dict):
             return None
-        if message.get("id") is None:
+        if message.get("id") is None or message.get("deleted"):
             return None
         if (message.get("sender") or {}).get("staff_id") != self.staff_id:
             return None
@@ -1556,6 +1556,8 @@ class MessagingController(QObject):
         """Mon message le plus récent du fil affiché, retirable ou non —
         même si d'autres ont répondu depuis."""
         for message in reversed(self.messages):
+            if message.get("deleted"):
+                continue  # déjà retiré : on vise le message d'avant
             if (message.get("sender") or {}).get("staff_id") == self.staff_id:
                 return message
         return None
@@ -1892,6 +1894,22 @@ class MessagingController(QObject):
             sender = message.get("sender") or {}
             mine = sender.get("staff_id") == self.staff_id
             align = "right" if mine else "left"
+            if message.get("deleted"):
+                # Trace d'un message retiré (le serveur n'en envoie jamais
+                # le contenu) : ligne grise discrète, du côté de son
+                # expéditeur — le destinataire comprend pourquoi un
+                # message vu, ou notifié, n'est plus là.
+                who = ("Vous avez retiré un message" if mine else
+                       "Message retiré par "
+                       + html.escape(str(sender.get("name") or "son auteur")))
+                timestamp = self._format_time(message.get("created_at"))
+                blocks.append(
+                    f'<div style="text-align:{align}; margin:5px 0; '
+                    f'color:#6b7280"><i>{who}</i> <small>{timestamp}</small>'
+                    f'</div>')
+                # La trace coupe le regroupement des bulles.
+                previous_bubble = None
+                continue
             color = "#dbeafe" if mine else "#f1f3f5"
             if message.get("kind") == "broadcast":
                 color = "#fff3cd"

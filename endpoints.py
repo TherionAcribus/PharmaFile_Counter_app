@@ -189,7 +189,10 @@ def messaging_state(web_url, counter_id):
 
 def messaging_messages(web_url, counter_id, kind, peer_staff_id=None,
                        before_id=None, after_id=None, limit=50):
-    params = [f"counter_id={_seg(counter_id)}", f"kind={_seg(kind)}", f"limit={int(limit)}"]
+    # include_deleted=1 : cette App sait afficher les traces « message
+    # retiré » (un serveur ancien ignore le paramètre).
+    params = [f"counter_id={_seg(counter_id)}", f"kind={_seg(kind)}",
+              f"limit={int(limit)}", "include_deleted=1"]
     if peer_staff_id is not None:
         params.append(f"peer_staff_id={_seg(peer_staff_id)}")
     if before_id is not None:

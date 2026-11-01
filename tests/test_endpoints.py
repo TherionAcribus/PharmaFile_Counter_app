@@ -50,7 +50,8 @@ CASES = [
     (endpoints.messaging_presence_leave, (), "/api/messaging/presence/leave"),
     (endpoints.messaging_state, (3,), "/api/messaging/state?counter_id=3"),
     (endpoints.messaging_messages, (3, "direct"),
-     "/api/messaging/messages?counter_id=3&kind=direct&limit=50"),
+     "/api/messaging/messages?counter_id=3&kind=direct&limit=50"
+     "&include_deleted=1"),
     (endpoints.messaging_send, (), "/api/messaging/messages"),
     (endpoints.messaging_read, (), "/api/messaging/read"),
     (endpoints.messaging_delete, (), "/api/messaging/delete"),
