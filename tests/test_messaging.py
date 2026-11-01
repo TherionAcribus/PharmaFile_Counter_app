@@ -176,7 +176,10 @@ def test_compact_composer_does_not_impose_the_app_width():
         QToolButton, options=Qt.FindChildOption.FindDirectChildrenOnly)
     assert buttons == [controller.quick_button]
     assert controller.quick_button.width() == 32
-    assert not controller.dock.widget().findChildren(QPushButton)
+    # Seul bouton classique : la barre « nouveaux messages », cachée.
+    pushes = controller.dock.widget().findChildren(QPushButton)
+    assert pushes == [controller.new_messages_button]
+    assert controller.new_messages_button.isHidden()
     assert "Entrée" in controller.input.placeholderText()
     assert "Entrée" in controller.input.toolTip()
 
@@ -2387,3 +2390,80 @@ def test_logout_dismisses_all_message_alerts():
     assert _closes(rule, "messaging_urgent", conversation_key="direct:2")
     assert _closes(rule, "messaging")
     assert not _closes(rule, "please_validate")
+
+
+# --- Barre « ↓ N nouveaux messages » ------------------------------------------
+
+def _long_thread(count=40, start=1):
+    return [{"id": i, "kind": "direct", "body": f"message {i}",
+             "sender": {"name": "Bob", "staff_id": 2},
+             "created_at": datetime.now(timezone.utc).isoformat()}
+            for i in range(start, start + count)]
+
+
+def _scrolled_up_thread(window, controller):
+    _thread_with(controller, window.api, _long_thread())
+    window.resize(400, 300)
+    window.show()
+    controller.dock.show()
+    controller.thread.resize(250, 120)
+    QApplication.processEvents()
+    bar = controller.thread.verticalScrollBar()
+    assert bar.maximum() > 0
+    bar.setValue(0)                       # l'équipier relit plus haut
+    controller._load_older = lambda: None  # pas de pagination ici
+    return bar
+
+
+def test_new_messages_bar_appears_when_reading_higher_up():
+    window, controller = _controller()
+    bar = _scrolled_up_thread(window, controller)
+    button = controller.new_messages_button
+    assert button.isHidden()
+    _feed_with(controller, window.api, _long_thread(41))
+    assert not button.isHidden()
+    assert button.text() == "↓ 1 nouveau message"
+    assert bar.value() < bar.maximum()            # lecture non interrompue
+    _feed_with(controller, window.api, _long_thread(42))
+    assert button.text() == "↓ 2 nouveaux messages"
+    # Clic : direction le dernier message, la barre disparaît.
+    button.click()
+    assert bar.value() == bar.maximum()
+    assert button.isHidden()
+
+
+def test_new_messages_bar_hides_when_scrolling_down_by_hand():
+    window, controller = _controller()
+    bar = _scrolled_up_thread(window, controller)
+    _feed_with(controller, window.api, _long_thread(41))
+    assert not controller.new_messages_button.isHidden()
+    bar.setValue(bar.maximum())
+    assert controller.new_messages_button.isHidden()
+
+
+def test_no_bar_at_bottom_on_first_load_or_for_my_own_messages():
+    window, controller = _controller()
+    _thread_with(controller, window.api, _long_thread(3))
+    # Premier chargement et fil en bas : jamais de barre.
+    _feed_with(controller, window.api, _long_thread(4))
+    assert controller.new_messages_button.isHidden()
+    # Fil remonté : mes propres envois ne sont pas « nouveaux » pour moi.
+    bar = _scrolled_up_thread(window, controller)
+    mine = _long_thread() + [_my_message(500)]
+    _feed_with(controller, window.api, mine)
+    assert bar.value() < bar.maximum()
+    assert controller.new_messages_button.isHidden()
+
+
+def test_new_messages_bar_is_reset_on_tab_change_and_skips_removed():
+    window, controller = _controller()
+    _scrolled_up_thread(window, controller)
+    _feed_with(controller, window.api, _long_thread(42))
+    assert controller.new_messages_button.text() == "↓ 2 nouveaux messages"
+    # Bob retire l'un des deux : il sort du compte.
+    retired = _long_thread(42)                 # messages 1 à 42
+    retired[-2] = dict(retired[-2], deleted=True, body="")   # le 41
+    _feed_with(controller, window.api, retired)
+    assert controller.new_messages_button.text() == "↓ 1 nouveau message"
+    _select(controller, "broadcast")
+    assert controller.new_messages_button.isHidden()

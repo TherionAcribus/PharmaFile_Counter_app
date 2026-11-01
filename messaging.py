@@ -21,7 +21,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QCompleter, QDockWidget, QHBoxLayout, QLabel,
-    QLineEdit, QMenu, QPlainTextEdit, QSizePolicy,
+    QLineEdit, QMenu, QPlainTextEdit, QPushButton, QSizePolicy,
     QTabBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -301,6 +301,10 @@ class MessagingController(QObject):
         self._composer = None
         self._spacing = None
         self.status_label = None
+        # Barre « ↓ N nouveaux messages » : messages arrivés pendant que le
+        # fil était remonté (identifiants, pour ne jamais compter deux fois).
+        self.new_messages_button = None
+        self._unseen_ids = set()
         self._online_only = None
         self._icon_layout = None
         self._more_menu = None
@@ -719,6 +723,22 @@ class MessagingController(QObject):
         self.thread.setMinimumWidth(0)
         self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         layout.addWidget(self.thread, 1)
+        # Messages arrivés pendant que l'équipier lisait plus haut dans le
+        # fil : on ne le ramène pas de force en bas (il perdrait sa lecture),
+        # une barre cliquable le prévient et l'y emmène. Cachée sinon.
+        self.new_messages_button = QPushButton(container)
+        self.new_messages_button.setFlat(True)
+        self.new_messages_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_messages_button.setMinimumWidth(0)
+        self.new_messages_button.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.new_messages_button.setStyleSheet(
+            "QPushButton { background-color:#d97706; color:white; "
+            "border-radius:4px; padding:3px; font-weight:bold; }")
+        self.new_messages_button.setToolTip("Aller aux derniers messages")
+        self.new_messages_button.clicked.connect(self._scroll_to_latest)
+        self.new_messages_button.hide()
+        layout.addWidget(self.new_messages_button)
         # Ascenseur arrivé en bas (défilement manuel ou suivi du dernier
         # message) : point d'armement de l'accusé « Lu ».
         self.thread.verticalScrollBar().valueChanged.connect(
@@ -876,6 +896,8 @@ class MessagingController(QObject):
         self._quick_menu = self._quick_manage_action = None
         self._quick_phrase_actions = []
         self.status_label = None
+        self.new_messages_button = None
+        self._unseen_ids = set()
         self._online_only = None
         self._recipient_model = self._recipient_proxy = None
         self._icon_layout = None
@@ -1832,6 +1854,9 @@ class MessagingController(QObject):
         # « Urgent » armé dans le fil quitté : on ne le transporte pas dans
         # la conversation suivante.
         self._disarm_urgent()
+        # Les nouveaux messages signalés appartenaient au fil quitté.
+        self._unseen_ids = set()
+        self._update_new_messages_button()
         # « … écrit » concernait l'interlocuteur du fil quitté.
         self._typing_timer.stop()
         self._typing_text = None
@@ -1912,9 +1937,67 @@ class MessagingController(QObject):
             else:
                 # Rafraîchissement ordinaire : la page récente remplace le
                 # fil — simple à suivre, les anciens se rechargeront pareil.
+                at_bottom = self._thread_at_bottom()
+                arrived = self._arrived_messages(self.messages, messages)
                 self.messages = messages
                 self._render_messages()
+                if arrived and not at_bottom:
+                    # Fil remonté : le rendu garde la position de lecture,
+                    # la barre annonce ce qui est arrivé plus bas.
+                    self._unseen_ids.update(arrived)
+                self._update_new_messages_button()
                 self._schedule_read_mark()
+
+    def _arrived_messages(self, previous, current):
+        """Identifiants des messages d'autrui apparus EN FIN de fil depuis le
+        rendu précédent. Premier chargement d'un fil : rien (ce n'est pas
+        une arrivée). Mes propres envois et les traces de retrait ne
+        comptent jamais."""
+        known = [m.get("id") for m in previous if m.get("id") is not None]
+        if not known:
+            return set()
+        last_known = max(known)
+        return {
+            m.get("id") for m in current
+            if m.get("id") is not None and m.get("id") > last_known
+            and not m.get("deleted")
+            and (m.get("sender") or {}).get("staff_id") != self.staff_id
+        }
+
+    def _thread_at_bottom(self):
+        bar = self.thread.verticalScrollBar() if self.thread is not None else None
+        return bar is None or bar.value() >= bar.maximum()
+
+    def _update_new_messages_button(self):
+        """Libellé et visibilité de la barre : seuls comptent les messages
+        signalés encore présents (un message retiré entre-temps sort du
+        compte)."""
+        present = {m.get("id") for m in self.messages if not m.get("deleted")}
+        self._unseen_ids &= present
+        button = self.new_messages_button
+        if button is None:
+            return
+        try:
+            count = len(self._unseen_ids)
+            if count:
+                text = ("↓ 1 nouveau message" if count == 1
+                        else f"↓ {count} nouveaux messages")
+                button.setText(text)
+                button.setAccessibleName(text)
+            button.setVisible(bool(count))
+        except RuntimeError:
+            pass
+
+    def _scroll_to_latest(self):
+        """Clic sur la barre : direction le dernier message. L'arrivée en bas
+        cache la barre et arme l'accusé « Lu » (_thread_reached_bottom)."""
+        if self.thread is None:
+            return
+        bar = self.thread.verticalScrollBar()
+        if bar is not None:
+            bar.setValue(bar.maximum())
+        self._unseen_ids = set()
+        self._update_new_messages_button()
 
     def _render_messages(self, keep_position=False):
         if self.thread is None:
@@ -2068,6 +2151,10 @@ class MessagingController(QObject):
         # messages sont à l'écran — c'est un point d'armement du « Lu ».
         bar = self.thread.verticalScrollBar() if self.thread is not None else None
         if bar is not None and value >= bar.maximum():
+            # Redescendu à la main : les nouveaux messages sont à l'écran.
+            if self._unseen_ids:
+                self._unseen_ids = set()
+                self._update_new_messages_button()
             self._schedule_read_mark()
 
     def eventFilter(self, watched, event):
