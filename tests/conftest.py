@@ -18,7 +18,9 @@ des cycles de références (signal -> méthode liée -> self) et leur destructio
 pendant une collecte du GC ou la finalisation de l'interpréteur, avec ou sans
 QApplication — plante dans le backend multimédia FFmpeg en CI headless
 (segfault APRÈS le dernier test). On désactive donc le GC cyclique pour toute la
-session, on garde la QApplication en vie, et on quitte le processus via
+session, on gèle tous les objets en fin de session (``gc.freeze`` : pytest
+appelle lui-même ``gc.collect()`` avant notre sortie), on garde la QApplication
+en vie, et on quitte le processus via
 ``os._exit`` dans ``pytest_unconfigure`` — après l'affichage du résumé, en
 conservant le code de sortie. Aucun destructeur Qt ne s'exécute jamais.
 """
@@ -53,6 +55,14 @@ def _shared_qapplication():
 def pytest_sessionfinish(session, exitstatus):
     global _exit_status
     _exit_status = exitstatus
+    # gc.disable() ne suffit pas : pytest (≥ 9, plugin unraisableexception)
+    # appelle EXPLICITEMENT gc.collect() dans SON pytest_unconfigure, qui
+    # passe avant le nôtre — les fenêtres Qt orphelines des tests étaient
+    # alors détruites et la CI Linux plantait (segfault, code 139, avant
+    # même l'affichage du résumé resté dans le tampon). gc.freeze() range
+    # tous les objets existants dans la génération permanente, que
+    # gc.collect() ignore : plus aucun destructeur Qt ne s'exécute.
+    gc.freeze()
 
 
 @pytest.hookimpl(trylast=True)
