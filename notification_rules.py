@@ -123,6 +123,12 @@ STICKY_ORIGINS = frozenset({
     "action_error", "messaging_mention", "messaging_urgent", "kiosk_offline",
     "patient_waiting"})
 
+#: Alertes « nouveau message » de la messagerie (hors erreur d'envoi) :
+#: un clic ouvre la conversation, et elles se ferment d'elles-mêmes une fois
+#: les messages lus — dans le panneau, ou retirés par leur expéditeur.
+MESSAGE_ALERT_ORIGINS = frozenset({
+    "messaging", "messaging_mention", "messaging_urgent"})
+
 #: Son distinctif par origine quand un simple « ding » ne suffit pas :
 #: « please_validate » est la voix d'attention immédiate déjà réutilisée par
 #: les messages urgents — un patient qui attend à la borne ou une borne

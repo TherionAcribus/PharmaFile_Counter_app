@@ -2483,11 +2483,21 @@ class MainWindow(QMainWindow):
             return False
         return patient_id != getattr(self, "patient_id", None)
 
+    def dismiss_notifications(self, predicate):
+        """Ferme (affichées et en file) les notifications désignées par
+        ``predicate(origin, data)``. Sans gestionnaire, rien n'est affiché :
+        rien à fermer."""
+        manager = getattr(self, "notification_manager", None)
+        if manager is None:
+            return 0
+        return manager.dismiss_where(predicate)
+
     def on_notification_clicked(self, origin, data):
-        """Clic sur une notification (relais du NotificationManager). La
-        messagerie ouvre son panneau sur la conversation concernée ; toutes
-        les autres origines gardent le comportement « clic = fermer »."""
-        if origin == "messaging":
+        """Clic sur une notification (relais du NotificationManager). Les
+        alertes de messagerie (nouveau message, mention, urgent) ouvrent le
+        panneau sur la conversation concernée ; toutes les autres origines
+        gardent le comportement « clic = fermer »."""
+        if origin in notification_rules.MESSAGE_ALERT_ORIGINS:
             messaging = getattr(self, "messaging", None)
             if messaging is not None:
                 messaging.open_from_notification(data)

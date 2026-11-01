@@ -321,3 +321,26 @@ def test_mode_compact_resserre_les_boutons_icones():
         assert win.connection_indicator.width() == ConnectionStatusIndicator.COMPACT_PX
     finally:
         win.deleteLater()
+
+
+@pytest.mark.parametrize("origin", ["messaging", "messaging_urgent",
+                                    "messaging_mention"])
+def test_click_on_any_message_alert_opens_the_conversation(origin):
+    # Régression : seul « messaging » ouvrait le fil ; un clic sur une
+    # alerte urgente ou une mention fermait la notification sans rien ouvrir.
+    stub = types.SimpleNamespace(messaging=mock.MagicMock())
+    data = {"origin": origin, "conversation_key": "direct:2"}
+    main.MainWindow.on_notification_clicked(stub, origin, data)
+    stub.messaging.open_from_notification.assert_called_once_with(data)
+
+
+def test_click_on_other_alerts_does_not_open_messaging():
+    stub = types.SimpleNamespace(messaging=mock.MagicMock())
+    main.MainWindow.on_notification_clicked(
+        stub, "messaging_error", {"origin": "messaging_error"})
+    stub.messaging.open_from_notification.assert_not_called()
+
+
+def test_dismiss_notifications_without_manager_is_harmless():
+    stub = types.SimpleNamespace(notification_manager=None)
+    assert main.MainWindow.dismiss_notifications(stub, lambda o, d: True) == 0

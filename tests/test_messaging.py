@@ -2330,3 +2330,60 @@ def test_thread_requests_deleted_traces():
     import endpoints
     assert "include_deleted=1" in endpoints.messaging_messages(
         "http://srv", 3, "direct", 2)
+
+
+# --- Fermeture automatique des alertes lues -----------------------------------
+
+def _dismissing_window(controller):
+    """Branche sur la fausse fenêtre un relevé des règles de fermeture."""
+    controller.window.dismissals = []
+    controller.window.dismiss_notifications = controller.window.dismissals.append
+
+
+def _closes(predicate, origin, **data):
+    return predicate(origin, dict({"origin": origin, "message": "x"}, **data))
+
+
+def test_alert_is_dismissed_once_its_conversation_is_read():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    _dismissing_window(controller)
+    # Bob a un non-lu : son alerte (même urgente) reste.
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    rule = controller.window.dismissals[-1]
+    assert not _closes(rule, "messaging_urgent", conversation_key="direct:2")
+    # Lu dans le panneau (ou retiré par Bob) : plus de non-lu, elle se ferme.
+    controller._handle_state_result(NetResult(200, data=_state(unread=0)))
+    rule = controller.window.dismissals[-1]
+    for origin in ("messaging", "messaging_urgent", "messaging_mention"):
+        assert _closes(rule, origin, conversation_key="direct:2")
+    # Rappel de connexion « N non lus » (sans conversation) : plus rien de
+    # non lu, fermé aussi.
+    assert _closes(rule, "messaging")
+    # Jamais une autre catégorie, ni une erreur d'envoi.
+    assert not _closes(rule, "please_validate", conversation_key="direct:2")
+    assert not _closes(rule, "messaging_error", conversation_key="direct:2")
+
+
+def test_alert_of_another_unread_conversation_stays():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    _dismissing_window(controller)
+    controller._handle_state_result(NetResult(200, data=_state(unread=1)))
+    rule = controller.window.dismissals[-1]
+    # L'équipe n'a aucun non-lu, Bob en a un : seule l'alerte d'équipe part,
+    # et le rappel global reste tant qu'il reste du non-lu.
+    assert _closes(rule, "messaging_mention", conversation_key="broadcast")
+    assert not _closes(rule, "messaging", conversation_key="direct:2")
+    assert not _closes(rule, "messaging")
+
+
+def test_logout_dismisses_all_message_alerts():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    _dismissing_window(controller)
+    controller.clear_identity()
+    rule = controller.window.dismissals[-1]
+    assert _closes(rule, "messaging_urgent", conversation_key="direct:2")
+    assert _closes(rule, "messaging")
+    assert not _closes(rule, "please_validate")

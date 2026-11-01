@@ -106,6 +106,39 @@ class NotificationManager:
             return None
         return self._create_and_show(spec)
 
+    def dismiss_where(self, predicate):
+        """Annule, affichées ET en file, les notifications pour lesquelles
+        ``predicate(origin, data)`` est vrai — ``data`` est le dict de la
+        notification ({} s'il est illisible). Sert aux annulations qui
+        dépendent du contenu (messagerie : conversation déjà lue).
+        Retourne le nombre de notifications annulées."""
+        def as_dict(data, internal):
+            if not internal and isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+            return data if isinstance(data, dict) else {}
+
+        # File purgée AVANT de fermer les visibles (cf. dismiss).
+        kept = deque()
+        queued = 0
+        for spec in self.pending:
+            if predicate(spec.origin, as_dict(spec.data, spec.internal)):
+                queued += 1
+            else:
+                kept.append(spec)
+        self.pending = kept
+        visible = [notif for notif in self.active_notifications
+                   if predicate(getattr(notif, "origin", None),
+                                as_dict(getattr(notif, "data", None), True))]
+        for notif in visible:
+            notif.close()
+        if queued or visible:
+            logger.debug("Notifications annulées par règle : %s visible(s), "
+                         "%s en file", len(visible), queued)
+        return queued + len(visible)
+
     def dismiss(self, origin, patient_id=ANY_PATIENT):
         """Annule les notifications d'une ``origin`` donnée : celles affichées
         ET CELLES ENCORE EN FILE D'ATTENTE.

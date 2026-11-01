@@ -385,3 +385,29 @@ def test_manager_delegates_click_to_the_main_window(main_window):
     assert calls == [("messaging", {"origin": "messaging", "message": "m",
                                     "conversation_key": "direct:2"})]
     assert mgr.active_notifications == []
+
+
+def test_dismiss_where_uses_the_notification_content(main_window):
+    # Annulation selon le contenu (messagerie : conversation lue), affichées
+    # ET en file ; les autres restent.
+    mgr = NotificationManager(main_window, max_visible=2)
+    bob = dict(_data("messaging_urgent", "Bob"), conversation_key="direct:2")
+    team = dict(_data("messaging", "Équipe"), conversation_key="broadcast")
+    queued = dict(_data("messaging", "Bob encore"), conversation_key="direct:2")
+    mgr.notify(bob, internal=True, sticky=True)
+    mgr.notify(team, internal=True)
+    mgr.notify(queued, internal=True)                 # en file
+    assert len(mgr.pending) == 1
+
+    closed = mgr.dismiss_where(
+        lambda origin, data: data.get("conversation_key") == "direct:2")
+    assert closed == 2
+    assert len(mgr.pending) == 0
+    assert [n.data["message"] for n in mgr.active_notifications] == ["Équipe"]
+
+
+def test_dismiss_where_tolerates_json_payloads(main_window):
+    import json
+    mgr = NotificationManager(main_window)
+    mgr.notify(json.dumps(_data("connection", "serveur")), internal=False)
+    assert mgr.dismiss_where(lambda origin, data: data.get("message") == "serveur") == 1

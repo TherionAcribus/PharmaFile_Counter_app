@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QTabBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
+import notification_rules
 import settings_schema
 from dock_arrangement import DockArranger, dock_in_front, toggle_dock
 from quick_replies_dialog import (
@@ -440,6 +441,11 @@ class MessagingController(QObject):
     def clear_identity(self, notify_server=True):
         if notify_server and self.enabled and self.staff_id:
             self.window.api.messaging_leave(self.client_instance_id)
+        # Les alertes de l'équipier qui part (dont les persistantes : urgent,
+        # mention) ne doivent pas rester à l'écran du suivant.
+        self._dismiss_notifications(
+            lambda origin, _data:
+                origin in notification_rules.MESSAGE_ALERT_ORIGINS)
         self.staff_id = None
         self.staff_name = None
         self.heartbeat_timer.stop()
@@ -987,6 +993,32 @@ class MessagingController(QObject):
                 # pas perdre le rafraîchissement qui motivait cet appel.
                 self._state_pending = True
 
+    def _dismiss_notifications(self, predicate):
+        dismiss = getattr(self.window, "dismiss_notifications", None)
+        if callable(dismiss):
+            dismiss(predicate)
+
+    def _dismiss_read_notifications(self):
+        """Ferme les alertes « nouveau message » devenues sans objet : la
+        conversation désignée n'a plus de non-lus — lus dans le panneau (ici
+        ou à un autre poste du même équipier), ou retirés par l'expéditeur.
+        Une alerte sans conversation (rappel « N non lus » de connexion) se
+        ferme quand plus rien n'est non lu. Les persistantes (urgent,
+        mention) sont concernées : c'est pour elles que ça compte."""
+        unread = {item.get("key"): int(item.get("unread_count") or 0)
+                  for item in self.conversations if item.get("key")}
+        total = self.unread_total
+
+        def read_already(origin, data):
+            if origin not in notification_rules.MESSAGE_ALERT_ORIGINS:
+                return False
+            key = data.get("conversation_key")
+            if key is None:
+                return total == 0
+            return unread.get(key, 0) == 0
+
+        self._dismiss_notifications(read_already)
+
     def _handle_state_result(self, result):
         try:
             if result.status == 200 and isinstance(result.data, dict):
@@ -1001,6 +1033,9 @@ class MessagingController(QObject):
                 self._apply_quick_replies(result.data.get("quick_replies"))
                 self._refresh_tabs()
                 self._update_badge()
+                # Alertes déjà sans objet (messages lus dans le panneau, ou
+                # retirés par leur expéditeur) : fermées avant toute nouvelle.
+                self._dismiss_read_notifications()
                 if self.unread_total > previous_unread and self._pending_event:
                     event = self._pending_event
                     sender = event.get("sender_name")
