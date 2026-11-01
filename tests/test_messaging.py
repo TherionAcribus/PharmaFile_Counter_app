@@ -2608,3 +2608,45 @@ def test_mark_unread_result_is_reported_inline():
     assert controller._status_message == (
         "Aucun message reçu dans cette conversation.")
     assert "direct:2" not in controller._keep_unread_keys
+
+
+# --- Accusés « Lu » / « Remis » affichés une seule fois -----------------------
+
+def _mine(message_id, body, read_at=None, delivered_at=None):
+    return {"id": message_id, "body": body, "read_at": read_at,
+            "delivered_at": delivered_at,
+            "sender": {"name": "Alice", "staff_id": 1}}
+
+
+def test_read_receipt_only_under_my_last_read_message():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        _mine(1, "premier", "2025-01-01T10:00:00", "2025-01-01T09:59:00"),
+        _mine(2, "deuxième", "2025-01-01T10:05:00", "2025-01-01T10:01:00"),
+        _bob(3, "réponse"),
+        _mine(4, "troisième", delivered_at="2025-01-01T10:07:00"),
+    ])
+    text = controller.thread.toPlainText()
+    # Un seul « Lu », avec son heure, sous le dernier message lu.
+    assert text.count("Lu à") == 1 and "Lu à 10:05" in text
+    assert text.index("Lu à 10:05") < text.index("deuxième")
+    assert text.index("premier") < text.index("Lu à 10:05")
+    # « Remis » sous mon dernier message seulement.
+    assert text.count("Remis") == 1
+    assert text.index("réponse") < text.index("Remis") < text.index("troisième")
+
+
+def test_no_remis_once_my_last_message_is_read():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [
+        _mine(1, "un", delivered_at="2025-01-01T09:59:00"),
+        _mine(2, "deux", "2025-01-01T10:05:00", "2025-01-01T10:01:00"),
+    ])
+    text = controller.thread.toPlainText()
+    assert "Remis" not in text and text.count("Lu à") == 1

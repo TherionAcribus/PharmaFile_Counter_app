@@ -2073,6 +2073,22 @@ class MessagingController(QObject):
         self._unseen_ids = set()
         self._update_new_messages_button()
 
+    def _receipt_targets(self):
+        """(id portant « Lu », id portant « Remis ») parmi MES messages : un
+        accusé répété sur chaque bulle n'apportait rien — la lecture se fait
+        dans l'ordre, « Lu » sous mon dernier message lu vaut pour tous ceux
+        d'avant. « Remis » ne s'affiche que sous mon tout dernier message,
+        s'il est remis mais pas encore lu."""
+        mine = [m for m in self.messages
+                if m.get("id") is not None and not m.get("deleted")
+                and (m.get("sender") or {}).get("staff_id") == self.staff_id]
+        read_id = next((m.get("id") for m in reversed(mine)
+                        if m.get("read_at")), None)
+        last = mine[-1] if mine else None
+        delivered_id = (last.get("id") if last and not last.get("read_at")
+                        and last.get("delivered_at") else None)
+        return read_id, delivered_id
+
     def _update_unread_marker(self):
         """Message devant lequel se place le repère « Nouveaux messages » :
         le premier non-lu entrant vu dans ce fil. Il est mémorisé — l'accusé
@@ -2101,6 +2117,7 @@ class MessagingController(QObject):
         blocks = []
         separator_done = False
         marker_id = self._update_unread_marker()
+        read_id, delivered_id = self._receipt_targets()
         # Expéditeur de la bulle précédente (staff_id + kind) : les messages
         # consécutifs du même expéditeur se regroupent — le nom n'est répété
         # que sur la première et les suivantes se rapprochent (marge 2 px).
@@ -2144,12 +2161,16 @@ class MessagingController(QObject):
             # initiales connues sont mises en valeur, un « @xx » quelconque
             # reste du texte ordinaire.
             body = _MENTION_PATTERN.sub(self._highlight_mention, body)
-            # Accusés en gris discret : « Lu » (consultation réelle) prime,
-            # sinon « Remis » (l'app du destinataire a récupéré le message).
+            # Accusés en gris discret, une seule fois (cf. _receipt_targets) :
+            # « Lu à HH:MM » sous mon dernier message lu, « Remis » sous mon
+            # dernier message s'il n'est pas encore lu.
             receipt = ""
-            if mine and message.get("read_at"):
-                receipt = ' · <span style="color:#6b7280">Lu</span>'
-            elif mine and message.get("delivered_at"):
+            message_id = message.get("id")
+            if message_id is not None and message_id == read_id:
+                read_time = self._format_time(message.get("read_at"))
+                label = f"Lu à {read_time}" if read_time else "Lu"
+                receipt = f' · <span style="color:#6b7280">{label}</span>'
+            elif message_id is not None and message_id == delivered_id:
                 receipt = ' · <span style="color:#6b7280">Remis</span>'
             # Repère visuel posé juste avant le message mémorisé (cf.
             # _update_unread_marker) — uniquement si des messages le
