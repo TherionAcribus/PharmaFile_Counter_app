@@ -306,6 +306,11 @@ class MessagingController(QObject):
         # fil était remonté (identifiants, pour ne jamais compter deux fois).
         self.new_messages_button = None
         self._unseen_ids = set()
+        # Conversations remises en non lu À LA MAIN alors qu'elles étaient
+        # affichées : l'accusé « Lu » automatique les épargne tant que
+        # l'équipier n'y est pas revenu (changement d'onglet, réouverture du
+        # panneau, envoi d'un message) — sinon il repartirait aussitôt.
+        self._keep_unread_keys = set()
         self._online_only = None
         self._icon_layout = None
         self._more_menu = None
@@ -483,6 +488,7 @@ class MessagingController(QObject):
         self.conversations = []
         self.messages = []
         self._unread_marker_id = None
+        self._keep_unread_keys = set()
         self.unread_total = 0
         self._pending_event = None
         # Si un envoi était encore en vol à la déconnexion, sa réponse ne doit
@@ -696,6 +702,9 @@ class MessagingController(QObject):
         self.tabs.setAccessibleName("Conversations en cours")
         self.tabs.currentChanged.connect(self._tab_changed)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+        # Clic droit sur un onglet : « Marquer comme non lu ».
+        self.tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.customContextMenuRequested.connect(self._show_tab_menu)
         layout.addWidget(self.tabs)
 
         # Navigation clavier entre conversations, même geste que les
@@ -961,6 +970,9 @@ class MessagingController(QObject):
         self._settings_factory().setValue(
             "messaging_dock_visible", not self.dock.isHidden())
         if visible:
+            # Panneau rouvert : l'équipier revient à la conversation affichée,
+            # la remise en non lu a rempli son office.
+            self._keep_unread_keys.discard(self._current_key)
             self.request_state()
             self._schedule_read_mark()
         self._schedule_window_fit()
@@ -1796,6 +1808,63 @@ class MessagingController(QObject):
             else "Le message n'a pas pu être retiré.")
         self._update_composer()
 
+    def _tab_menu(self, index):
+        """Menu du clic droit sur l'onglet ``index`` (None hors onglet)."""
+        key = self.tabs.tabData(index) if index >= 0 else None
+        conversation = next((item for item in self.conversations
+                             if item.get("key") == key), None)
+        if conversation is None:
+            return None
+        menu = QMenu(self.tabs)
+        action = menu.addAction("Marquer comme non lu")
+        already = int(conversation.get("unread_count") or 0) > 0
+        action.setEnabled(not already and self.enabled)
+        if already:
+            action.setText("Marquer comme non lu (déjà non lu)")
+        action.triggered.connect(
+            lambda _checked=False, _key=key: self.mark_unread(_key))
+        return menu
+
+    def _show_tab_menu(self, position):
+        menu = self._tab_menu(self.tabs.tabAt(position))
+        if menu is not None:
+            menu.exec(self.tabs.mapToGlobal(position))
+            menu.deleteLater()
+
+    def mark_unread(self, key):
+        """Remet la conversation en non lu (son dernier message reçu) :
+        l'onglet se recolore et le compteur repart, comme pour un message
+        arrivé — rappel pour y revenir plus tard."""
+        conversation = next((item for item in self.conversations
+                             if item.get("key") == key), None)
+        if conversation is None or not self.enabled:
+            return
+        if key == self._current_key:
+            # Affichée en ce moment : sans ce garde, l'accusé automatique la
+            # relirait dans la seconde.
+            self._keep_unread_keys.add(key)
+            self._read_timer.stop()
+        kind = conversation.get("kind")
+        peer = conversation.get("staff_id") if kind == "direct" else None
+        self.window.api.messaging_mark_unread(
+            kind, peer_staff_id=peer,
+            on_result=self._network_callback(
+                lambda result, _key=key: self._handle_unread_result(
+                    result, _key)))
+
+    def _handle_unread_result(self, result, key):
+        data = result.data if isinstance(result.data, dict) else {}
+        if result.status == 200 and data.get("unread"):
+            self._show_transient_status(
+                "Conversation marquée comme non lue.", delay_ms=4000)
+            self.request_state()
+            return
+        self._keep_unread_keys.discard(key)
+        message = data.get("message")
+        self._show_transient_status(
+            message if isinstance(message, str) and message
+            else "La conversation n'a pas pu être marquée comme non lue.")
+
     def _close_tab(self, index):
         """Fermeture d'un onglet à la main : la clé sort des onglets ouverts
         manuellement, et la fermeture elle-même est mémorisée avec le
@@ -1835,6 +1904,8 @@ class MessagingController(QObject):
         # par clé, puis celui du fil sélectionné est restauré (ou vide).
         self._store_draft()
         self._current_key = key
+        # Revenir sur une conversation remise en non lu, c'est la lire.
+        self._keep_unread_keys.discard(key)
         self._restore_draft()
         self.messages = []
         self._unread_marker_id = None
@@ -2199,6 +2270,10 @@ class MessagingController(QObject):
         return super().eventFilter(watched, event)
 
     def _mark_visible_read(self):
+        # Conversation remise en non lu à la main : on la laisse non lue
+        # tant que l'équipier n'y est pas revenu (cf. _keep_unread_keys).
+        if self._current_key in self._keep_unread_keys:
+            return
         # Seulement si le fil est réellement lisible : un onglet « Messagerie »
         # resté derrière la liste des patients est « visible » pour Qt, mais
         # l'expéditeur recevrait un accusé « Lu » à tort.
@@ -2432,6 +2507,8 @@ class MessagingController(QObject):
             # Le brouillon de la conversation expédiée part avec elle, même
             # si l'utilisateur a changé d'onglet pendant le vol.
             self._drafts.pop(self._sent_key, None)
+            # Répondre, c'est avoir lu : la remise en non lu tombe.
+            self._keep_unread_keys.discard(self._sent_key)
             self._sent_key = None
             self._sent_body = None
             self._status_message = None

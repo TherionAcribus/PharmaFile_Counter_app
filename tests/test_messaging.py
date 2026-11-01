@@ -69,6 +69,9 @@ class FakeApi:
     def messaging_delete(self, message_id, on_result=None):
         self.calls.append(("delete", message_id, on_result))
 
+    def messaging_mark_unread(self, kind, peer_staff_id=None, on_result=None):
+        self.calls.append(("unread", kind, peer_staff_id, on_result))
+
 
 class FakeWindow(QMainWindow):
     def __init__(self):
@@ -2527,3 +2530,81 @@ def test_unread_marker_does_not_jump_while_first_wave_is_unread():
                                    _bob(3, "trois", True)])
     text = _marker_text(controller)
     assert text.index("|") < text.index("deux")
+
+
+# --- « Marquer comme non lu » (clic droit sur un onglet) ----------------------
+
+def _menu_action(controller, key):
+    menu = controller._tab_menu(_index(controller, key))
+    return menu.actions()[0]
+
+
+def test_tab_menu_offers_mark_unread_and_calls_the_server():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state(unread=0)))
+    action = _menu_action(controller, "direct:2")
+    assert action.text() == "Marquer comme non lu" and action.isEnabled()
+    action.trigger()
+    call = [c for c in window.api.calls if c[0] == "unread"][-1]
+    assert call[1:3] == ("direct", 2)
+    # « Équipe » aussi, sans destinataire.
+    _menu_action(controller, "broadcast").trigger()
+    assert [c for c in window.api.calls if c[0] == "unread"][-1][1:3] == (
+        "broadcast", None)
+    # Hors onglet : pas de menu.
+    assert controller._tab_menu(-1) is None
+
+
+def test_tab_menu_is_disabled_when_already_unread():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state(unread=2)))
+    action = _menu_action(controller, "direct:2")
+    assert not action.isEnabled()
+    assert "déjà non lu" in action.text()
+
+
+def test_marked_conversation_is_not_read_again_until_revisited(monkeypatch):
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    window.show()
+    controller.dock.show()
+    _activate_window(monkeypatch, window)
+    controller.mark_unread("direct:2")
+    controller.messages = [{"id": 4, "is_unread": True,
+                            "sender": {"name": "Bob", "staff_id": 2}}]
+    # Affichée et au premier plan : l'accusé automatique ne la relit pas.
+    controller._mark_visible_read()
+    assert not any(c[0] == "read" for c in window.api.calls)
+    # L'équipier part puis revient : lire redevient normal.
+    _select(controller, "broadcast")
+    _select(controller, "direct:2")
+    controller.messages = [{"id": 4, "is_unread": True,
+                            "sender": {"name": "Bob", "staff_id": 2}}]
+    controller._mark_visible_read()
+    assert any(c[:2] == ("read", [4]) for c in window.api.calls)
+
+
+def test_mark_unread_result_is_reported_inline():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    controller.mark_unread("direct:2")
+    callback = [c for c in window.api.calls if c[0] == "unread"][-1][3]
+    window.api.calls.clear()
+    callback(NetResult(200, data={"unread": True, "message_id": 4}))
+    assert controller._status_message == "Conversation marquée comme non lue."
+    assert any(c[0] == "state" for c in window.api.calls)
+    # Refus (rien de reçu) : message du serveur, garde levé.
+    controller.mark_unread("direct:2")
+    callback = [c for c in window.api.calls if c[0] == "unread"][-1][3]
+    callback(NetResult(400, data={
+        "error": "nothing_to_mark_unread",
+        "message": "Aucun message reçu dans cette conversation."}))
+    assert controller._status_message == (
+        "Aucun message reçu dans cette conversation.")
+    assert "direct:2" not in controller._keep_unread_keys

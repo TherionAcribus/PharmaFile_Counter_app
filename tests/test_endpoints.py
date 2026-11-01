@@ -55,6 +55,7 @@ CASES = [
     (endpoints.messaging_send, (), "/api/messaging/messages"),
     (endpoints.messaging_read, (), "/api/messaging/read"),
     (endpoints.messaging_delete, (), "/api/messaging/delete"),
+    (endpoints.messaging_unread, (), "/api/messaging/unread"),
     (endpoints.socket_url, (), "/socket_app_counter"),
 ]
 
