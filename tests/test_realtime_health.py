@@ -178,3 +178,13 @@ def test_nothing_sent_when_idle_or_refused_locally():
     w.counter_id = None
     w._report_realtime_health()
     assert len(sent) == 1
+
+
+def test_report_carries_the_app_version():
+    """L'administration voit quels comptoirs ont une App ancienne : la
+    version accompagne chaque rapport (page Performance du serveur)."""
+    import app_version
+    w, sent = _reporter()
+    w.realtime_health.record_event()
+    w._report_realtime_health()
+    assert sent[0][0]["app_version"] == app_version.reported_version()

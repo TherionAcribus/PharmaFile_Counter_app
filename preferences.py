@@ -14,6 +14,7 @@ import notification_rules
 import profile_sync
 import settings_schema
 import ui_scale
+import app_version
 from screen_fit import fit_on_show
 from counter_id_utils import coerce_counter_id
 from panel_layout import DEFAULT_PANEL_THICKNESS
@@ -380,6 +381,12 @@ class PreferencesDialog(QDialog):
             "enregistre des journaux détaillés (niveau DEBUG). À réserver au "
             "dépannage.")
         log_box_layout.addWidget(self.debug_window)
+        # Version de l'App : la première information demandée en dépannage.
+        # Sélectionnable pour être copiée dans un message.
+        self.version_label = QLabel(
+            f"Flowelis Comptoir — {app_version.version_label()}", log_box)
+        self.version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        log_box_layout.addWidget(self.version_label)
         self.open_logs_button = QPushButton("Ouvrir le dossier des journaux", log_box)
         self.open_logs_button.setToolTip(
             "Ouvre l'explorateur sur les fichiers journaux de l'application.")

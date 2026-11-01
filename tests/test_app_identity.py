@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app_version import APP_VERSION  # noqa: E402
 from app_identity import (  # noqa: E402
     APPLICATION_NAME, DISPLAY_NAME, LEGACY_IDENTITIES, MIGRATION_MARKER_KEY,
     ORGANIZATION_NAME, apply_identity, legacy_sources, migrate_legacy_settings,
@@ -69,6 +70,8 @@ def test_apply_identity_pose_les_deux_noms():
             self.name = v
         def setApplicationDisplayName(self, v):
             self.display = v
+        def setApplicationVersion(self, v):
+            self.version = v
         def setOrganizationDomain(self, v):  # ne doit pas être appelé
             self.domain = v
 
@@ -76,6 +79,7 @@ def test_apply_identity_pose_les_deux_noms():
     apply_identity(app)
     assert (app.org, app.name) == (ORGANIZATION_NAME, APPLICATION_NAME)
     assert app.display == DISPLAY_NAME
+    assert app.version == APP_VERSION
     # Le domaine fictif « mycompany.com » n'est plus déclaré (il primerait sur le
     # nom d'organisation sous macOS).
     assert app.domain is None
@@ -210,6 +214,8 @@ def test_setup_application_applique_identite_et_reprise(monkeypatch):
             ordre.append(("app", v))
         def setApplicationDisplayName(self, v):
             ordre.append(("display", v))
+        def setApplicationVersion(self, v):
+            ordre.append(("version", v))
         def setWindowIcon(self, v):
             ordre.append(("icon", v))
 
@@ -217,4 +223,4 @@ def test_setup_application_applique_identite_et_reprise(monkeypatch):
                         lambda target, sources: ordre.append(("migration", None)))
     monkeypatch.setattr(main, "legacy_sources", lambda factory: [])
     main.setup_application(FakeApp())
-    assert [step for step, _ in ordre] == ["org", "app", "display", "icon", "migration"]
+    assert [step for step, _ in ordre] == ["org", "app", "display", "version", "icon", "migration"]

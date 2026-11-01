@@ -82,11 +82,19 @@ produit `dist/FlowelisComptoir.exe`.
 ## 5. Release GitHub (compilation automatisée)
 
 Le workflow `.github/workflows/release.yml` compile les deux formats sur
-`windows-latest` et publie une release GitHub dès qu'un tag `v*` est poussé :
+`windows-latest` et publie une release GitHub dès qu'un tag `v*` est poussé.
+
+Le numéro de version a une seule source : `APP_VERSION` dans `app_version.py`.
+Il est affiché dans l'App (Préférences › Général › Journal), inscrit dans les
+propriétés Windows de l'exe et envoyé au serveur (page Performance). Le
+workflow **refuse** un tag qui ne correspond pas à `APP_VERSION`. Pour publier :
+
+1. augmenter `APP_VERSION` (ex. `1.2.0` → `1.3.0`) et committer ;
+2. poser le tag correspondant :
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 La release créée contient :

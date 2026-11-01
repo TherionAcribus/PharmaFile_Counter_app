@@ -30,6 +30,8 @@ INTACTE (retour arrière possible vers une version antérieure du client).
 
 import logging
 
+from app_version import APP_VERSION
+
 logger = logging.getLogger(__name__)
 
 #: Identité courante. ``QSettings()`` s'appuie dessus : la changer déplace la
@@ -66,6 +68,7 @@ def apply_identity(app):
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setApplicationName(APPLICATION_NAME)
     app.setApplicationDisplayName(DISPLAY_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
 
 def migrate_legacy_settings(target, sources):

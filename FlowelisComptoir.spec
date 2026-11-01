@@ -1,5 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+import sys
+
+# Propriétés Windows de l'exe (clic droit › Propriétés › Détails), version
+# lue dans la source unique app_version.py (SPECPATH = dossier du .spec).
+sys.path.insert(0, os.path.join(SPECPATH, 'tools'))
+import exe_version_info
+
+VERSION_INFO = exe_version_info.windows_version_info()
+
 # Modules exclus du build : jamais importés par le client (dépendances serveur ou
 # outils de dev). Les exclure garantit qu'ils ne gonflent pas la distribution même
 # s'ils se trouvent dans l'environnement de compilation (cf. point 23).
@@ -59,6 +69,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='app.ico',
+    version=VERSION_INFO,
 )
 coll = COLLECT(
     exe,

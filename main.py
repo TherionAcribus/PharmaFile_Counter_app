@@ -30,6 +30,7 @@ from audio import build_audio_player
 from loading_screen import LoadingScreen
 from my_logger import AppLogger, default_log_dir, register_secret
 import crash_guard
+import app_version
 from single_instance import SingleInstance
 from secret_store import load_secret
 from task_registry import TaskRegistry
@@ -176,6 +177,7 @@ class MainWindow(QMainWindow):
 
         self.app_logger = AppLogger.get_instance()
         self.logger = self.app_logger.get_logger()
+        self.logger.info("Flowelis Comptoir %s", app_version.reported_version())
         scale_decision = ui_scale.current()
         if scale_decision is not None:
             self.logger.info("Taille de l'interface : %s", scale_decision.describe())
@@ -1295,7 +1297,9 @@ class MainWindow(QMainWindow):
         if (self.shutting_down or not self._realtime_health_supported
                 or not getattr(self, "counter_id", None)):
             return
-        report = self.realtime_health.take_report()
+        # La version accompagne chaque rapport : l'administration voit quels
+        # comptoirs ont une App ancienne (page Performance).
+        report = self.realtime_health.take_report(app_version=app_version.reported_version())
         if report is None:
             return
         handle = self.api.report_realtime_health(

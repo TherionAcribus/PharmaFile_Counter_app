@@ -26,6 +26,12 @@ jobs:
             requirements.txt
             requirements-build.txt
 
+      # L'étiquette publiée doit correspondre à la version inscrite dans le
+      # code (app_version.py) : sinon l'exe annoncerait un autre numéro que
+      # celui de sa release.
+      - name: Vérifier l'étiquette de version
+        run: python app_version.py "${{ github.ref_name }}"
+
       - name: Installer les dépendances de build
         run: pip install -r requirements-build.txt
 

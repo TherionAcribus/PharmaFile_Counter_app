@@ -14,6 +14,16 @@
 # divergence (risque historique : un main.spec obsolète produisait un binaire
 # silencieusement dégradé).
 
+import os
+import sys
+
+# Propriétés Windows de l'exe (clic droit › Propriétés › Détails), version
+# lue dans la source unique app_version.py (SPECPATH = dossier du .spec).
+sys.path.insert(0, os.path.join(SPECPATH, 'tools'))
+import exe_version_info
+
+VERSION_INFO = exe_version_info.windows_version_info()
+
 SERVER_AND_DEV_EXCLUDES = [
     'flask', 'werkzeug', 'jinja2', 'itsdangerous', 'redis', 'gunicorn',
     'sqlalchemy', 'flask_sqlalchemy', 'flask_login', 'flask_socketio',
@@ -65,4 +75,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='app.ico',
+    version=VERSION_INFO,
 )
