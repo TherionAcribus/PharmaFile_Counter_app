@@ -9,6 +9,7 @@ import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import (
     QColor, QKeyEvent, QKeySequence, QPalette, QShortcut, QStandardItem,
+    QTextCursor,
     QStandardItemModel,
 )
 from PySide6.QtWidgets import (
@@ -1481,8 +1482,9 @@ def test_consecutive_same_sender_messages_share_one_header():
     ])
     html_out = controller.thread.toHtml()
     # Nom affiché une seule fois sur les deux messages consécutifs de Bob
-    # (Qt resérialise <b> en span font-weight, on compte le texte).
-    assert html_out.count("Bob") == 1
+    # (on compte le texte affiché : Qt resérialise <b> en span et l'ancre
+    # de la bulle découpe le premier mot dans le HTML).
+    assert controller.thread.toPlainText().count("Bob") == 1
     # Bulle regroupée : marge supérieure réduite, heure conservée.
     assert "margin-top:2px" in html_out
 
@@ -1858,7 +1860,7 @@ def test_typing_indicator_ignores_irrelevant_signals():
     assert controller.status_label.text() == "Bob écrit…"
 
 
-# --- Retrait d'un message (« Retirer mon dernier message ») -----------------
+# --- Retrait d'un message (menu ⚡ et clic droit sur la bulle) ---------------
 
 def _my_message(message_id=30, created_at=None):
     """Un message envoyé par moi (staff_id=1), récent par défaut."""
@@ -1999,6 +2001,119 @@ def test_delete_intent_is_disarmed_on_tab_change(monkeypatch):
     _select(controller, "broadcast")
     assert not controller._delete_confirm
     assert controller._delete_action.text() == "Retirer mon dernier message"
+
+
+def _bob_message(message_id=40, body="ok"):
+    return {"id": message_id, "kind": "direct", "body": body,
+            "sender": {"name": "Bob", "staff_id": 2},
+            "created_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _thread_with(controller, api, messages):
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed_with(controller, api, messages)
+
+
+def test_quick_menu_delete_targets_my_last_message_even_after_a_reply(
+        monkeypatch):
+    # Bob a répondu « ok » après mon message : celui-ci reste retirable
+    # (le serveur ne regarde que l'expéditeur et le délai).
+    window, controller = _controller()
+    _thread_with(controller, window.api, [_my_message(30), _bob_message(40)])
+    controller._refresh_delete_action()
+    assert controller._delete_action.isEnabled()
+    _disarm_menu_reopen(monkeypatch, controller)
+    controller._request_delete()
+    controller._request_delete()
+    delete_calls = [c for c in window.api.calls if c[0] == "delete"]
+    assert [c[1] for c in delete_calls] == [30]
+
+
+def test_quick_menu_delete_keeps_the_target_chosen_at_first_click(
+        monkeypatch):
+    # Un nouveau message à moi arrive entre les deux clics : la
+    # confirmation retire bien celui annoncé au premier clic.
+    window, controller = _controller()
+    _thread_with(controller, window.api, [_my_message(30)])
+    _disarm_menu_reopen(monkeypatch, controller)
+    controller._request_delete()
+    controller.messages = [_my_message(30), _my_message(31)]
+    controller._request_delete()
+    assert [c[1] for c in window.api.calls if c[0] == "delete"] == [30]
+
+
+def test_each_bubble_carries_its_message_anchor():
+    window, controller = _controller()
+    _thread_with(controller, window.api, [_my_message(30), _bob_message(40)])
+    document = controller.thread.document()
+    found = []
+    block = document.begin()
+    while block.isValid():
+        message = controller._message_in_block(block)
+        found.append(message.get("id") if message else None)
+        block = block.next()
+    assert 30 in found and 40 in found
+    # L'ancre ne transforme pas la bulle en lien cliquable.
+    assert "href" not in controller.thread.toHtml()
+
+
+def test_right_click_position_finds_the_bubble():
+    window, controller = _controller()
+    _thread_with(controller, window.api, [_my_message(30), _bob_message(40)])
+    controller.thread.resize(300, 300)
+    document = controller.thread.document()
+    block = document.begin()
+    while block.isValid() and controller._message_in_block(block) is None:
+        block = block.next()
+    cursor = QTextCursor(block)
+    cursor.movePosition(QTextCursor.MoveOperation.Right)
+    position = controller.thread.cursorRect(cursor).center()
+    assert controller._message_at(position)["id"] == 30
+
+
+def _entries(menu):
+    return [(a.text(), a.isEnabled(), a.menu()) for a in menu.actions()
+            if not a.isSeparator()]
+
+
+def test_right_click_on_my_recent_message_offers_confirmed_delete():
+    window, controller = _controller()
+    _thread_with(controller, window.api, [_my_message(30), _bob_message(40)])
+    menu = QMenu()
+    menu.addAction("Copier")
+    controller._add_delete_entries(menu, controller.messages[0])
+    text, enabled, submenu = _entries(menu)[0]
+    assert text.startswith("Retirer ce message (encore ")
+    assert text.endswith(" min)")
+    assert enabled and submenu is not None
+    assert _entries(menu)[-1][0] == "Copier"       # actions standard gardées
+    # Survoler ne suffit pas : il faut cliquer « Confirmer ».
+    assert not [c for c in window.api.calls if c[0] == "delete"]
+    confirm = submenu.actions()[0]
+    assert confirm.text() == "⚠ Confirmer le retrait"
+    confirm.trigger()
+    assert [c[1] for c in window.api.calls if c[0] == "delete"] == [30]
+
+
+def test_right_click_on_old_or_foreign_message():
+    window, controller = _controller()
+    old = _my_message(31, created_at=(
+        datetime.now(timezone.utc) - timedelta(minutes=20)))
+    _thread_with(controller, window.api, [old, _bob_message(40)])
+    # Mon message trop ancien : entrée grisée qui dit pourquoi.
+    menu = QMenu()
+    menu.addAction("Copier")
+    controller._add_delete_entries(menu, old)
+    text, enabled, _submenu = _entries(menu)[0]
+    assert "impossible après 15 min" in text and not enabled
+    # Message de Bob, ou clic hors bulle : rien n'est ajouté.
+    for message in (controller.messages[1], None):
+        menu = QMenu()
+        menu.addAction("Copier")
+        controller._add_delete_entries(menu, message)
+        assert [e[0] for e in _entries(menu)] == ["Copier"]
 
 
 # --- Pagination « charger plus ancien » -------------------------------------

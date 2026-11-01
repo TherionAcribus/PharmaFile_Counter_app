@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import time
 import unicodedata
@@ -74,6 +75,26 @@ class _ResizeAwareWidget(QWidget):
         super().resizeEvent(event)
         size = event.size()
         self.resized.emit(size.width(), size.height())
+
+
+#: Ancre posée sur chaque bulle du fil : retrouve le message sous un clic
+#: droit (une bulle = un bloc du document, cf. _message_in_block).
+_MESSAGE_ANCHOR = "msg-"
+
+
+class MessageThread(QTextBrowser):
+    """Fil des messages. Le menu du clic droit garde les actions standard
+    (copier, tout sélectionner) ; le contrôleur y ajoute les siennes via
+    ``contextMenuAboutToShow(menu, position)`` — position dans le viewport,
+    celle qu'attend cursorForPosition."""
+
+    contextMenuAboutToShow = Signal(object, object)
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu(event.pos())
+        self.contextMenuAboutToShow.emit(menu, event.pos())
+        menu.exec(event.globalPos())
+        menu.deleteLater()
 
 
 def _normalize(text):
@@ -327,6 +348,7 @@ class MessagingController(QObject):
         # clic, au même endroit, lance la requête. Jamais de modale au
         # comptoir (elle volerait le focus en pleine saisie).
         self._delete_confirm = False
+        self._delete_target_id = None
         self._delete_action = None
         # Pagination « charger plus ancien » : has_more de la dernière
         # réponse messages du fil courant seulement (réinitialisé au
@@ -457,6 +479,7 @@ class MessagingController(QObject):
         self._status_message = None
         self._broadcast_confirm = False
         self._delete_confirm = False
+        self._delete_target_id = None
         self._has_more = False
         self._older_in_flight = False
         # « … écrit » n'a de sens que dans la session qui l'a affiché.
@@ -676,8 +699,10 @@ class MessagingController(QObject):
         self.status_label.hide()
         layout.addWidget(self.status_label)
 
-        self.thread = QTextBrowser(container)
+        self.thread = MessageThread(container)
         self.thread.setOpenExternalLinks(False)
+        # Clic droit sur une de mes bulles récentes : « Retirer ce message ».
+        self.thread.contextMenuAboutToShow.connect(self._extend_thread_menu)
         self.thread.setAccessibleName("Messages de la conversation")
         self.thread.setMinimumWidth(0)
         self.thread.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
@@ -1493,51 +1518,132 @@ class MessagingController(QObject):
         self.input.insertPlainText(text)
         self.input.setFocus()
 
-    def _can_delete_last_message(self):
-        """L'action « Retirer mon dernier message » ne vise que le dernier
-        message du fil affiché : il doit être de moi et dans la fenêtre de
-        retrait — la fenêtre exacte est aussi contrôlée côté serveur
-        (DELETE_WINDOW_SECONDS, seul juge si les horloges divergent)."""
-        if not self.enabled or not self.messages:
-            return False
-        last = self.messages[-1]
-        if (last.get("sender") or {}).get("staff_id") != self.staff_id:
-            return False
+    def _delete_remaining(self, message):
+        """Secondes restantes pour retirer ``message``, ou None s'il n'est
+        pas retirable : pas de moi, sans identifiant ou date illisible.
+        Négatif (ou nul) = délai dépassé. Le serveur reste seul juge
+        (DELETE_WINDOW_SECONDS, si les horloges divergent)."""
+        if not self.enabled or not isinstance(message, dict):
+            return None
+        if message.get("id") is None:
+            return None
+        if (message.get("sender") or {}).get("staff_id") != self.staff_id:
+            return None
         try:
             created = datetime.fromisoformat(
-                str(last.get("created_at") or ""))
+                str(message.get("created_at") or ""))
         except (TypeError, ValueError):
-            return False
+            return None
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - created).total_seconds()
-        return age < self.DELETE_WINDOW_SECONDS
+        return self.DELETE_WINDOW_SECONDS - age
+
+    def _is_deletable(self, message):
+        remaining = self._delete_remaining(message)
+        return remaining is not None and remaining > 0
+
+    def _my_last_deletable(self):
+        """Mon message le plus récent du fil affiché, s'il est encore
+        retirable — même si d'autres ont répondu depuis (le serveur
+        l'accepte : seuls l'expéditeur et le délai comptent)."""
+        for message in reversed(self.messages):
+            if (message.get("sender") or {}).get("staff_id") == self.staff_id:
+                return message if self._is_deletable(message) else None
+        return None
+
+    def _can_delete_last_message(self):
+        return self._my_last_deletable() is not None
 
     def _refresh_delete_action(self):
         if self._delete_action is not None:
             self._delete_action.setEnabled(self._can_delete_last_message())
 
     def _request_delete(self):
-        """Retrait du dernier message du fil : confirmation à deux temps
-        dans le menu lui-même. Un menu se referme au clic sur une action :
-        au premier clic on le rouvre donc aussitôt avec l'action renommée
-        « ⚠ Confirmer le retrait » — le second clic, à la même place et
-        visible, déclenche la requête. Passé le délai (ou changement de
-        fil), l'intention retombe."""
-        if not self._can_delete_last_message():
-            return
+        """« Retirer mon dernier message » (menu ⚡) : confirmation à deux
+        temps dans le menu lui-même. Un menu se referme au clic sur une
+        action : au premier clic on le rouvre donc aussitôt avec l'action
+        renommée « ⚠ Confirmer le retrait » — le second clic, à la même place
+        et visible, déclenche la requête. Le message visé est figé au premier
+        clic. Passé le délai (ou changement de fil), l'intention retombe."""
         if not self._delete_confirm:
+            target = self._my_last_deletable()
+            if target is None:
+                return
             self._delete_confirm = True
+            self._delete_target_id = target.get("id")
             self._delete_action.setText("⚠ Confirmer le retrait")
             QTimer.singleShot(5000, self._disarm_delete_confirm)
             # Le menu vient de se refermer sur ce premier clic : on le
             # rouvre pour que la confirmation reste sous le doigt.
             QTimer.singleShot(0, self._reopen_quick_menu)
             return
+        target_id = self._delete_target_id
         self._disarm_delete_confirm()
+        target = next((m for m in self.messages if m.get("id") == target_id),
+                      None)
+        if target is None or not self._is_deletable(target):
+            # Délai écoulé pendant la confirmation, ou fil rechargé sans lui.
+            self._status_message = "Délai dépassé (15 min)."
+            self._update_composer()
+            return
+        self._delete_message(target_id)
+
+    def _delete_message(self, message_id):
         self.window.api.messaging_delete(
-            self.messages[-1].get("id"),
+            message_id,
             on_result=self._network_callback(self._handle_delete_result))
+
+    def _message_in_block(self, block):
+        """Message affiché dans un bloc du fil (une bulle = un bloc), via
+        l'ancre posée au rendu ; None pour un repère ou un bloc vide."""
+        it = block.begin()
+        while not it.atEnd():
+            fragment = it.fragment()
+            for name in fragment.charFormat().anchorNames():
+                if name.startswith(_MESSAGE_ANCHOR):
+                    wanted = name[len(_MESSAGE_ANCHOR):]
+                    return next((m for m in self.messages
+                                 if str(m.get("id")) == wanted), None)
+            it += 1
+        return None
+
+    def _message_at(self, position):
+        if self.thread is None:
+            return None
+        return self._message_in_block(
+            self.thread.cursorForPosition(position).block())
+
+    def _extend_thread_menu(self, menu, position):
+        self._add_delete_entries(menu, self._message_at(position))
+
+    def _add_delete_entries(self, menu, message):
+        """Clic droit sur une de MES bulles : « Retirer ce message » en tête
+        du menu, avec le temps restant. La confirmation est un sous-menu
+        (survol puis clic) : deux gestes, sans boîte de dialogue. Délai
+        dépassé : l'entrée reste visible mais grisée, avec la raison."""
+        remaining = self._delete_remaining(message)
+        if remaining is None:
+            return
+        actions = menu.actions()
+        first = actions[0] if actions else None
+        if remaining <= 0:
+            action = QAction(
+                "Retirer ce message (impossible après 15 min)", menu)
+            action.setEnabled(False)
+            menu.insertAction(first, action)
+        else:
+            minutes = max(1, math.ceil(remaining / 60))
+            submenu = QMenu(
+                f"Retirer ce message (encore {minutes} min)", menu)
+            confirm = submenu.addAction("⚠ Confirmer le retrait")
+            message_id = message.get("id")
+            confirm.triggered.connect(
+                lambda _checked=False, _id=message_id:
+                    self._delete_message(_id))
+            menu.insertMenu(first, submenu)
+        if first is not None:
+            menu.insertSeparator(first)
 
     def _reopen_quick_menu(self):
         try:
@@ -1554,6 +1660,7 @@ class MessagingController(QObject):
         if not self._delete_confirm:
             return
         self._delete_confirm = False
+        self._delete_target_id = None
         try:
             if self._delete_action is not None:
                 self._delete_action.setText("Retirer mon dernier message")
@@ -1784,11 +1891,17 @@ class MessagingController(QObject):
             grouped = bubble_key is not None and bubble_key == previous_bubble
             margin = "2px 0 5px" if grouped else "5px 0"
             header = "" if grouped else f"<b>{name}</b> "
+            content = f'{header}<small>{timestamp}{receipt}</small><br>{body}'
+            message_id = message.get("id")
+            if message_id is not None:
+                # Ancre sans lien (aucun style, aucun clic) : sert seulement
+                # à retrouver le message sous un clic droit.
+                anchor = html.escape(f"{_MESSAGE_ANCHOR}{message_id}")
+                content = f'<a name="{anchor}">{content}</a>'
             blocks.append(
                 f'<div style="text-align:{align}; margin:{margin}">'
                 f'<span style="background:{color}; padding:6px">'
-                f'{header}<small>{timestamp}{receipt}</small><br>{body}'
-                f'</span></div>'
+                f'{content}</span></div>'
             )
             previous_bubble = bubble_key
         # Si l'utilisateur consultait l'historique (ascenseur remonté), un
