@@ -2467,3 +2467,63 @@ def test_new_messages_bar_is_reset_on_tab_change_and_skips_removed():
     assert controller.new_messages_button.text() == "↓ 1 nouveau message"
     _select(controller, "broadcast")
     assert controller.new_messages_button.isHidden()
+
+
+# --- Repère « Nouveaux messages » conservé ------------------------------------
+
+def _bob(message_id, body, unread=False):
+    return {"id": message_id, "body": body, "is_unread": unread,
+            "sender": {"name": "Bob", "staff_id": 2}}
+
+
+def _marker_text(controller):
+    """Texte affiché, le repère réduit à « | » pour lire sa position."""
+    return controller.thread.toPlainText().replace(
+        "—— Nouveaux messages ——", "|")
+
+
+def test_unread_marker_stays_after_read_until_conversation_change():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [_bob(1, "vieux"), _bob(2, "neuf", True)])
+    assert "vieux\n|\nBob" in _marker_text(controller)
+    # Accusé « Lu » parti, fil rechargé : le repère ne bouge pas.
+    _feed(controller, window.api, [_bob(1, "vieux"), _bob(2, "neuf")])
+    assert "vieux\n|\nBob" in _marker_text(controller)
+    # Ma réponse ne l'efface pas non plus.
+    _feed(controller, window.api, [_bob(1, "vieux"), _bob(2, "neuf"),
+                                   dict(_my_message(3), body="réponse")])
+    assert _marker_text(controller).count("|") == 1
+    # Changement de conversation puis retour : plus de non-lu, plus de repère.
+    _select(controller, "broadcast")
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [_bob(1, "vieux"), _bob(2, "neuf")])
+    assert "|" not in _marker_text(controller)
+
+
+def test_unread_marker_moves_to_a_new_wave_once_the_first_is_read():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [_bob(1, "un"), _bob(2, "deux", True)])
+    # Le 2 est lu, puis un nouveau message arrive : le repère le suit.
+    _feed(controller, window.api, [_bob(1, "un"), _bob(2, "deux"),
+                                   _bob(3, "trois", True)])
+    text = _marker_text(controller)
+    assert text.count("|") == 1
+    assert text.index("|") > text.index("deux") and text.index("|") < text.index("trois")
+
+
+def test_unread_marker_does_not_jump_while_first_wave_is_unread():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    _feed(controller, window.api, [_bob(1, "un"), _bob(2, "deux", True)])
+    _feed(controller, window.api, [_bob(1, "un"), _bob(2, "deux", True),
+                                   _bob(3, "trois", True)])
+    text = _marker_text(controller)
+    assert text.index("|") < text.index("deux")

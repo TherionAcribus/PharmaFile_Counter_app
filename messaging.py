@@ -259,6 +259,7 @@ class MessagingController(QObject):
         self._known_initials = set()
         self.conversations = []
         self.messages = []
+        self._unread_marker_id = None
         self.unread_total = 0
         self._pending_event = None
         # L'état de référence des non-lus n'est connu qu'après la première
@@ -481,6 +482,7 @@ class MessagingController(QObject):
         self._identity_generation += 1
         self.conversations = []
         self.messages = []
+        self._unread_marker_id = None
         self.unread_total = 0
         self._pending_event = None
         # Si un envoi était encore en vol à la déconnexion, sa réponse ne doit
@@ -1835,6 +1837,7 @@ class MessagingController(QObject):
         self._current_key = key
         self._restore_draft()
         self.messages = []
+        self._unread_marker_id = None
         # Consignes/erreurs affichées, confirmation « équipe » et consigne
         # « retirer » éventuellement armées concernaient la conversation
         # quittée : sans objet ici.
@@ -1999,11 +2002,34 @@ class MessagingController(QObject):
         self._unseen_ids = set()
         self._update_new_messages_button()
 
+    def _update_unread_marker(self):
+        """Message devant lequel se place le repère « Nouveaux messages » :
+        le premier non-lu entrant vu dans ce fil. Il est mémorisé — l'accusé
+        « Lu » ne l'efface plus — et ne se déplace que pour une NOUVELLE
+        vague de non-lus, une fois la précédente lue. Remis à zéro au
+        changement de conversation."""
+        first_unread = next(
+            (m.get("id") for m in self.messages
+             if m.get("is_unread") and not m.get("deleted")
+             and m.get("id") is not None
+             and (m.get("sender") or {}).get("staff_id") != self.staff_id),
+            None)
+        marker = self._unread_marker_id
+        if first_unread is not None:
+            current = next((m for m in self.messages
+                            if m.get("id") == marker), None)
+            still_unread = bool(current and current.get("is_unread"))
+            if marker is None or current is None or (
+                    not still_unread and first_unread > marker):
+                self._unread_marker_id = first_unread
+        return self._unread_marker_id
+
     def _render_messages(self, keep_position=False):
         if self.thread is None:
             return
         blocks = []
         separator_done = False
+        marker_id = self._update_unread_marker()
         # Expéditeur de la bulle précédente (staff_id + kind) : les messages
         # consécutifs du même expéditeur se regroupent — le nom n'est répété
         # que sur la première et les suivantes se rapprochent (marge 2 px).
@@ -2054,12 +2080,12 @@ class MessagingController(QObject):
                 receipt = ' · <span style="color:#6b7280">Lu</span>'
             elif mine and message.get("delivered_at"):
                 receipt = ' · <span style="color:#6b7280">Remis</span>'
-            # Repère visuel posé juste avant le PREMIER message entrant non
-            # lu — uniquement si des messages le précèdent : un fil 100 %
-            # non lu se suffit (le repère n'apparaît pas entre les non-lus
-            # non plus — l'occasion est consommée dès le premier rencontré).
-            # Il disparaît naturellement au prochain rendu après l'accusé.
-            if (not mine and message.get("is_unread")
+            # Repère visuel posé juste avant le message mémorisé (cf.
+            # _update_unread_marker) — uniquement si des messages le
+            # précèdent : un fil 100 % non lu se suffit. Il RESTE après
+            # l'accusé « Lu », jusqu'au changement de conversation : on
+            # garde le fil de sa lecture même après une réponse.
+            if (marker_id is not None and message.get("id") == marker_id
                     and not separator_done):
                 separator_done = True
                 if blocks:
