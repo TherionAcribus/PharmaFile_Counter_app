@@ -2650,3 +2650,103 @@ def test_no_remis_once_my_last_message_is_read():
     ])
     text = controller.thread.toPlainText()
     assert "Remis" not in text and text.count("Lu à") == 1
+
+
+# --- Séparateurs de date -------------------------------------------------------
+
+def test_day_label_in_french():
+    from datetime import date
+    from messaging import day_label
+    today = date(2026, 11, 1)                       # un dimanche
+    assert day_label(today, today) == "Aujourd'hui"
+    assert day_label(date(2026, 10, 31), today) == "Hier"
+    assert day_label(date(2026, 10, 29), today) == "Jeudi 29 octobre"
+    assert day_label(date(2025, 12, 24), today) == "24 décembre 2025"
+
+
+def _at(message, when):
+    return dict(message, created_at=when.isoformat())
+
+
+def test_date_separators_only_when_the_day_changes():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+    _feed(controller, window.api, [
+        _at(_bob(1, "veille un"), yesterday),
+        _at(_bob(2, "veille deux"), yesterday),
+        _at(_bob(3, "ce matin"), now),
+    ])
+    text = controller.thread.toPlainText()
+    assert text.count("Hier") == 1 and text.count("Aujourd'hui") == 1
+    assert text.index("Hier") < text.index("veille un")
+    assert text.index("veille deux") < text.index("Aujourd'hui") \
+        < text.index("ce matin")
+    # Le séparateur coupe le regroupement : le nom de Bob est réaffiché.
+    assert text.count("Bob") == 2
+
+
+def test_no_date_separator_for_a_thread_of_today():
+    window, controller = _controller()
+    controller.set_enabled(True)
+    controller._handle_state_result(NetResult(200, data=_state()))
+    _select(controller, "direct:2")
+    now = datetime.now(timezone.utc)
+    _feed(controller, window.api, [_at(_bob(1, "a"), now),
+                                   _at(_bob(2, "b"), now)])
+    assert "Aujourd'hui" not in controller.thread.toPlainText()
+
+
+# --- Onglets non lus en tête ---------------------------------------------------
+
+def _person(staff_id, name, unread=0, last=1):
+    return {"key": f"direct:{staff_id}", "kind": "direct",
+            "staff_id": staff_id, "name": name, "counter_id": staff_id,
+            "counter_name": str(staff_id), "online": True,
+            "unread_count": unread, "last_message_id": last}
+
+
+def _tab_keys(controller):
+    return [controller.tabs.tabData(i) for i in range(controller.tabs.count())]
+
+
+def test_unread_tabs_come_first_after_team():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    state["conversations"] = [
+        state["conversations"][0],                       # Équipe
+        _person(2, "Bob"), _person(3, "Chloé"), _person(4, "David", unread=2),
+        _person(5, "Emma"), _person(6, "Farid", unread=1),
+    ]
+    state["unread_total"] = 3
+    controller._handle_state_result(NetResult(200, data=state))
+    # Non-lus d'abord (ordre du serveur conservé dans chaque groupe).
+    assert _tab_keys(controller) == [
+        "broadcast", "direct:4", "direct:6", "direct:2", "direct:3",
+        "direct:5"]
+    # Une fois lus, ils reprennent leur place.
+    for item in state["conversations"]:
+        item["unread_count"] = 0
+    state["unread_total"] = 0
+    controller._handle_state_result(NetResult(200, data=state))
+    assert _tab_keys(controller) == [
+        "broadcast", "direct:2", "direct:3", "direct:4", "direct:5",
+        "direct:6"]
+
+
+def test_reordering_keeps_the_selected_conversation():
+    _window, controller = _controller()
+    controller.set_enabled(True)
+    state = _state()
+    state["conversations"] = [state["conversations"][0],
+                              _person(2, "Bob"), _person(3, "Chloé")]
+    controller._handle_state_result(NetResult(200, data=state))
+    _select(controller, "direct:2")
+    state["conversations"][2]["unread_count"] = 1
+    controller._handle_state_result(NetResult(200, data=state))
+    assert _tab_keys(controller)[1] == "direct:3"
+    assert controller._selected_key() == "direct:2"

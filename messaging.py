@@ -141,6 +141,27 @@ _INITIALS_ROLE = Qt.ItemDataRole.UserRole + 3
 #: Token de mention « @XX » dans un corps de message : initiales métier
 #: (1 à 10 caractères de mot), match insensible à la casse — la même
 #: forme que l'extraction côté serveur.
+_WEEKDAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi",
+             "dimanche")
+_MONTHS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre")
+
+
+def day_label(day, today):
+    """Libellé d'un séparateur de date du fil, en français et sans dépendre
+    de la langue du système : « Aujourd'hui », « Hier », « Jeudi 29
+    octobre » (année en cours), « 29 octobre 2025 » (année passée)."""
+    delta = (today - day).days
+    if delta == 0:
+        return "Aujourd'hui"
+    if delta == 1:
+        return "Hier"
+    if day.year == today.year:
+        return (f"{_WEEKDAYS[day.weekday()].capitalize()} {day.day} "
+                f"{_MONTHS[day.month - 1]}")
+    return f"{day.day} {_MONTHS[day.month - 1]} {day.year}"
+
+
 _MENTION_PATTERN = re.compile(r"@(\w{1,10})\b", re.IGNORECASE)
 
 
@@ -1340,6 +1361,14 @@ class MessagingController(QObject):
             if (int(conversation.get("unread_count") or 0) > 0
                     or last_id is not None):
                 ordered.append(key)
+        # Fils avec des non-lus d'abord, juste après « Équipe » : avec
+        # beaucoup d'onglets, un message non lu ne reste plus caché derrière
+        # les flèches de défilement. Tri stable : l'ordre du serveur est
+        # conservé à l'intérieur de chaque groupe.
+        ordered = ["broadcast"] + sorted(
+            ordered[1:],
+            key=lambda key: int(
+                (known.get(key) or {}).get("unread_count") or 0) == 0)
         if closed_dirty:
             self._save_closed_tabs()
         keep = set(ordered)
@@ -2122,7 +2151,21 @@ class MessagingController(QObject):
         # consécutifs du même expéditeur se regroupent — le nom n'est répété
         # que sur la première et les suivantes se rapprochent (marge 2 px).
         previous_bubble = None
+        # Séparateurs de date : seule l'heure figure sur les bulles. Un
+        # séparateur à chaque changement de jour ; en tête du fil seulement
+        # si ce n'est pas aujourd'hui (un fil du jour reste épuré).
+        today = datetime.now().astimezone().date()
+        previous_day = today
         for message in self.messages:
+            day = self._message_day(message.get("created_at"))
+            if day is not None and day != previous_day:
+                blocks.append(
+                    '<div style="text-align:center; color:#6b7280; '
+                    'font-size:small; margin:8px 0 4px">'
+                    f'<b>{html.escape(day_label(day, today))}</b></div>')
+                previous_bubble = None   # nom réaffiché après le séparateur
+            if day is not None:
+                previous_day = day
             sender = message.get("sender") or {}
             mine = sender.get("staff_id") == self.staff_id
             align = "right" if mine else "left"
@@ -2237,6 +2280,17 @@ class MessagingController(QObject):
             return (f'<b style="color:#fff;background:#b45309">'
                     f'{match.group(0)}</b>')
         return f'<b style="color:#b45309">{match.group(0)}</b>'
+
+    @staticmethod
+    def _message_day(value):
+        """Jour LOCAL d'un horodatage ISO (None s'il est illisible)."""
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+        return (parsed.astimezone() if parsed.tzinfo else parsed).date()
 
     @staticmethod
     def _format_time(value):
